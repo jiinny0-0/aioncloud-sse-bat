@@ -12,7 +12,7 @@ import logging
 
 import pytest
 
-from bat.endpoint.base import CONNECTOR_SERVICE, service_state
+from bat.endpoint.base import CONNECTOR_PROCESS, connector_state
 from bat.fixtures.enums import ActionType, Condition, Subject
 from bat.fixtures.naming import belongs_to_run, is_bat_resource, resource_name
 from bat.clients.rest import pick_id
@@ -133,16 +133,16 @@ def test_security_log_is_readable(case, web_log):
 @pytest.mark.priority("P1")
 def test_endpoint_is_behind_the_connector(case, executor, web_log, browser_session):
     """테스트 단말의 트래픽이 실제로 SSE를 경유한다."""
-    state = service_state(executor, CONNECTOR_SERVICE)
+    state = connector_state(executor)
     case.record(
         Step.SETUP,
         ok=state.lower() == "running",
-        detail=f"{CONNECTOR_SERVICE} is {state}",
+        detail=f"{CONNECTOR_PROCESS} is {state}",
         expected="Running",
         actual=state,
     )
     assert state.lower() == "running", (
-        f"{CONNECTOR_SERVICE} is {state}. Without the tunnel, no traffic reaches "
+        f"{CONNECTOR_PROCESS} is {state}. Without the tunnel, no traffic reaches "
         f"SSE and every enforcement case becomes meaningless."
     )
 
@@ -199,9 +199,9 @@ def test_management_api_is_not_intercepted(case, rest, executor):
     from bat.clients.errors import ApiError, SelfBlockedError
     from bat.fixtures.enums import Condition, Subject
 
-    state = service_state(executor, CONNECTOR_SERVICE)
+    state = connector_state(executor)
     if state.lower() != "running":
-        pytest.skip(f"{CONNECTOR_SERVICE} is {state}; nothing is being intercepted")
+        pytest.skip(f"{CONNECTOR_PROCESS} is {state}; nothing is being intercepted")
 
     # 읽기가 아니라 쓰기다: SSE는 POST 본문을 검사하므로, 스위트 자신의 관리용 쓰기가
     # 사용자 트래픽으로 취급되면 스위트가 동작할 수 없다.

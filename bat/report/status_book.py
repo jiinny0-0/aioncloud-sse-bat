@@ -391,8 +391,12 @@ def _new_row(entry: dict[str, str], stages: list[str]) -> dict[str, Any]:
     return row
 
 
-def _merge_catalog(rows: list[dict[str, Any]], stages: list[str], cases: list[dict[str, str]]) -> list[str]:
-    """`rows`에 없는 카탈로그 케이스를 추가하고 빈칸을 채운다. 추가한 id를 돌려준다."""
+def _merge_catalog(rows: list[dict[str, Any]], stages: list[str], cases: list[dict[str, str]],
+                   descriptions: dict[str, dict[str, str]] | None = None) -> list[str]:
+    """`rows`에 없는 카탈로그 케이스를 추가하고 빈칸을 채운다. 추가한 id를 돌려준다.
+
+    descriptions(tests/case_descriptions.yaml)에 있는 설명은 현황표의 설명 열을 덮어쓴다.
+    """
     by_id = {r["case_id"]: r for r in rows}
     added = []
     for entry in cases:
@@ -407,7 +411,20 @@ def _merge_catalog(rows: list[dict[str, Any]], stages: list[str], cases: list[di
         for stage in stages:
             if not row.get(status_key(stage)):
                 row[status_key(stage)] = NOT_RUN
+    for row in rows:
+        description = (descriptions or {}).get(row["case_id"], {})
+        for key in ("test_steps", "test_parameters", "test_data", "expected_results"):
+            if description.get(key):
+                row[key] = description[key]
+        if description.get("actual_result"):
+            row["actual_results"] = description["actual_result"]
     return added
+
+
+def _descriptions(tests_dir: Path) -> dict[str, dict[str, str]]:
+    from bat.report.result_book import load_descriptions
+
+    return load_descriptions(tests_dir / "case_descriptions.yaml")
 
 
 def sync_catalog(directory: Path = REPORTS_DIR, tests_dir: Path = TESTS_DIR) -> list[str]:
@@ -417,7 +434,7 @@ def sync_catalog(directory: Path = REPORTS_DIR, tests_dir: Path = TESTS_DIR) -> 
     before = [dict(r) for r in rows]
     parked = parked_ids(tests_dir)
     rows[:] = [r for r in rows if r["case_id"] not in parked]
-    added = _merge_catalog(rows, stages, catalog(tests_dir))
+    added = _merge_catalog(rows, stages, catalog(tests_dir), _descriptions(tests_dir))
     if added or rows != before or not path.exists() or not _has_columns_for(path, stages):
         write_rows(rows, path, stages)
     return added
@@ -494,7 +511,7 @@ def rebuild_stage_columns(directory: Path = REPORTS_DIR, tests_dir: Path = TESTS
     """저장된 실행 리포트로 모든 스테이지 열을 다시 채운다. 손으로 관리하는 열은 그대로 둔다."""
     path = book_path(directory)
     rows, stages = read_book(path)
-    _merge_catalog(rows, stages, catalog(tests_dir))
+    _merge_catalog(rows, stages, catalog(tests_dir), _descriptions(tests_dir))
     by_id = {r["case_id"]: r for r in rows}
     for stage in stages:
         for row in rows:

@@ -1970,15 +1970,15 @@ UNRELATED_AUTH_ROWS = [
 
 
 class _FakeConnectorEndpoint:
-    """BAT-ZTNA-001용 단말(커넥터 서비스, 하드웨어 UUID)과 auth_log."""
+    """BAT-ZTNA-001용 단말(커넥터 프로세스, 하드웨어 UUID)과 auth_log."""
 
     def __init__(self, rows, *, uuid=THIS_DEVICE, running=True, honours_filter=True):
         self.rows, self.uuid, self.running, self.honours_filter = list(rows), uuid, running, honours_filter
         self.device_filters: list[str] = []
 
     def run_powershell(self, script, timeout_sec=60):
-        if "Get-Service" in script:
-            output = "Running" if self.running else "Stopped"
+        if "Get-Process -Name 'AIConnector for Client'" in script:
+            output = "Running" if self.running else "NotRunning"
         elif "Win32_ComputerSystemProduct" in script:
             output = self.uuid
         else:
@@ -2637,22 +2637,26 @@ def test_signature_entry_keeps_the_admins_entries():
 
 
 def test_result_book_has_only_the_published_columns(tmp_path):
-    """실행별 결과 워크북: 날짜가 붙은 이름, 열 8개, 한국어 결과, 스테이지 최신 상태."""
+    """결과 엑셀: 날짜가 붙은 이름, 8개 열, 한국어 결과, 스테이지 최신 상태, 설명은 YAML에서."""
     from openpyxl import load_workbook
 
     from bat.report import result_book
 
     assert result_book.result_path("qa", "20261022-084546-efa6b8", tmp_path).name == "20261022-qa-bat-test-result.xlsx"
     tracker = [
-        {"case_id": "BAT-SWG-001", "qa_status": "PASS", "lg_status": "FAIL",
-         "expected_results": "차단된다", "actual_results": "2026-10-14 run: blocked", "note": "x"},
-        {"case_id": "BAT-SWG-002", "qa_status": "FAIL", "actual_results": "차단되지 않음"},
-        {"case_id": "BAT-SWG-003", "qa_status": "FAIL", "actual_results": "English only"},
+        {"case_id": "BAT-SWG-001", "qa_status": "PASS", "lg_status": "FAIL", "expected_results": "현황표 값"},
+        {"case_id": "BAT-SWG-002", "qa_status": "FAIL"},
+        {"case_id": "BAT-SWG-003", "qa_status": "FAIL"},
     ]
+    descriptions = {
+        "BAT-SWG-001": {"test_steps": "1. 요청", "expected_results": "차단된다"},
+        "BAT-SWG-002": {"expected_results": "차단된다", "actual_result": "차단되지 않음"},
+    }
     cases = [{"case_id": f"BAT-SWG-00{i}", "product": "swg", "scenario": f"s{i}"} for i in (1, 2, 3, 4)]
-    rows = result_book.build_rows("qa", tracker, cases)
+    rows = result_book.build_rows("qa", tracker, cases, descriptions)
     assert [r["status"] for r in rows] == ["PASS", "FAIL", "FAIL", "미실행"]
     assert [r["actual_result"] for r in rows] == ["차단된다", "차단되지 않음", "기대 결과와 다르게 동작함", "미실행"]
+    assert rows[0]["test_steps"] == "1. 요청" and rows[0]["expected_results"] == "차단된다"
 
     path = result_book.write(rows, tmp_path / "r.xlsx")
     wb = load_workbook(path)
@@ -2661,3 +2665,14 @@ def test_result_book_has_only_the_published_columns(tmp_path):
         "Product", "Status", "Scenario", "Test Steps", "Test Parameters", "Test Data",
         "Expected Results", "Actual Result",
     ]
+
+
+def test_every_case_has_a_description():
+    """기본 실행 케이스마다 tests/case_descriptions.yaml에 Test Steps와 Expected Results가 있다."""
+    from bat.report import result_book, status_book
+
+    descriptions = result_book.load_descriptions()
+    missing = [c["case_id"] for c in status_book.catalog()
+               if not (descriptions.get(c["case_id"], {}).get("test_steps")
+                       and descriptions.get(c["case_id"], {}).get("expected_results"))]
+    assert not missing, f"add these to tests/case_descriptions.yaml: {missing}"

@@ -126,7 +126,8 @@ Lane e   ztna, edr
 
 **판정.** 케이스는 선언한 기준(사용자 가시 결과, 이벤트)마다 통과한 확인이 있어야 PASS입니다.
 확인할 수단이 없으면 UNVERIFIED, 대상 기능이 탐지하지 않는 환경이면 SKIP입니다. 환경 점검 케이스(basic)는
-점검이 모두 통과하면 PASS입니다.
+점검이 모두 통과하면 PASS입니다. 확인 중인 제품 문제로 표시한 케이스(`@pytest.mark.known_issue`)는 실패해도
+FAIL 대신 UNVERIFIED로 기록되고, 원래 실패 이유가 함께 남습니다.
 
 **리소스 회수.** 생성물은 모두 `BAT-<PRODUCT>-<NNN>-<run_id>` 이름을 갖고, 실패해도
 삭제를 시도합니다. 삭제 실패는 `cleanup_warnings`로 남고, `bat sweep`이 남은 것을 찾습니다.
@@ -155,6 +156,9 @@ Signature Management 차단 목록에는 케이스 동안만 BAT 전용 항목�
 | Test Data | 요청 대상과 전송 데이터 |
 | Expected Results | 기대 결과 |
 | Actual Result | 실제 결과 |
+
+Test Steps ~ Expected Results와, PASS가 아닐 때의 Actual Result 설명은 `tests/case_descriptions.yaml`에
+있습니다. 케이스를 추가하면 이 파일에도 항목을 추가합니다.
 
 ---
 

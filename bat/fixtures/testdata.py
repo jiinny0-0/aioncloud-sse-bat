@@ -115,3 +115,5 @@ EICAR_STRING = (
 # 항목을 가려낼 수 있다.
 SIGNATURE_TARGET_HOST = "www.example.org"
 SIGNATURE_DENYLIST_URL = f"http://{SIGNATURE_TARGET_HOST}/"
+# BAT-SWG-021이 시그니처 목록 밖 매칭을 확인할 때 쓰는 호스트(목록에 없는 일반 사이트).
+SIGNATURE_PROBE_HOST = "www.wikipedia.org"

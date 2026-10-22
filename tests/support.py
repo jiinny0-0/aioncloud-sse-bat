@@ -1185,7 +1185,7 @@ def unverified(case: CaseResult, step: Step, reason: str) -> NoReturn:
 
 
 def module_scope_or_stop(case: CaseResult, run_context, web_policies, executor, web_log,
-                         module_rule: dict) -> None:
+                         module_rule: dict, probe_host: str = "") -> None:
     """시그니처 모듈 BLOCK 전에: 이 모듈이 어떤 목록에도 없는 요청을 잡는가?
 
     모듈 rule에는 목적지가 없어서 무엇에 매칭할지는 제품이 정한다. 시그니처 목록 밖의
@@ -1197,6 +1197,7 @@ def module_scope_or_stop(case: CaseResult, run_context, web_policies, executor, 
       - 대조 정책으로 기록됨: 모듈이 통과시켰으므로 BLOCK이 안전하다
       - 모듈로 기록됨: FAIL — 목록 밖까지 매칭한다. BLOCK은 시도하지 않는다
       - 시간 안에 둘 다 아님: UNVERIFIED — 역시 BLOCK하지 않는다
+    probe 호스트는 probe_host(기본 BLOCK_TARGET_HOST)다.
     """
     from bat.fixtures.enums import Condition, RiskLevel, Subject
     from bat.fixtures.naming import resource_name
@@ -1204,10 +1205,12 @@ def module_scope_or_stop(case: CaseResult, run_context, web_policies, executor, 
     from bat.fixtures.testdata import BLOCK_TARGET_HOST
     from bat.traffic.http import curl_status
 
+    host = probe_host or BLOCK_TARGET_HOST
+    probe_path = "/get" if host == BLOCK_TARGET_HOST else "/"
     module_name = resource_name(case.case_id, run_context.run_id, "scope")
     control_name = resource_name(case.case_id, run_context.run_id, "scope-ctl")
     marker = f"bat={module_name.lower()}-"
-    control = WebPolicyFactory.build_rule(Subject.HTTP_HOST, Condition.IS, [BLOCK_TARGET_HOST])
+    control = WebPolicyFactory.build_rule(Subject.HTTP_HOST, Condition.IS, [host])
     verdict, sent = "", 0
     with web_policies.temporary(module_name, [module_rule], action_type="LOGGING",
                                 risk_level=RiskLevel.MINOR), \
@@ -1216,7 +1219,7 @@ def module_scope_or_stop(case: CaseResult, run_context, web_policies, executor, 
         deadline = time.monotonic() + run_context.event_poll_timeout_sec
         while time.monotonic() < deadline and not verdict:
             sent += 1
-            curl_status(executor, f"https://{BLOCK_TARGET_HOST}/get?{marker}{sent}")
+            curl_status(executor, f"https://{host}{probe_path}?{marker}{sent}")
             time.sleep(5)
             names = {e.get("policy_name") for e in web_log.security_events(lookback_min=10)
                      if marker in str(e.get("full_uri") or "")}
@@ -1224,17 +1227,17 @@ def module_scope_or_stop(case: CaseResult, run_context, web_policies, executor, 
 
     if verdict == "narrow":
         case.record(Step.SETUP, ok=True, kind=Kind.EVIDENCE,
-                    detail=f"{module_rule['subject']} (LOGGING) left {BLOCK_TARGET_HOST} to the control "
+                    detail=f"{module_rule['subject']} (LOGGING) left {host} to the control "
                            f"policy after {sent} request(s): it does not match unlisted traffic")
         return
     if verdict == "broad":
-        message = (f"{module_rule['subject']} matched {BLOCK_TARGET_HOST}, which no signature list "
+        message = (f"{module_rule['subject']} matched {host}, which no signature list "
                    f"names (LOGGING copy, {sent} request(s)) — as BLOCK it would cut off every "
                    f"request from this endpoint, the management API included; BLOCK not attempted")
         case.record(Step.USER_RESULT, ok=False, detail=message,
-                    expected=f"only listed entries match; {BLOCK_TARGET_HOST} left to the control policy",
+                    expected=f"only listed entries match; {host} left to the control policy",
                     actual=f"logged under {module_name}")
         raise AssertionError(message)
     unverified(case, Step.USER_RESULT,
-               f"neither {module_name} nor {control_name} logged {BLOCK_TARGET_HOST} within "
+               f"neither {module_name} nor {control_name} logged {host} within "
                f"{run_context.event_poll_timeout_sec}s ({sent} request(s)); BLOCK not attempted")

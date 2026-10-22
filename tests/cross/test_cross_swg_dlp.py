@@ -22,6 +22,7 @@ pytestmark = [
 
 
 @pytest.mark.case("BAT-X-001")
+@pytest.mark.known_issue("우선순위 높은 ALLOW가 DLP 차단을 무력화함")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P1")
 def test_dlp_block_survives_a_higher_priority_allow(

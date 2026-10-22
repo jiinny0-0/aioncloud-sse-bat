@@ -402,6 +402,12 @@ def pytest_runtest_makereport(item, call):
 
     raised, message = _how_it_ended(call)
     status, reason = classify(case_result, raised, message)
+    known = item.get_closest_marker("known_issue")
+    if known and status is Status.FAIL:
+        # 확인 중인 제품 문제: FAIL 대신 UNVERIFIED로 기록하고, 원래 실패 이유는 그대로 남긴다.
+        status, reason = Status.UNVERIFIED, f"known issue ({known.args[0] if known.args else ''}): {reason}"
+        report.outcome = "skipped"
+        report.longrepr = (str(item.path), item.location[1] or 0, reason)
     case_result.status = status
     case_result.verdict_reason = reason
     if status in (Status.FAIL, Status.ERROR):

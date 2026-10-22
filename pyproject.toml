@@ -42,6 +42,7 @@ markers = [
     "parked: held back (EDR, RBI) — excluded from the default run and the status book; run with --tag parked",
     "crud: only creates/reads/deletes through the API (no traffic, no events) — API-suite territory, excluded from the default run",
     "verifies(*steps): mandatory criteria (user_visible_result, event_validation) — PASS needs a passing assertion on each",
+    "known_issue(reason): a product issue under review — a failure is reported as UNVERIFIED with the reason",
     "diagnostic: environment/preflight check; runs by default but never reports PASS (no security-behaviour criterion)",
     "discovery: requires runtime policy-schema discovery",
 ]

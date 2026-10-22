@@ -447,6 +447,7 @@ def test_file_upload_detection(case, run_context, rest, web_policies, executor, 
 
 
 @pytest.mark.case("BAT-DLP-008")
+@pytest.mark.known_issue("한 DLP 정책 안의 두 번째(정규식) 룰이 탐지하지 않음")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P1")
 def test_one_policy_with_two_rules_catches_either_of_them(

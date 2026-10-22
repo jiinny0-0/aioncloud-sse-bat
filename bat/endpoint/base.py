@@ -17,8 +17,10 @@ from bat.settings import Endpoint
 
 log = logging.getLogger(__name__)
 
-# 커넥터 서비스(표시명 "AIZTNA Service")와 EDR 에이전트 서비스다.
-CONNECTOR_SERVICE = "AIZtnaSvc"
+# 커넥터는 "AIConnector for Client" 프로세스다(AIZtnaSvc 서비스는 커넥터가 아니다).
+# 프로세스가 떠 있다고 워크스페이스에 로그인돼 있다는 뜻은 아니다. 그건 bat run의 preflight가 본다.
+CONNECTOR_PROCESS = "AIConnector for Client"
+# EDR 에이전트 서비스다.
 EDR_SERVICE = "monster"
 CONNECTOR_LOG_DIR = r"C:\ProgramData\Monitorapp\AIConnector for Client\log"
 
@@ -156,8 +158,20 @@ def service_state(executor: Executor, service: str) -> str:
     return state or "NotFound"
 
 
+def process_state(executor: Executor, process: str) -> str:
+    """Running(프로세스가 하나 이상 있음) / NotRunning 중 하나를 반환한다."""
+    result = executor.run_powershell(
+        f"if (Get-Process -Name '{process}' -ErrorAction SilentlyContinue) {{ 'Running' }} else {{ 'NotRunning' }}"
+    )
+    return result.stdout.strip() or "NotRunning"
+
+
+def connector_state(executor: Executor) -> str:
+    return process_state(executor, CONNECTOR_PROCESS)
+
+
 def connector_running(executor: Executor) -> bool:
-    return service_state(executor, CONNECTOR_SERVICE).lower() == "running"
+    return connector_state(executor).lower() == "running"
 
 
 def edr_agent_running(executor: Executor) -> bool:

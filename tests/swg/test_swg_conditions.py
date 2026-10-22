@@ -30,6 +30,7 @@ from bat.fixtures.testdata import (
     SECOND_HOST,
     SECOND_URL,
     SIGNATURE_DENYLIST_URL,
+    SIGNATURE_PROBE_HOST,
     SIGNATURE_TARGET_HOST,
 )
 from bat.models import Kind, Step
@@ -905,7 +906,8 @@ def test_risky_website_signature(case, run_context, web_policies, executor, web_
                 Step.SETUP, ok=True, kind=Kind.EVIDENCE,
                 detail=f"{SIGNATURE_TARGET_HOST} added to the Risky Website deny list",
             )
-            module_scope_or_stop(case, run_context, web_policies, executor, web_log, rule)
+            module_scope_or_stop(case, run_context, web_policies, executor, web_log, rule,
+                                 probe_host=SIGNATURE_PROBE_HOST)
             with web_policies.temporary(
                 policy_name, [rule], action_type=ActionType.BLOCK, risk_level=RiskLevel.MAJOR
             ) as policy:

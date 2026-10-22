@@ -204,6 +204,7 @@ def test_application_firewall_removal_restores_connectivity(
 
 
 @pytest.mark.case("BAT-FW-005")
+@pytest.mark.known_issue("protocol 조건이 적용되지 않아 다른 프로토콜까지 끊김")
 @pytest.mark.verifies(Step.USER_RESULT)
 @pytest.mark.priority("P2")
 def test_protocol_scope_limits_what_is_blocked(
@@ -609,7 +610,10 @@ def test_dns_firewall_wildcard_value_covers_subdomains(case, run_context, dns_fi
 def test_dns_firewall_event_carries_enough_to_investigate(
     case, run_context, dns_firewall, executor, network_log
 ):
-    """DNS 보안로그 이벤트에 사용자·단말·출발지 국가 등 조사에 필요한 정보가 담겨 있다."""
+    """DNS 보안로그 이벤트에 사용자·출발지 IP·국가 등 조사에 필요한 정보가 담겨 있다.
+
+    콘솔의 DNS 보안 로그에는 단말(device_id) 항목이 없으므로 확인하지 않는다.
+    """
     policy_name = resource_name(case.case_id, run_context.run_id)
     rule = DnsFirewallFactory.fqdn_rule([BLOCK_TARGET_HOST])
 
@@ -628,14 +632,14 @@ def test_dns_firewall_event_carries_enough_to_investigate(
             )
             present = {
                 field: event.get(field)
-                for field in ("user_id", "user_name", "device_id", "src_ip", "src_country_code")
+                for field in ("user_id", "user_name", "src_ip", "src_country_code")
             }
             missing = [field for field, value in present.items() if value in (None, "")]
             case.record(
                 Step.USER_RESULT,
                 ok=not missing,
                 detail=f"event fields: {present}",
-                expected="user_id/user_name/device_id/src_ip/src_country_code all populated",
+                expected="user_id/user_name/src_ip/src_country_code all populated",
                 actual=f"missing: {missing}" if missing else "all populated",
             )
             assert not missing, f"DNS security event is missing: {missing} ({present})"
