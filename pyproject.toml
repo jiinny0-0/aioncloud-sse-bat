@@ -1,0 +1,51 @@
+[project]
+name = "aioncloud-sse-bat"
+version = "0.1.0"
+description = "AIONCLOUD SSE Business Acceptance Test automation"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "pytest>=8.0",
+    "pytest-xdist>=3.5",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    "playwright>=1.47",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+winrm = ["pywinrm>=0.4.3"]
+
+[project.scripts]
+bat = "bat.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# 설치 대상은 bat 패키지뿐이다 (config/, tests/는 같은 위치에 있지만 설치하지 않음).
+[tool.setuptools.packages.find]
+include = ["bat*"]
+namespaces = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "product(name): SSE product under test (basic, swg, dlp, fwaas, rbi, casb, genai, ztna, edr, cross)",
+    "case(id): BAT case id, e.g. BAT-SWG-001",
+    "priority(level): P0..P4",
+    "lane(name): resource lane (api, b, c, d, e)",
+    "smoke: representative case per product",
+    "critical: P0 cases",
+    "manual: requires a human action, excluded from the default run",
+    "parked: held back (EDR, RBI) — excluded from the default run and the status book; run with --tag parked",
+    "crud: only creates/reads/deletes through the API (no traffic, no events) — API-suite territory, excluded from the default run",
+    "verifies(*steps): mandatory criteria (user_visible_result, event_validation) — PASS needs a passing assertion on each",
+    "diagnostic: environment/preflight check; runs by default but never reports PASS (no security-behaviour criterion)",
+    "discovery: requires runtime policy-schema discovery",
+]
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format = "%(asctime)s %(levelname)-7s %(name)s | %(message)s"
+log_cli_date_format = "%H:%M:%S"

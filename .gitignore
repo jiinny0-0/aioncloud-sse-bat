@@ -1,0 +1,20 @@
+.env
+.env.*
+.console-session.json
+reports/*
+!reports/result/
+!reports/run-progress.md
+# 엑셀이 열려 있을 때 생기는 잠금 파일과 대체 저장본
+reports/result/~$*
+reports/result/*-locked.xlsx
+config/environments.yaml
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+# 개발 문서와 로컬 도구 (로컬에만 둠)
+CLAUDE.md
+PROJECT_CONTEXT.md
+TODO.md
+.claude/
