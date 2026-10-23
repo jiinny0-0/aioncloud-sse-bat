@@ -1,4 +1,4 @@
-"""실행별 결과 엑셀: reports/result/<YYYYMMDD>-<stage>-bat-test-result.xlsx.
+"""실행별 결과 CSV: reports/result/<YYYYMMDD>-<stage>-bat-test-result.csv.
 
 케이스마다 한 행이고, 그 실행 스테이지의 최신 상태를 담는다. 설명 열은
 tests/case_descriptions.yaml에서 가져온다.
@@ -15,18 +15,16 @@ from bat.settings import REPORTS_DIR
 RESULT_DIR = REPORTS_DIR / "result"
 DESCRIPTIONS = status_book.TESTS_DIR / "case_descriptions.yaml"
 DESCRIPTION_FIELDS = ("test_steps", "test_parameters", "test_data", "expected_results")
-SHEET = "Result"
 COLUMNS = [
-    ("product", "Product", 10),
-    ("status", "Status", 12),
-    ("scenario", "Scenario", 45),
-    ("test_steps", "Test Steps", 50),
-    ("test_parameters", "Test Parameters", 32),
-    ("test_data", "Test Data", 32),
-    ("expected_results", "Expected Results", 40),
-    ("actual_result", "Actual Result", 40),
+    ("product", "Product"),
+    ("status", "Status"),
+    ("scenario", "Scenario"),
+    ("test_steps", "Test Steps"),
+    ("test_parameters", "Test Parameters"),
+    ("test_data", "Test Data"),
+    ("expected_results", "Expected Results"),
+    ("actual_result", "Actual Result"),
 ]
-WRAP = {"scenario", "test_steps", "test_parameters", "test_data", "expected_results", "actual_result"}
 # case_descriptions.yaml에 actual_result가 없을 때 쓴다.
 DEFAULT_ACTUAL = {
     "FAIL": "기대 결과와 다르게 동작함",
@@ -48,8 +46,8 @@ def load_descriptions(path: Path = DESCRIPTIONS) -> dict[str, dict[str, str]]:
 
 
 def result_path(stage: str, run_id: str, directory: Path = RESULT_DIR) -> Path:
-    """<YYYYMMDD>-<stage>-bat-test-result.xlsx. 날짜는 실행 id에서 딴다."""
-    return directory / f"{run_id[:8]}-{stage}-bat-test-result.xlsx"
+    """<YYYYMMDD>-<stage>-bat-test-result.csv. 날짜는 실행 id에서 딴다."""
+    return directory / f"{run_id[:8]}-{stage}-bat-test-result.csv"
 
 
 def actual_result(status: str, description: dict[str, str]) -> str:
@@ -81,43 +79,30 @@ def build_rows(stage: str, tracker_rows: list[dict[str, Any]], cases: list[dict[
 
 
 def write(rows: list[dict[str, Any]], path: Path) -> Path:
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font, PatternFill
+    """CSV로 쓴다. UTF-8 BOM을 붙여 엑셀에서 열어도 한글이 깨지지 않는다."""
+    import csv
 
-    font = status_book.FONT_NAME
-    wb = Workbook()
-    ws = wb.active
-    ws.title = SHEET
-    for col, (_, label, width) in enumerate(COLUMNS, start=1):
-        cell = ws.cell(row=1, column=col, value=label)
-        cell.font = Font(name=font, bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="4472C4")
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        ws.column_dimensions[cell.column_letter].width = width
-    for r_idx, row in enumerate(rows, start=2):
-        for c_idx, (key, _, _) in enumerate(COLUMNS, start=1):
-            cell = ws.cell(row=r_idx, column=c_idx, value=row.get(key, ""))
-            cell.font = Font(name=font)
-            cell.alignment = Alignment(vertical="top", wrap_text=key in WRAP)
-            if key == "status":
-                status_book._paint(cell, str(row.get(key, "")))
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{ws.cell(row=len(rows) + 1, column=len(COLUMNS)).coordinate}"
+    def dump(target: Path) -> None:
+        with target.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([label for _, label in COLUMNS])
+            for row in rows:
+                writer.writerow([row.get(key, "") for key, _ in COLUMNS])
 
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        wb.save(path)
+        dump(path)
         return path
     except PermissionError:
         fallback = path.with_stem(path.stem + "-locked")
-        wb.save(fallback)
-        print(f"{path} is open in Excel; wrote {fallback} instead.", file=sys.stderr)
+        dump(fallback)
+        print(f"{path} is open in another program; wrote {fallback} instead.", file=sys.stderr)
         return fallback
 
 
 def write_for_run(profile: str, run_id: str, directory: Path = REPORTS_DIR,
                   tests_dir: Path = status_book.TESTS_DIR) -> Path:
-    """`run_id` 스테이지의 결과 엑셀. 상태는 현황표에서, 설명은 case_descriptions.yaml에서 가져온다."""
+    """`run_id` 스테이지의 결과 CSV. 상태는 현황표에서, 설명은 case_descriptions.yaml에서 가져온다."""
     stage = status_book.stage_of(profile)
     tracker_rows, _ = status_book.read_book(status_book.book_path(directory))
     rows = build_rows(stage, tracker_rows, status_book.catalog(tests_dir),

@@ -4,9 +4,9 @@
 reports/*
 !reports/result/
 !reports/run-progress.md
-# 엑셀이 열려 있을 때 생기는 잠금 파일과 대체 저장본
+# 파일이 엑셀에서 열려 있을 때 생기는 잠금 파일과 대체 저장본
 reports/result/~$*
-reports/result/*-locked.xlsx
+reports/result/*-locked.*
 config/environments.yaml
 __pycache__/
 *.py[cod]

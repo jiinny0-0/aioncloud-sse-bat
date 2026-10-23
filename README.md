@@ -143,8 +143,9 @@ Signature Management 차단 목록에는 케이스 동안만 BAT 전용 항목�
 
 ## 실행 결과
 
-`bat run`이 끝날 때마다 `reports/result/<YYYYMMDD>-<스테이지>-bat-test-result.xlsx`를 만듭니다
-(예: `20261022-qa-bat-test-result.xlsx`). 같은 날 같은 스테이지를 다시 돌리면 덮어씁니다.
+`bat run`이 끝날 때마다 `reports/result/<YYYYMMDD>-<스테이지>-bat-test-result.csv`를 만듭니다
+(예: `20261023-qa-bat-test-result.csv`). 같은 날 같은 스테이지를 다시 돌리면 덮어씁니다. UTF-8(BOM) CSV라
+엑셀에서 바로 열어도 한글이 깨지지 않습니다.
 
 | 열 | 내용 |
 | --- | --- |

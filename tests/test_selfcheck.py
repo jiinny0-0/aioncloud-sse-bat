@@ -2637,12 +2637,13 @@ def test_signature_entry_keeps_the_admins_entries():
 
 
 def test_result_book_has_only_the_published_columns(tmp_path):
-    """결과 엑셀: 날짜가 붙은 이름, 8개 열, 한국어 결과, 스테이지 최신 상태, 설명은 YAML에서."""
-    from openpyxl import load_workbook
+    """결과 CSV: 날짜가 붙은 이름, 8개 열, 한국어 결과, 스테이지 최신 상태, 설명은 YAML에서."""
+    import codecs
+    import csv
 
     from bat.report import result_book
 
-    assert result_book.result_path("qa", "20261022-084546-efa6b8", tmp_path).name == "20261022-qa-bat-test-result.xlsx"
+    assert result_book.result_path("qa", "20261022-084546-efa6b8", tmp_path).name == "20261022-qa-bat-test-result.csv"
     tracker = [
         {"case_id": "BAT-SWG-001", "qa_status": "PASS", "lg_status": "FAIL", "expected_results": "현황표 값"},
         {"case_id": "BAT-SWG-002", "qa_status": "FAIL"},
@@ -2658,13 +2659,15 @@ def test_result_book_has_only_the_published_columns(tmp_path):
     assert [r["actual_result"] for r in rows] == ["차단된다", "차단되지 않음", "기대 결과와 다르게 동작함", "미실행"]
     assert rows[0]["test_steps"] == "1. 요청" and rows[0]["expected_results"] == "차단된다"
 
-    path = result_book.write(rows, tmp_path / "r.xlsx")
-    wb = load_workbook(path)
-    assert wb.sheetnames == ["Result"]
-    assert [c.value for c in wb.active[1]] == [
+    path = result_book.write(rows, tmp_path / "r.csv")
+    assert path.read_bytes().startswith(codecs.BOM_UTF8)  # 엑셀이 한글을 UTF-8로 읽도록 BOM
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        table = list(csv.reader(f))
+    assert table[0] == [
         "Product", "Status", "Scenario", "Test Steps", "Test Parameters", "Test Data",
         "Expected Results", "Actual Result",
     ]
+    assert table[1][3] == "1. 요청" and len(table) == 5
 
 
 def test_every_case_has_a_description():
