@@ -2637,24 +2637,20 @@ def test_signature_entry_keeps_the_admins_entries():
 
 
 def test_result_book_has_only_the_published_columns(tmp_path):
-    """결과 CSV: 날짜가 붙은 이름, 8개 열, 한국어 결과, 스테이지 최신 상태, 설명은 YAML에서."""
+    """결과 CSV: 실행마다 날짜·시각이 붙은 파일, 8개 열, 한국어 결과, 이번 실행에 없는 케이스는 미실행."""
     import codecs
     import csv
 
     from bat.report import result_book
 
-    assert result_book.result_path("qa", "20261022-084546-efa6b8", tmp_path).name == "20261022-qa-bat-test-result.csv"
-    tracker = [
-        {"case_id": "BAT-SWG-001", "qa_status": "PASS", "lg_status": "FAIL", "expected_results": "현황표 값"},
-        {"case_id": "BAT-SWG-002", "qa_status": "FAIL"},
-        {"case_id": "BAT-SWG-003", "qa_status": "FAIL"},
-    ]
+    assert result_book.result_path("qa", "20261022-084546-efa6b8", tmp_path).name == "20261022-0845-qa-bat-test-result.csv"
+    statuses = {"BAT-SWG-001": "PASS", "BAT-SWG-002": "FAIL", "BAT-SWG-003": "FAIL"}
     descriptions = {
         "BAT-SWG-001": {"test_steps": "1. 요청", "expected_results": "차단된다"},
         "BAT-SWG-002": {"expected_results": "차단된다", "actual_result": "차단되지 않음"},
     }
     cases = [{"case_id": f"BAT-SWG-00{i}", "product": "swg", "scenario": f"s{i}"} for i in (1, 2, 3, 4)]
-    rows = result_book.build_rows("qa", tracker, cases, descriptions)
+    rows = result_book.build_rows(statuses, cases, descriptions)
     assert [r["status"] for r in rows] == ["PASS", "FAIL", "FAIL", "미실행"]
     assert [r["actual_result"] for r in rows] == ["차단된다", "차단되지 않음", "기대 결과와 다르게 동작함", "미실행"]
     assert rows[0]["test_steps"] == "1. 요청" and rows[0]["expected_results"] == "차단된다"
@@ -2679,3 +2675,17 @@ def test_every_case_has_a_description():
                if not (descriptions.get(c["case_id"], {}).get("test_steps")
                        and descriptions.get(c["case_id"], {}).get("expected_results"))]
     assert not missing, f"add these to tests/case_descriptions.yaml: {missing}"
+
+
+def test_result_book_takes_only_this_runs_cases(tmp_path):
+    """결과 CSV의 상태는 그 실행의 케이스 결과뿐이다. 다른 실행의 결과는 섞이지 않는다."""
+    from bat.report import result_book
+
+    for run_id, case_id, status in [("20261023-090000-aaaaaa", "BAT-BAS-001", "PASS"),
+                                    ("20261023-100000-bbbbbb", "BAT-SWG-001", "FAIL")]:
+        case_dir = tmp_path / "2026-10-23" / run_id / case_id
+        case_dir.mkdir(parents=True)
+        (case_dir / "result.json").write_text(
+            json.dumps({"case_id": case_id, "status": status, "started_at": "2026-10-23T10:00:00"}),
+            encoding="utf-8")
+    assert result_book.run_statuses("20261023-100000-bbbbbb", tmp_path) == {"BAT-SWG-001": "FAIL"}

@@ -92,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument(
         "action", choices=["sync", "rebuild", "show", "result"],
         help="sync: add new cases; rebuild: refill every stage's columns from saved run "
-        "reports; show: print one case; result: write today's result workbook for --profile",
+        "reports; show: print one case; result: rewrite the result CSV of --profile's latest run",
     )
     status.add_argument("case_id", nargs="?", default="", help="for show")
     status.add_argument("--profile", default=os.getenv("BAT_PROFILE", "qa"), help="for result")
@@ -984,11 +984,13 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"stage columns refilled from saved runs: {status_book.rebuild_stage_columns()}")
         return 0
     if args.action == "result":
-        from datetime import datetime
-
         from bat.report import result_book
 
-        print(result_book.write_for_run(args.profile, datetime.now().strftime("%Y%m%d")))
+        run_id = result_book.latest_run_id(args.profile)
+        if not run_id:
+            print(f"No saved run for {args.profile}")
+            return 1
+        print(result_book.write_for_run(args.profile, run_id))
         return 0
     row = next((r for r in status_book.read_rows(path) if r["case_id"] == args.case_id), None)
     print(row or f"{args.case_id} not in {path.name}")

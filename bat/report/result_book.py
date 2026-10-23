@@ -1,7 +1,7 @@
-"""실행별 결과 CSV: reports/result/<YYYYMMDD>-<stage>-bat-test-result.csv.
+"""실행별 결과 CSV: reports/result/<YYYYMMDD>-<HHMM>-<stage>-bat-test-result.csv.
 
-케이스마다 한 행이고, 그 실행 스테이지의 최신 상태를 담는다. 설명 열은
-tests/case_descriptions.yaml에서 가져온다.
+실행 하나에 파일 하나다. 케이스마다 한 행이고, 그 실행에서 돈 케이스는 그 결과를,
+돌지 않은 케이스는 미실행을 담는다. 설명 열은 tests/case_descriptions.yaml에서 가져온다.
 """
 from __future__ import annotations
 
@@ -46,8 +46,39 @@ def load_descriptions(path: Path = DESCRIPTIONS) -> dict[str, dict[str, str]]:
 
 
 def result_path(stage: str, run_id: str, directory: Path = RESULT_DIR) -> Path:
-    """<YYYYMMDD>-<stage>-bat-test-result.csv. 날짜는 실행 id에서 딴다."""
-    return directory / f"{run_id[:8]}-{stage}-bat-test-result.csv"
+    """<YYYYMMDD>-<HHMM>-<stage>-bat-test-result.csv. 날짜와 시각은 실행 id(YYYYMMDD-HHMMSS-…)에서 딴다."""
+    return directory / f"{run_id[:8]}-{run_id[9:13]}-{stage}-bat-test-result.csv"
+
+
+def run_statuses(run_id: str, directory: Path = REPORTS_DIR) -> dict[str, str]:
+    """{case_id: status} — 그 실행에서 돈 케이스만. 번호가 바뀐 케이스는 지금 번호로 맞춘다."""
+    from bat.report.collector import load_cases
+
+    statuses: dict[str, str] = {}
+    for run_dir in directory.glob(f"*/{run_id}"):
+        for case in load_cases(run_dir):
+            case_id = status_book.current_id(case["case_id"], str(case.get("started_at") or ""))
+            if case_id:
+                statuses[case_id] = str(case.get("status") or "")
+    return statuses
+
+
+def latest_run_id(profile: str, directory: Path = REPORTS_DIR) -> str | None:
+    """그 스테이지에서 가장 최근에 시작한 실행의 id."""
+    import json
+
+    stage = status_book.stage_of(profile)
+    best: tuple[str, str] | None = None
+    for path in directory.glob("*/*/run-report.json"):
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if status_book.stage_of(str(report.get("profile") or "")) != stage:
+            continue
+        key = (str(report.get("started_at") or ""), str(report.get("run_id") or path.parent.name))
+        best = key if best is None or key > best else best
+    return best[1] if best else None
 
 
 def actual_result(status: str, description: dict[str, str]) -> str:
@@ -60,13 +91,12 @@ def actual_result(status: str, description: dict[str, str]) -> str:
     return DEFAULT_ACTUAL.get(status, status)
 
 
-def build_rows(stage: str, tracker_rows: list[dict[str, Any]], cases: list[dict[str, str]],
+def build_rows(statuses: dict[str, str], cases: list[dict[str, str]],
                descriptions: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
-    """상태는 현황표의 그 스테이지 열에서, 설명은 descriptions에서 가져온다."""
-    by_id = {r["case_id"]: r for r in tracker_rows}
+    """상태는 statuses(이번 실행)에서, 없으면 미실행. 설명은 descriptions에서 가져온다."""
     rows = []
     for case in sorted(cases, key=lambda c: c["case_id"]):
-        status = str(by_id.get(case["case_id"], {}).get(status_book.status_key(stage)) or status_book.NOT_RUN)
+        status = statuses.get(case["case_id"]) or status_book.NOT_RUN
         description = descriptions.get(case["case_id"], {})
         rows.append({
             "product": case["product"],
@@ -102,9 +132,8 @@ def write(rows: list[dict[str, Any]], path: Path) -> Path:
 
 def write_for_run(profile: str, run_id: str, directory: Path = REPORTS_DIR,
                   tests_dir: Path = status_book.TESTS_DIR) -> Path:
-    """`run_id` 스테이지의 결과 CSV. 상태는 현황표에서, 설명은 case_descriptions.yaml에서 가져온다."""
+    """실행 하나의 결과 CSV. 돈 케이스는 그 결과, 나머지는 미실행이다."""
     stage = status_book.stage_of(profile)
-    tracker_rows, _ = status_book.read_book(status_book.book_path(directory))
-    rows = build_rows(stage, tracker_rows, status_book.catalog(tests_dir),
+    rows = build_rows(run_statuses(run_id, directory), status_book.catalog(tests_dir),
                       load_descriptions(tests_dir / DESCRIPTIONS.name))
     return write(rows, result_path(stage, run_id, directory / "result"))

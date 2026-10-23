@@ -143,14 +143,14 @@ Signature Management 차단 목록에는 케이스 동안만 BAT 전용 항목�
 
 ## 실행 결과
 
-`bat run`이 끝날 때마다 `reports/result/<YYYYMMDD>-<스테이지>-bat-test-result.csv`를 만듭니다
-(예: `20261023-qa-bat-test-result.csv`). 같은 날 같은 스테이지를 다시 돌리면 덮어씁니다. UTF-8(BOM) CSV라
-엑셀에서 바로 열어도 한글이 깨지지 않습니다.
+`bat run`이 끝날 때마다 실행 하나에 파일 하나씩 `reports/result/<YYYYMMDD>-<HHMM>-<스테이지>-bat-test-result.csv`를
+만듭니다(예: `20261023-1430-qa-bat-test-result.csv`). 그 실행에서 돈 케이스는 결과가, 돌지 않은 케이스는 `미실행`이
+들어갑니다. UTF-8(BOM) CSV라 엑셀에서 바로 열어도 한글이 깨지지 않습니다.
 
 | 열 | 내용 |
 | --- | --- |
 | Product | 제품 |
-| Status | 그 스테이지에서 케이스의 가장 최근 결과 (PASS / FAIL / UNVERIFIED / SKIP / ERROR / 미실행) |
+| Status | 이번 실행의 결과 (PASS / FAIL / UNVERIFIED / SKIP / ERROR), 돌지 않았으면 미실행 |
 | Scenario | 케이스가 확인하는 동작 |
 | Test Steps | 진행 순서 |
 | Test Parameters | 정책 조건과 설정 값 |
