@@ -473,7 +473,8 @@ def test_a_probe_named_after_the_case_is_not_the_case_policy():
     assert not audit_log.matches_resource_name(own)(_event(content=json.dumps(probe_row)))
 
 
-RUN_CONTEXT = SimpleNamespace(run_id=RUN_ID, policy_propagation_timeout_sec=1, event_poll_timeout_sec=1)
+RUN_CONTEXT = SimpleNamespace(run_id=RUN_ID, policy_propagation_timeout_sec=1, event_poll_timeout_sec=1,
+                              profile=SimpleNamespace(connector_process="AIConnector for Client"))
 
 
 @pytest.fixture
@@ -2689,3 +2690,34 @@ def test_result_book_takes_only_this_runs_cases(tmp_path):
             json.dumps({"case_id": case_id, "status": status, "started_at": "2026-10-23T10:00:00"}),
             encoding="utf-8")
     assert result_book.run_statuses("20261023-100000-bbbbbb", tmp_path) == {"BAT-SWG-001": "FAIL"}
+
+
+def test_connector_process_comes_from_the_stage():
+    """스테이지마다 커넥터 프로세스 이름이 다를 수 있다(lguplus 계열은 U+SASE). 생략하면 AIConnector for Client."""
+    from bat.settings import _build_profile
+
+    base = {"console_url": "https://c", "graphql_url": "https://g", "rest_base_url": "https://r"}
+    assert _build_profile("qa", base).connector_process == "AIConnector for Client"
+    assert _build_profile("lguplus", {**base, "connector_process": "U+SASE"}).connector_process == "U+SASE"
+
+
+def test_dns_answer_pointing_at_a_block_page_is_blocked(monkeypatch):
+    """DNS 차단은 해석 실패와, 차단 페이지를 내주는 주소로 답한 경우 둘 다다. 실제 주소는 해석이다."""
+    from bat.traffic import http
+
+    def lookup(answer, block_ips=()):
+        def run(command, **_):
+            if command.startswith("curl"):
+                ip = command.split(":80:")[1].split()[0]
+                body = ("Your request / response has been blocked by DNS FireWall" if ip in block_ips
+                        else "Your request / response has been blocked by a web security policy")
+                return SimpleNamespace(stdout=body, stderr="")
+            stdout = f"Server:  UnKnown\nAddress:  127.0.2.1\n\nName:    httpbin.org\nAddresses:  {answer}\n"
+            return SimpleNamespace(stdout=stdout, stderr="")
+        return http.dns_lookup(SimpleNamespace(run=run), "httpbin.org")
+
+    monkeypatch.setattr(http, "_BLOCK_PAGE_IPS", {})
+    blocked = lookup("211.234.121.17\n\t  211.234.121.18", block_ips={"211.234.121.17", "211.234.121.18"})
+    assert blocked.blocked and not blocked.delivered
+    resolved = lookup("54.174.189.226\n\t  35.170.125.171")
+    assert resolved.delivered and not resolved.blocked

@@ -17,7 +17,8 @@ from bat.settings import Endpoint
 
 log = logging.getLogger(__name__)
 
-# 커넥터는 "AIConnector for Client" 프로세스다(AIZtnaSvc 서비스는 커넥터가 아니다).
+# 기본 커넥터는 "AIConnector for Client" 프로세스다(AIZtnaSvc 서비스는 커넥터가 아니다).
+# 스테이지마다 다를 수 있어 environments.yaml의 connector_process로 바꾼다(lguplus 계열은 U+SASE).
 # 프로세스가 떠 있다고 워크스페이스에 로그인돼 있다는 뜻은 아니다. 그건 bat run의 preflight가 본다.
 CONNECTOR_PROCESS = "AIConnector for Client"
 # EDR 에이전트 서비스다.
@@ -166,12 +167,12 @@ def process_state(executor: Executor, process: str) -> str:
     return result.stdout.strip() or "NotRunning"
 
 
-def connector_state(executor: Executor) -> str:
-    return process_state(executor, CONNECTOR_PROCESS)
+def connector_state(executor: Executor, process: str = CONNECTOR_PROCESS) -> str:
+    return process_state(executor, process)
 
 
-def connector_running(executor: Executor) -> bool:
-    return connector_state(executor).lower() == "running"
+def connector_running(executor: Executor, process: str = CONNECTOR_PROCESS) -> bool:
+    return connector_state(executor, process).lower() == "running"
 
 
 def edr_agent_running(executor: Executor) -> bool:

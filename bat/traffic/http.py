@@ -144,12 +144,27 @@ def find_live_proxies(
 
 
 _DNS_ANSWER_RE = re.compile(r"address(?:es)?:\s*[0-9a-f]")
+# DNS Firewall 차단 페이지의 문구(lguplus에서 확인). 웹 정책 차단 페이지("blocked by a web security
+# policy")와 구분해야, 웹 정책이 막은 호스트를 DNS 차단으로 잘못 보지 않는다.
+DNS_BLOCK_PAGE_TEXT = "blocked by DNS FireWall"
+# {ip: 차단 페이지인가} — 같은 실행 안에서 한 주소는 한 번만 확인한다.
+_BLOCK_PAGE_IPS: dict[str, bool] = {}
+
+
+def _serves_block_page(executor: Executor, domain: str, ip: str) -> bool:
+    """`ip`가 `domain` 대신 차단 페이지를 내주는 주소인가(DNS Firewall이 차단 페이지 주소로 답하는 망)."""
+    if ip not in _BLOCK_PAGE_IPS:
+        result = executor.run(f'curl -s -m 5 --resolve {domain}:80:{ip} "http://{domain}/"', timeout_sec=15)
+        _BLOCK_PAGE_IPS[ip] = DNS_BLOCK_PAGE_TEXT.lower() in f"{result.stdout}".lower()
+        log.info("%s for %s %s the block page", ip, domain, "is" if _BLOCK_PAGE_IPS[ip] else "is not")
+    return _BLOCK_PAGE_IPS[ip]
 
 
 def dns_lookup(executor: Executor, domain: str, timeout_sec: int = 20) -> TrafficResult:
     """DNS Firewall 케이스를 위해 단말에서 이름을 조회한다.
 
-    `blocked`는 거부된 응답이다. `delivered`는 응답 섹션(마지막 "Name:" 줄 뒤.
+    `blocked`는 차단이다: 해석이 거부됐거나, 돌아온 주소가 차단 페이지를 내주는 주소다
+    (lguplus의 U+SASE는 해석을 실패시키지 않고 차단 페이지 주소로 답한다). `delivered`는 응답 섹션(마지막 "Name:" 줄 뒤.
     nslookup은 그 앞에 자신이 쓰는 리졸버 주소를 출력한다)에 주소가 있어야 참이다.
     타임아웃은 둘 다 아니다.
     """
@@ -160,6 +175,9 @@ def dns_lookup(executor: Executor, domain: str, timeout_sec: int = 20) -> Traffi
         for marker in ("non-existent domain", "can't find", "server failed", "no answer")
     )
     answer = output.rsplit("name:", 1)[-1] if "name:" in output else ""
+    addresses = sorted(set(_IPV4_RE.findall(answer)))
+    if not failed and addresses and _serves_block_page(executor, domain, addresses[0]):
+        failed = True  # 차단 페이지 주소로 바꿔 답한 것
     resolved = not failed and bool(_DNS_ANSWER_RE.search(answer))
     log.info("nslookup %s -> refused=%s resolved=%s", domain, failed, resolved)
     return TrafficResult(

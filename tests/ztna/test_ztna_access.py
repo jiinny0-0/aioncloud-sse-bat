@@ -10,7 +10,7 @@ import re
 
 import pytest
 
-from bat.endpoint.base import CONNECTOR_PROCESS, connector_running, connector_state
+from bat.endpoint.base import connector_running, connector_state
 from bat.events.auth_log import AuthLogReader
 from bat.fixtures.graphql_policies import AccessPolicyFactory
 from bat.fixtures.naming import resource_name
@@ -103,16 +103,17 @@ def test_connector_session_is_recorded(case, run_context, lane, auth_log: AuthLo
     이 단말 device_id의 로그인 또는 터널 연결 행이 있어야 PASS다. 그런 행이 없으면
     원인을 가릴 수 없어 UNVERIFIED다.
     """
-    state = connector_state(executor)
+    process = run_context.profile.connector_process
+    state = connector_state(executor, process)
     case.record(
         Step.ACTION,
         ok=state.lower() == "running",
-        detail=f"{CONNECTOR_PROCESS} is {state}",
+        detail=f"{process} is {state}",
         expected="Running",
         actual=state,
     )
-    assert connector_running(executor), (
-        f"The connector process {CONNECTOR_PROCESS} is {state}. Without it, no "
+    assert connector_running(executor, process), (
+        f"The connector process {process} is {state}. Without it, no "
         f"traffic reaches SSE and every other case is meaningless."
     )
 
@@ -359,7 +360,8 @@ def test_identity_chain_round_trip_leaves_the_session_healthy(
     access policy rule은 커넥터 세션 자체를 스코프하므로, country를 AQ로 좁혀도
     실제 사용자 id를 쓴 정책이 세션에 영향을 주지 않았는지 마지막에 확인한다.
     """
-    state_before = connector_state(executor)
+    process = run_context.profile.connector_process
+    state_before = connector_state(executor, process)
     events_before = auth_log.events(lookback_min=24 * 60)
     if not events_before:
         pytest.skip("No authentication events, so no real user id is available to target")
@@ -393,11 +395,11 @@ def test_identity_chain_round_trip_leaves_the_session_healthy(
 
         # 이 시점에는 정책이 지워졌다. 이 테스트가 user id를 얻어 온 세션이 여전히
         # 이전과 똑같이 정상인지 확인한다.
-        state_after = connector_state(executor)
+        state_after = connector_state(executor, process)
         events_after = auth_log.events(lookback_min=24 * 60)
         healthy = (
             state_after.lower() == "running"
-            and connector_running(executor)
+            and connector_running(executor, process)
             and bool(events_after)
         )
         case.record(

@@ -10,6 +10,8 @@ environments:
     rest_base_url: "https://example.aioncloud.com:3443"
     block_page_marker: "Your request / response has"   # 차단 페이지를 알아보는 문구
     verify_tls: false
+    # 단말의 커넥터 프로세스 이름. 생략하면 "AIConnector for Client". LG U+ 망은 "U+SASE".
+    connector_process: "AIConnector for Client"
 
     # 이 스테이지의 자격증명 파일. 생략하면 .env.<스테이지 이름>을 쓰고,
     # 거기 없는 값은 공용 .env에서 읽습니다.

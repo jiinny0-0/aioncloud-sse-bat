@@ -85,6 +85,8 @@ class Profile:
     rest_base_url: str
     block_page_marker: str
     verify_tls: bool = False
+    # 이 스테이지 단말에서 도는 커넥터 프로세스 이름(lguplus 계열은 U+SASE).
+    connector_process: str = "AIConnector for Client"
 
     @property
     def console_origin(self) -> str:
@@ -200,6 +202,7 @@ def _build_profile(name: str, item: dict) -> Profile:
         rest_base_url=item["rest_base_url"],
         block_page_marker=item.get("block_page_marker", "Your request / response has"),
         verify_tls=bool(item.get("verify_tls", False)),
+        connector_process=str(item.get("connector_process") or "AIConnector for Client"),
     )
 
 

@@ -167,7 +167,10 @@ def test_application_firewall_block_survives_a_web_allow(
 def test_removing_one_layer_leaves_the_other_enforcing(
     case, run_context, dns_firewall, application_firewall, executor
 ):
-    """두 계층이 같이 막고 있을 때 한쪽을 지워도 다른 쪽 차단은 그대로다."""
+    """두 계층이 같이 막고 있을 때 한쪽을 지워도 다른 쪽 차단은 그대로다.
+
+    DNS 차단은 망에 따라 해석 실패(연결 불가) 또는 차단 페이지(403)로 나타난다(lguplus는 후자).
+    """
     await_baseline(executor, run_context.policy_propagation_timeout_sec)
     dns_name = resource_name(case.case_id, run_context.run_id, "dns")
     fw_name = resource_name(case.case_id, run_context.run_id, "fw")
@@ -189,13 +192,15 @@ def test_removing_one_layer_leaves_the_other_enforcing(
                 stacked = curl_until_unreachable(
                     executor, SECOND_URL, run_context.policy_propagation_timeout_sec
                 )
-                assert not stacked.status_code, (
+                assert not stacked.status_code or stacked.blocked, (
                     "Neither layer took effect, so removing one would prove nothing"
                 )
 
-            # 여기서는 DNS Firewall 정책이 지워졌고, 네트워크 계층 정책은 남아 있다.
+            # 여기서는 DNS Firewall 정책이 지워졌고, 네트워크 계층 정책은 남아 있다. 단말 DNS
+            # 캐시에 차단 페이지 주소가 남아 있을 수 있어, 실제 목적지 IP로 붙여 확인한다.
             remaining = curl_until_unreachable(
-                executor, SECOND_URL, run_context.policy_propagation_timeout_sec
+                executor, SECOND_URL, run_context.policy_propagation_timeout_sec,
+                pin_ip=destination_ip,
             )
             case.record(
                 Step.USER_RESULT,
