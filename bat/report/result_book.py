@@ -16,6 +16,7 @@ RESULT_DIR = REPORTS_DIR / "result"
 DESCRIPTIONS = status_book.TESTS_DIR / "case_descriptions.yaml"
 DESCRIPTION_FIELDS = ("test_steps", "test_parameters", "test_data", "expected_results")
 COLUMNS = [
+    ("case_id", "Case ID"),
     ("product", "Product"),
     ("status", "Status"),
     ("scenario", "Scenario"),
@@ -99,6 +100,7 @@ def build_rows(statuses: dict[str, str], cases: list[dict[str, str]],
         status = statuses.get(case["case_id"]) or status_book.NOT_RUN
         description = descriptions.get(case["case_id"], {})
         rows.append({
+            "case_id": case["case_id"],
             "product": case["product"],
             "status": status,
             "scenario": case["scenario"],

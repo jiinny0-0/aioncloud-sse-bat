@@ -32,7 +32,7 @@ BAT-BAS-002:
 BAT-BAS-003:
   test_steps: |-
     1. web_log.security_events(lookback_min=1440)으로 최근 24시간 보안 이벤트 조회
-    2. 이벤트가 0건이면 테스트를 skip 처리(트래픽 부재로 스키마 검증 불가)
+    2. 이벤트가 0건이면 실행 조건 미비로 ERROR 처리(트래픽 부재로 스키마 검증 불가)
     3. 가장 최신 이벤트(raw)에서 필수 필드(id, time, policy_name, action) 존재 여부 확인
     4. 누락 필드가 없는지 검증
   test_parameters: |-
@@ -66,7 +66,7 @@ BAT-BAS-005:
   expected_results: 이전 실행에서 생성된 BAT 명명 규칙(BAT-<PRODUCT>-<NNN>-<run_id>)의 웹 정책이 하나도 남아있지 않아야 한다.
 BAT-BAS-006:
   test_steps: |-
-    1. 커넥터 프로세스(AIConnector for Client) 확인 — 실행 중이 아니면 SKIP
+    1. 커넥터 프로세스(AIConnector for Client) 확인 — 실행 중이 아니면 ERROR
     2. 커넥터가 켜진 상태에서 관리 API로 두 가지 쓰기 요청 전송: POST /sia/v1/web/policy(테스트용 정책), POST /sia/v1/user(테스트용 사용자)
     3. 각 요청이 SSE 차단 페이지로 가로채였는지(SelfBlockedError) 아니면 API에 정상 도달했는지 기록
     4. 생성된 정책이 있으면 즉시 삭제
@@ -177,7 +177,7 @@ BAT-DLP-001:
   expected_results: 토큰이 포함된 업로드가 차단되고(차단 상태) 보안로그에 이벤트가 남는다
 BAT-DLP-002:
   test_steps: |-
-    1. /sia/v1/dlp/policy/predefined을 조회해 내장 탐지 룰 목록에서 코드/표시명에 'visa' 또는 'card'가 포함된 카드번호 탐지기를 찾는다(없으면 skip).
+    1. /sia/v1/dlp/policy/predefined을 조회해 내장 탐지 룰 목록에서 코드/표시명에 'visa' 또는 'card'가 포함된 카드번호 탐지기를 찾는다(없으면 ERROR).
     2. 해당 코드로 DLP 정책을 생성한다(PREDEFINED 룰, content 없이 name에 코드만 지정).
     3. 이 DLP 정책을 참조하는 DLP_POLICY rule을 가진 웹 정책을 BLOCK/MAJOR로 생성한다.
     4. 합성 Visa 테스트 카드번호(4111-1111-1111-1111)를 POST 본문(card=...)에 담아 httpbin.org/post로 전송하고, 차단될 때까지 재시도한다.
@@ -476,7 +476,7 @@ BAT-FW-013:
   expected_results: 4개 필드(user_id, user_name, src_ip, src_country_code) 전부 채워져 있어야 사고 조사가 가능하다
 BAT-GAI-001:
   test_steps: |-
-    1. GenAI 서비스 카탈로그(SIA.common.genai_app)에서 이름에 "chatgpt"가 포함된 앱을 조회한다(없으면 테스트 skip)
+    1. GenAI 서비스 카탈로그(SIA.common.genai_app)에서 이름에 "chatgpt"가 포함된 앱을 조회한다(없으면 ERROR)
     2. BAT 네이밍 규칙(resource_name)으로 정책 이름을 생성한다
     3. subject GENAI_REQUEST_KEYWORD, condition IN, value ["password"], id 1인 룰을 만든다
     4. 조회된 앱을 대상으로 action_type=LOGGING, risk_level=Minor, blockpage_id=0, 위 룰로 GenAI 정책을 생성한다(genai_policies.temporary 컨텍스트)
@@ -572,7 +572,7 @@ BAT-SWG-005:
 BAT-SWG-006:
   test_steps: |-
     1. 공개 프록시 후보 리스트(PUBLIC_PROXY_LIST_URL)에서 살아있는 프록시를 최대 10개까지 탐색(plain http로 프록시 경유 가능 여부 확인)
-    2. 하나도 못 찾으면 SKIP
+    2. 하나도 못 찾으면 UNVERIFIED
     3. BLOCK_PUBLIC_PROXY 시그니처 모듈 정책 생성
     4. 각 살아있는 프록시를 순서대로 통해 대상 호스트에 접속 시도, 하나라도 차단되면 성공 처리
     5. 보안로그 확인, 정책 삭제
@@ -792,7 +792,7 @@ BAT-SWG-023:
     4. 정책 삭제
   test_parameters: 'Subject: HTTP_HOST, condition: IS, value: [httpbin.org], action: BLOCK'
   test_data: https://HTTPBIN.ORG/get
-  expected_results: 대문자 Host로 보낸 요청도 차단된다(curl이 통과하고 브라우저만 막히면 UNVERIFIED)
+  expected_results: 대문자 Host로 보낸 요청도 차단된다(curl이 통과하고 브라우저만 막히면 SKIP)
   actual_result: 대문자 Host(HTTPBIN.ORG)로 보낸 curl 요청은 통과했지만 브라우저 요청은 차단됨(호스트를 정규화하지 않는 클라이언트만 비켜 감)
 BAT-X-001:
   test_steps: |-
@@ -906,7 +906,7 @@ BAT-X-009:
   expected_results: GenAI 프롬프트/페이지 차단이 이 환경에서 동작하지 않더라도, chatgpt.com을 막는 웹정책만으로 실제 페이지 로딩이 차단 페이지로 끝나고 웹 보안 로그에 해당 호스트를 대상으로 한 이벤트가 남아야 한다.
 BAT-X-010:
   test_steps: |-
-    1. GenAI 대상 앱(chatgpt)이 카탈로그에 있는지 확인한다(없으면 skip).
+    1. GenAI 대상 앱(chatgpt)이 카탈로그에 있는지 확인한다(없으면 ERROR).
     2. (평범한 하루) ALLOW_TARGET_URL(https://www.iana.org/)을 브라우저로 방문해 아무것도 막혀 있지 않음을 확인한다.
     3. (민감정보 업로드) 'bat-token' 키워드 룰의 DLP 정책과, 이를 참조하는 DLP_POLICY 웹 BLOCK 정책(risk_level=MAJOR)을 생성한다.
     4. 토큰이 포함된 POST 페이로드로 POST_TARGET_URL(https://httpbin.org/post)에 curl 요청을 보내 차단되는지 확인한다.
@@ -968,8 +968,8 @@ BAT-ZTNA-002:
   expected_results: 접근 정책이 생성 직후 list() 조회에 나타나고, 삭제 후에는 더 이상 조회되지 않아야 한다.
 BAT-ZTNA-003:
   test_steps: |-
-    1. AuthLogReader로 최근 24시간 인증 이벤트를 조회한다. 이벤트가 없으면 skip한다.
-    2. 최신 이벤트의 user_id를 추출하고, 비어 있으면 login_id로 사용자 목록을 역질의(_resolve_user_id)해 숫자 id를 구한다. 그래도 없으면 skip한다.
+    1. AuthLogReader로 최근 24시간 인증 이벤트를 조회한다. 이벤트가 없으면 ERROR로 끝낸다.
+    2. 최신 이벤트의 user_id를 추출하고, 비어 있으면 login_id로 사용자 목록을 역질의(_resolve_user_id)해 숫자 id를 구한다. 그래도 없으면 ERROR로 끝낸다.
     3. resource_name(case_id, run_id)으로 정책 이름을 생성한다.
     4. AccessPolicyFactory.rule(user_ids=[user_id], countries=["AQ"])로 rule을 만든다.
     5. access_policies.temporary()로 action_type=BLOCK인 접근 정책을 생성한다.
@@ -994,7 +994,7 @@ BAT-ZTNA-004:
   expected_results: tunnel과 gateway 목록이 둘 다 list 타입으로 정상 조회되어야 한다(내용이 비어 있어도 무방).
 BAT-ZTNA-005:
   test_steps: |-
-    1. 인증 로그(auth_log)에서 최근 24시간 이벤트 조회해 실사용자 login_id/user_id 확보 (없으면 SKIP)
+    1. 인증 로그(auth_log)에서 최근 24시간 이벤트 조회해 실사용자 login_id/user_id 확보 (없으면 ERROR)
     2. login_id로 user_id를 못 얻으면 역질의로 보강
     3. 그 user_id + country=AQ(안전값)로 ZTNA access policy(BLOCK) 생성
     4. 읽어서 action_type이 BLOCK으로 저장됐는지 확인

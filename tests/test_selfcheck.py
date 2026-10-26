@@ -1033,7 +1033,7 @@ class _FakeHostCaseTenant:
         return TrafficResult(url=landed, status_code=200, blocked=False, via="browser", delivered=True)
 
 
-@pytest.mark.parametrize("case_sensitive, expected", [(True, Status.UNVERIFIED), (False, Status.PASS)])
+@pytest.mark.parametrize("case_sensitive, expected", [(True, Status.SKIP), (False, Status.PASS)])
 def test_swg_023_judges_the_uppercase_host_curl_sends_not_the_browser(instant_polling, case_sensitive, expected):
     """BAT-SWG-023: curl이 차단되면 PASS, curl은 통과했지만 (소문자로 바꾸는) 브라우저가 차단되면 UNVERIFIED다."""
     tenant = _FakeHostCaseTenant(case_sensitive=case_sensitive)
@@ -2288,15 +2288,15 @@ def test_the_catalog_reads_every_case_in_tests():
 
 
 def test_parked_products_stay_out_of_the_default_run_and_the_tracker(tmp_path):
-    """보류(parked)된 EDR·RBI 케이스는 기본 실행에서 돌지 않고, 현황에 오르지 않으며, 다음 sync에서 지워진다."""
+    """보류(parked)된 EDR·RBI·GenAI 케이스는 기본 실행에서 돌지 않고, 현황에 오르지 않으며, 다음 sync에서 지워진다."""
     from bat import cli
     from bat.report import status_book
 
     assert "not parked" in cli.DEFAULT_MARKERS
     parked = status_book.parked_ids()
     assert {i for i in parked if i.startswith("BAT-EDR-")} == {f"BAT-EDR-00{n}" for n in range(1, 6)}
-    assert {"BAT-RBI-001", "BAT-RBI-002", "BAT-X-004"} <= parked, "X-004 lives in the RBI file"
-    assert not any(i.startswith(("BAT-EDR-", "BAT-RBI-")) for i in {e["case_id"] for e in status_book.catalog()})
+    assert {"BAT-RBI-001", "BAT-RBI-002", "BAT-X-004", "BAT-GAI-001"} <= parked, "X-004 lives in the RBI file"
+    assert not any(i.startswith(("BAT-EDR-", "BAT-RBI-", "BAT-GAI-")) for i in {e["case_id"] for e in status_book.catalog()})
 
     tests_dir, reports_dir = _tracker(tmp_path)
     _write_cases(tests_dir, ("BAT-SWG-001", ""))
@@ -2638,7 +2638,7 @@ def test_signature_entry_keeps_the_admins_entries():
 
 
 def test_result_book_has_only_the_published_columns(tmp_path):
-    """결과 CSV: 실행마다 날짜·시각이 붙은 파일, 8개 열, 한국어 결과, 이번 실행에 없는 케이스는 미실행."""
+    """결과 CSV: 실행마다 날짜·시각이 붙은 파일, 9개 열, 한국어 결과, 이번 실행에 없는 케이스는 미실행."""
     import codecs
     import csv
 
@@ -2661,10 +2661,30 @@ def test_result_book_has_only_the_published_columns(tmp_path):
     with path.open(encoding="utf-8-sig", newline="") as f:
         table = list(csv.reader(f))
     assert table[0] == [
-        "Product", "Status", "Scenario", "Test Steps", "Test Parameters", "Test Data",
+        "Case ID", "Product", "Status", "Scenario", "Test Steps", "Test Parameters", "Test Data",
         "Expected Results", "Actual Result",
     ]
-    assert table[1][3] == "1. 요청" and len(table) == 5
+    assert table[1][0] == "BAT-SWG-001" and table[1][4] == "1. 요청" and len(table) == 5
+
+
+def test_skip_is_only_for_user_accepted_results():
+    """SKIP은 사용자가 버그로 보지 않기로 한 결과(known_issue, accepted_issue)에만 쓴다.
+
+    실행 조건 미비는 environment_error(ERROR), 확인 불가는 unverified(UNVERIFIED)다.
+    보류(parked) 제품 파일은 검사하지 않는다.
+    """
+    from bat.report import status_book
+
+    parked_dirs = {"edr", "rbi"}
+    offenders = []
+    for path in sorted(TESTS_DIR.rglob("*.py")):
+        if path.name in ("support.py", "test_selfcheck.py") or path.parent.name in parked_dirs:
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if "pytest.skip(" in line:
+                offenders.append(f"{path.relative_to(TESTS_DIR)}:{number}")
+    assert not offenders, offenders
+    assert {"BAT-GAI-001", "BAT-X-010"} <= status_book.parked_ids()
 
 
 def test_every_case_has_a_description():

@@ -27,6 +27,7 @@ from tests.support import (
     cleanup_failed,
     curl_until_blocked,
     curl_until_delivered,
+    environment_error,
     expect_delivered,
     pass_case,
     record_identity,
@@ -325,7 +326,7 @@ def test_predefined_rule_detects_card_number(
     )
     if not card:
         available = [item.get("code") for item, _ in haystacks]
-        pytest.skip(
+        environment_error(
             f"No card-number rule among the predefined detectors: {available}. "
             f"Resident-registration detection is deliberately not exercised here."
         )

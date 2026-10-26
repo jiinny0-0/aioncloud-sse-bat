@@ -42,15 +42,17 @@ from bat.traffic.http import (
     write_temp_file,
 )
 from tests.support import (
-    module_scope_or_stop,
     await_security_event,
     cleanup_failed,
     curl_until_blocked,
     describe,
+    environment_error,
     expect_allowed,
     expect_block,
     expect_delivered,
+    module_scope_or_stop,
     pass_case,
+    unverified,
     visit_until_blocked,
 )
 
@@ -89,7 +91,7 @@ def _discover_traffic_identity(
                 description="probe event carrying this traffic's identity",
             )
         except PollTimeout as timeout:
-            pytest.skip(f"Could not observe this runner's own traffic: {timeout}")
+            environment_error(f"Could not observe this runner's own traffic: {timeout}")
 
     identity = {
         # src_ip 끝에 ":<port>"가 붙을 수 있다. 포트가 붙은 CIDR은 거부된다.
@@ -99,7 +101,7 @@ def _discover_traffic_identity(
     }
     missing = [k for k, v in identity.items() if not v]
     if missing:
-        pytest.skip(
+        environment_error(
             f"The security event carries no {missing}, so this condition cannot be targeted"
         )
     return identity
@@ -659,7 +661,9 @@ def test_anti_virus_signature_blocks_eicar(
                     initial_interval=2.0,
                 )
             except PollTimeout as timeout:
-                pytest.skip(
+                unverified(
+                    case,
+                    Step.USER_RESULT,
                     f"EICAR upload was not recognised by ANTI_VIRUS this time: {timeout} "
                     f"— content delivery was independently confirmed intact (httpbin echo), "
                     f"so this depends on the product's own engine, not a transport problem"

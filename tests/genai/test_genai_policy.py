@@ -11,12 +11,14 @@ from bat.fixtures.graphql_policies import GenAIPolicyFactory
 from bat.fixtures.naming import resource_name
 from bat.fixtures.policies import CleanupWarning
 from bat.models import Step
-from tests.support import cleanup_failed, pass_case
+from tests.support import cleanup_failed, environment_error, pass_case
 
 pytestmark = [
     pytest.mark.product("genai"),
     pytest.mark.lane("d"),
     pytest.mark.xdist_group("lane-d"),
+    # 보류: 기본 실행과 현황 엑셀에서 빠진다.
+    pytest.mark.parked,
 ]
 
 TARGET_APP = "chatgpt"
@@ -31,7 +33,7 @@ def _resolve_app(genai_policies: GenAIPolicyFactory) -> dict:
     app = genai_policies.find_app(TARGET_APP)
     if not app:
         available = [str(item.get("name")) for item in genai_policies.apps()]
-        pytest.skip(
+        environment_error(
             f"No GenAI service matching {TARGET_APP!r} in this tenant. "
             f"Available: {available}"
         )

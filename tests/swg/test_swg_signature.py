@@ -14,13 +14,14 @@ from bat.fixtures.testdata import BLOCK_TARGET_HOST, BLOCK_TARGET_URL, PUBLIC_PR
 from bat.models import Step
 from bat.traffic.http import find_live_proxies
 from tests.support import (
-    module_scope_or_stop,
     await_security_event,
     cleanup_failed,
     curl_until_blocked,
     expect_allowed,
+    module_scope_or_stop,
     pass_case,
     record_identity,
+    unverified,
     visit_until_allowed,
     visit_until_blocked,
 )
@@ -50,7 +51,9 @@ def test_public_proxy_signature_blocks(case, run_context, web_policies, executor
         executor, proxy_probe_url, list_url=PUBLIC_PROXY_LIST_URL, max_found=10
     )
     if not live_proxies:
-        pytest.skip(
+        unverified(
+            case,
+            Step.ACTION,
             f"No live proxy found among candidates from {PUBLIC_PROXY_LIST_URL} "
             f"(list unreachable, or none of the tried candidates answered — "
             f"free public proxies are inherently short-lived)"
@@ -88,7 +91,9 @@ def test_public_proxy_signature_blocks(case, run_context, web_policies, executor
                 actual=blocked_via or f"tried {live_proxies}",
             )
             if not blocked_via:
-                pytest.skip(
+                unverified(
+                    case,
+                    Step.USER_RESULT,
                     f"None of {len(live_proxies)} live, traffic-relaying proxies "
                     f"({live_proxies}) were recognised by the public-proxy signature "
                     f"this time — that depends on overlap with the product's own "

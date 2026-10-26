@@ -27,7 +27,7 @@ PRODUCT_DIRS = {
     "basic": "tests/basic",
 }
 
-# EDR과 RBI는 보류(parked)다. `--tag parked`로는 여전히 돌릴 수 있다.
+# EDR, RBI, GenAI는 보류(parked)다. `--tag parked`로는 여전히 돌릴 수 있다.
 DEFAULT_MARKERS = "not manual and not crud and not parked"
 
 # 케이스당 초. qa 직렬 실행에서 잰 값이다(5초 단위로 올림).

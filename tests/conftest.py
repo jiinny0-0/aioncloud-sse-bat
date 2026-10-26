@@ -36,7 +36,7 @@ from bat.scheduler import build_lanes, concurrency_group, lane_for_product
 from bat.settings import build_run_context, env
 from bat.traffic.browser import BrowserSession
 from bat.verdict import Raised, classify
-from tests.support import VerificationUnavailable
+from tests.support import VerificationUnavailable, environment_error
 
 log = logging.getLogger(__name__)
 
@@ -137,8 +137,8 @@ def _lane_clients(run_context) -> Iterator[dict]:
 def console(run_context, lane, _lane_clients) -> GraphQLClient:
     """콘솔 GraphQL 세션.
 
-    REST로 다룰 수 없는 제품만 이것이 필요하다. Open API 토큰만으로 도는 케이스가 여기에
-    기대면 안 되므로, 콘솔 자격증명이 없으면 실패하지 않고 skip한다.
+    REST로 다룰 수 없는 제품만 이것이 필요하다. 캐시된 세션도 콘솔 자격증명도 없으면
+    실행 조건 미비로 ERROR가 된다.
     """
     workspace = lane.workspace
     cached = _lane_clients["console"].get(lane.name)
@@ -157,7 +157,7 @@ def console(run_context, lane, _lane_clients) -> GraphQLClient:
         return client
 
     if not workspace.has_console_credentials:
-        pytest.skip(
+        environment_error(
             "No console credentials configured "
             "(BAT_CONSOLE_USER / BAT_CONSOLE_PASSWORD); GraphQL-only cases are skipped"
         )
@@ -165,7 +165,7 @@ def console(run_context, lane, _lane_clients) -> GraphQLClient:
     try:
         client.login(workspace.login_id, workspace.password)
     except SelfBlockedError as exc:
-        pytest.skip(
+        environment_error(
             f"Console sign-in was blocked by SSE: {exc}\n"
             f"Disconnect the connector, run 'bat login', then run this again — "
             f"the cached session works with the connector up."
@@ -197,7 +197,7 @@ def rest(run_context, lane, token_budget, _lane_clients, request) -> RestClient:
     log.info("REST token for %s obtained via %s", workspace.name, source)
     client = RestClient(run_context.profile, token)
     if not client.health():
-        pytest.skip("REST health probe failed; check the API base URL and token")
+        environment_error("REST health probe failed; check the API base URL and token")
     _lane_clients["rest"][lane.name] = client
     return client
 
@@ -206,21 +206,21 @@ def rest(run_context, lane, token_budget, _lane_clients, request) -> RestClient:
 def executor(lane, _lane_clients):
     """레인 단말에서의 명령 실행.
 
-    단말이 없거나 닿지 않는 것은 제품 결함이 아니라 구성 공백이므로, 이런 케이스는
-    ERROR가 아니라 설명과 함께 skip한다.
+    단말이 없거나 닿지 않는 것은 제품 결함이 아니라 구성 공백이다. 이런 케이스는 실행
+    조건 미비로 ERROR가 된다.
     """
     cached = _lane_clients["executor"].get(lane.name)
     if cached:
         return cached
 
     if not lane.needs_endpoint:
-        pytest.skip("This lane has no endpoint assigned")
+        environment_error("This lane has no endpoint assigned")
 
     endpoint = lane.endpoint
     username = env("BAT_ENDPOINT_USER")
     password = env("BAT_ENDPOINT_PASSWORD")
     if not endpoint.is_local and not (username and password):
-        pytest.skip(
+        environment_error(
             f"Endpoint {endpoint.name} is configured for WinRM but "
             f"BAT_ENDPOINT_USER / BAT_ENDPOINT_PASSWORD are not set. "
             f"Set them, or use transport: local in config/environments.yaml."
@@ -229,7 +229,7 @@ def executor(lane, _lane_clients):
     try:
         executor = build_executor(endpoint, username=username, password=password)
     except EndpointError as exc:
-        pytest.skip(f"Endpoint {endpoint.name} unavailable: {exc}")
+        environment_error(f"Endpoint {endpoint.name} unavailable: {exc}")
 
     _lane_clients["executor"][lane.name] = executor
     return executor
@@ -404,8 +404,8 @@ def pytest_runtest_makereport(item, call):
     status, reason = classify(case_result, raised, message)
     known = item.get_closest_marker("known_issue")
     if known and status is Status.FAIL:
-        # 확인 중인 제품 문제: FAIL 대신 UNVERIFIED로 기록하고, 원래 실패 이유는 그대로 남긴다.
-        status, reason = Status.UNVERIFIED, f"known issue ({known.args[0] if known.args else ''}): {reason}"
+        # 사용자가 버그로 보지 않기로 한 실패: FAIL 대신 SKIP으로 기록하고, 원래 실패 이유는 그대로 남긴다.
+        status, reason = Status.SKIP, f"known issue ({known.args[0] if known.args else ''}): {reason}"
         report.outcome = "skipped"
         report.longrepr = (str(item.path), item.location[1] or 0, reason)
     case_result.status = status

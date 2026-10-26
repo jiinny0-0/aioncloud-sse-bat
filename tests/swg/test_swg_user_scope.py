@@ -19,6 +19,7 @@ from bat.models import Kind, Step
 from tests.support import (
     await_security_event,
     cleanup_failed,
+    environment_error,
     expect_allowed,
     expect_block,
     pass_case,
@@ -98,7 +99,7 @@ def _discover_connector_user(case, run_context, web_policies, browser_session, w
                 description="probe event naming the connector user",
             )
         except PollTimeout as timeout:
-            pytest.skip(
+            environment_error(
                 f"Could not determine the connector user: {timeout}. "
                 f"Check that the connector is connected and signed into this workspace."
             )
@@ -106,7 +107,7 @@ def _discover_connector_user(case, run_context, web_policies, browser_session, w
     user_id = event.get("user_id")
     user_name = event.get("user_name")
     if user_id in (None, ""):
-        pytest.skip("The security event carries no user_id, so user scoping cannot be verified")
+        environment_error("The security event carries no user_id, so user scoping cannot be verified")
     return {"id": int(user_id), "name": user_name}
 
 
@@ -127,7 +128,7 @@ def test_policy_applies_only_to_its_users(
     # 스코프 확인에는 두 번째 신원만 있으면 되므로 기존 계정을 빌린다.
     bystander_id = _find_other_user(users, exclude=connector_user["id"])
     if bystander_id is None:
-        pytest.skip(
+        environment_error(
             "Only one user exists in this workspace, so there is no second "
             "identity to prove the policy does not reach"
         )

@@ -16,7 +16,7 @@ from bat.fixtures.graphql_policies import AccessPolicyFactory
 from bat.fixtures.naming import resource_name
 from bat.fixtures.policies import CleanupWarning
 from bat.models import Kind, Step
-from tests.support import cleanup_failed, pass_case, unverified
+from tests.support import cleanup_failed, environment_error, pass_case, unverified
 
 log = logging.getLogger(__name__)
 
@@ -285,11 +285,11 @@ def test_user_scoped_access_policy_is_accepted(
     """실제 커넥터 사용자를 대상으로 한 접근 정책이 정상 생성된다."""
     events = auth_log.events(lookback_min=24 * 60)
     if not events:
-        pytest.skip("No authentication events, so no real user id is available to target")
+        environment_error("No authentication events, so no real user id is available to target")
 
     event, user_id = _first_directory_user(access_policies, events)
     if user_id is None:
-        pytest.skip(
+        environment_error(
             "No authentication event belongs to a directory user, so a "
             "user-scoped policy cannot be targeted"
         )
@@ -364,11 +364,11 @@ def test_identity_chain_round_trip_leaves_the_session_healthy(
     state_before = connector_state(executor, process)
     events_before = auth_log.events(lookback_min=24 * 60)
     if not events_before:
-        pytest.skip("No authentication events, so no real user id is available to target")
+        environment_error("No authentication events, so no real user id is available to target")
 
     event, user_id = _first_directory_user(access_policies, events_before)
     if user_id is None:
-        pytest.skip("No authentication event belongs to a directory user")
+        environment_error("No authentication event belongs to a directory user")
     login_id = event.get("login_id") or event.get("user_name")
     case.record(
         Step.SETUP,
@@ -477,7 +477,7 @@ def test_protected_resource_is_reachable_through_the_gateway(case, console, exec
     entries = ((data.get("SIA") or {}).get("ztna") or {}).get("accessControl") or []
     https_entries = [e for e in entries if e.get("type") == "HTTPS" and e.get("application")]
     if not https_entries:
-        pytest.skip(
+        environment_error(
             "No HTTPS-type accessControl resource configured in this tenant yet "
             "— nothing to probe reachability against"
         )

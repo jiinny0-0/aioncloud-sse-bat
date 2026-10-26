@@ -27,6 +27,7 @@ from tests.support import (
     await_security_event,
     cleanup_failed,
     curl_until_blocked,
+    environment_error,
     expect_casb_block,
     expect_delivered,
     pass_case,
@@ -48,6 +49,7 @@ def genai_policies(console) -> GenAIPolicyFactory:
 
 
 @pytest.mark.case("BAT-X-010")
+@pytest.mark.parked  # GenAI 단계가 있어 GenAI와 함께 보류
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P1")
 def test_normal_workday_journey(
@@ -76,7 +78,7 @@ def test_normal_workday_journey(
 
     genai_app = genai_policies.find_app(GENAI_TARGET_APP)
     if not genai_app:
-        pytest.skip(f"No GenAI app matching {GENAI_TARGET_APP!r} in SIA.common.genai_app")
+        environment_error(f"No GenAI app matching {GENAI_TARGET_APP!r} in SIA.common.genai_app")
     try:
         # 1단계: 이 케이스가 정책을 하나도 만들기 전의 평범한 브라우징.
         baseline = browser_session.visit(ALLOW_TARGET_URL, case_id=case.case_id)

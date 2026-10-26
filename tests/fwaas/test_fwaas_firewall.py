@@ -29,6 +29,7 @@ from tests.support import (
     curl_until_unreachable,
     dns_lookup_until_allowed,
     dns_lookup_until_blocked,
+    environment_error,
     expect_delivered,
     matches_network_policy,
     pass_case,
@@ -461,11 +462,11 @@ def test_dns_firewall_applies_only_to_its_users(case, run_context, dns_firewall,
                 description="probe event naming the connector user",
             )
         except PollTimeout as timeout:
-            pytest.skip(f"Could not determine the connector user: {timeout}")
+            environment_error(f"Could not determine the connector user: {timeout}")
 
     connector_user_id = event.get("user_id")
     if connector_user_id in (None, ""):
-        pytest.skip("The dns security event carries no user_id, so user scoping cannot be verified")
+        environment_error("The dns security event carries no user_id, so user scoping cannot be verified")
     connector_user_id = int(connector_user_id)
     case.record(
         Step.SETUP, ok=True, detail=f"connector user id={connector_user_id} (from dns security log)"

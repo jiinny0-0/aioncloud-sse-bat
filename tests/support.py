@@ -44,6 +44,20 @@ class VerificationUnavailable(pytest.skip.Exception):
     """
 
 
+class EnvironmentNotReady(Exception):
+    """실행 조건(커넥터, 단말, 자격증명, 테넌트 데이터)이 갖춰지지 않았다. ERROR로 기록된다."""
+
+
+def environment_error(reason: str) -> NoReturn:
+    """중단한다: 실행 조건이 갖춰지지 않아 케이스를 돌릴 수 없다(ERROR)."""
+    raise EnvironmentNotReady(reason)
+
+
+def accepted_issue(reason: str) -> NoReturn:
+    """중단한다: 사용자가 버그로 보지 않기로 한 결과다(SKIP). known_issue 마커와 같은 표시를 쓴다."""
+    pytest.skip(f"known issue ({reason})")
+
+
 def visit_until_blocked(browser_session, url: str, case_id: str, timeout_sec: int) -> TrafficResult:
     """정책이 전파되는 동안 방문을 재시도한다.
 

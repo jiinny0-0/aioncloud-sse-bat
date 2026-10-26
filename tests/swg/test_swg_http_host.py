@@ -19,6 +19,7 @@ from bat.fixtures.testdata import ALLOW_TARGET_URL, BLOCK_TARGET_HOST, BLOCK_TAR
 from bat.events.web_log import matches_policy
 from bat.models import Kind, Step
 from tests.support import (
+    accepted_issue,
     await_security_event,
     cleanup_failed,
     describe,
@@ -27,7 +28,6 @@ from tests.support import (
     marker_of,
     pass_case,
     record_identity,
-    unverified,
     visit_until_blocked,
 )
 
@@ -389,9 +389,8 @@ def test_host_block_is_case_insensitive(case, run_context, web_policies, executo
                 f"for {uppercase_url}"
             )
             if not traffic.blocked:
-                unverified(
-                    case,
-                    Step.USER_RESULT,
+                # 사용자 지정(2026-10-26): 브라우저가 막히면 버그로 보지 않는다.
+                accepted_issue(
                     f"curl with the uppercase Host ({uppercase_url}) got HTTP {traffic.status_code}; "
                     f"the browser, which lowercases the host, was blocked — only clients that "
                     f"do not normalise the host get past HTTP_HOST",

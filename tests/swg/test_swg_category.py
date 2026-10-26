@@ -19,6 +19,7 @@ from bat.models import Step
 from tests.support import (
     await_security_event,
     cleanup_failed,
+    environment_error,
     expect_allowed,
     expect_block,
     pass_case,
@@ -58,7 +59,7 @@ def test_builtin_category_matches_traffic(
                 description="probe event carrying the target's category",
             )
         except PollTimeout as timeout:
-            pytest.skip(
+            environment_error(
                 f"Could not observe {BLOCK_TARGET_HOST} to learn its category: {timeout}"
             )
 
@@ -66,7 +67,7 @@ def test_builtin_category_matches_traffic(
         item for item in (probe_event.get("categories") or []) if isinstance(item, dict)
     ]
     if not categories:
-        pytest.skip(
+        environment_error(
             f"The event for {BLOCK_TARGET_HOST} carries no categories, so a category "
             f"policy cannot be targeted at it"
         )

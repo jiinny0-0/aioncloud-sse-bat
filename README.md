@@ -9,7 +9,7 @@ BAT(Business Acceptance Test) 자동화입니다. API 테스트(응답·CRUD)나
    → 사용자 가시 결과 → 이벤트/로그 검증 → 리소스 회수
 ```
 
-대상 제품: basic, swg, dlp, fwaas, casb, genai, ztna, cross (edr, rbi는 보류)
+대상 제품: basic, swg, dlp, fwaas, casb, ztna, cross (edr, rbi, genai와 BAT-X-010은 보류)
 
 ---
 
@@ -125,9 +125,12 @@ Lane e   ztna, edr
 단말의 curl·브라우저 요청과 보안 로그로 확인합니다. 정책 반영과 이벤트는 폴링으로 기다립니다.
 
 **판정.** 케이스는 선언한 기준(사용자 가시 결과, 이벤트)마다 통과한 확인이 있어야 PASS입니다.
-확인할 수단이 없으면 UNVERIFIED, 대상 기능이 탐지하지 않는 환경이면 SKIP입니다. 환경 점검 케이스(basic)는
-점검이 모두 통과하면 PASS입니다. 확인 중인 제품 문제로 표시한 케이스(`@pytest.mark.known_issue`)는 실패해도
-FAIL 대신 UNVERIFIED로 기록되고, 원래 실패 이유가 함께 남습니다.
+환경 점검 케이스(basic)는 점검이 모두 통과하면 PASS입니다. 나머지 상태는 이렇게 나눕니다.
+
+- **UNVERIFIED**: BAT가 판정할 수 없었던 결과(확인 수단이 없거나, 제품 탐지에 달려 통제할 수 없음).
+- **SKIP**: 사용자가 버그로 보지 않기로 한 결과. `@pytest.mark.known_issue("이유")`를 붙인 케이스는 실패해도
+  FAIL 대신 SKIP으로 기록되고, 이유 앞에 `known issue (...)`가 붙어 원래 실패 이유와 함께 남습니다.
+- **ERROR**: 실행 조건이 갖춰지지 않음(커넥터·단말·자격증명·테넌트 데이터 없음)이나 예상하지 못한 오류.
 
 **리소스 회수.** 생성물은 모두 `BAT-<PRODUCT>-<NNN>-<run_id>` 이름을 갖고, 실패해도
 삭제를 시도합니다. 삭제 실패는 `cleanup_warnings`로 남고, `bat sweep`이 남은 것을 찾습니다.
@@ -149,6 +152,7 @@ Signature Management 차단 목록에는 케이스 동안만 BAT 전용 항목�
 
 | 열 | 내용 |
 | --- | --- |
+| Case ID | 케이스 번호(예: BAT-SWG-001) |
 | Product | 제품 |
 | Status | 이번 실행의 결과 (PASS / FAIL / UNVERIFIED / SKIP / ERROR), 돌지 않았으면 미실행 |
 | Scenario | 케이스가 확인하는 동작 |

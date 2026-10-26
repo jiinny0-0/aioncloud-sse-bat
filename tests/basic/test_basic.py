@@ -19,7 +19,7 @@ from bat.clients.rest import pick_id
 from bat.fixtures.policies import CleanupWarning, WEB_POLICY_PATH, WebPolicyFactory
 from bat.fixtures.testdata import ALLOW_TARGET_URL, BLOCK_TARGET_HOST
 from bat.models import Kind, Step
-from tests.support import cleanup_failed, pass_case
+from tests.support import cleanup_failed, environment_error, pass_case
 
 log = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ def test_security_log_is_readable(case, web_log):
         detail=f"{len(events)} event(s) in the last 24h",
     )
     if not events:
-        pytest.skip(
+        environment_error(
             "No security events in the last 24 hours. Generate traffic through the "
             "connector first; an empty tenant cannot prove the schema."
         )
@@ -203,7 +203,7 @@ def test_management_api_is_not_intercepted(case, run_context, rest, executor):
     process = run_context.profile.connector_process
     state = connector_state(executor, process)
     if state.lower() != "running":
-        pytest.skip(f"{process} is {state}; nothing is being intercepted")
+        environment_error(f"{process} is {state}; nothing is being intercepted")
 
     # 읽기가 아니라 쓰기다: SSE는 POST 본문을 검사하므로, 스위트 자신의 관리용 쓰기가
     # 사용자 트래픽으로 취급되면 스위트가 동작할 수 없다.
