@@ -860,6 +860,27 @@ def cmd_schema(args: argparse.Namespace) -> int:
     return 0
 
 
+EXCLUDE_FILE = ROOT.parent / "bat-exclude.json"
+
+
+def _load_exclusions() -> list[str]:
+    """all 실행 제외 목록. 없거나 빈 파일이면 빈 목록, 형식이 깨졌으면 예외."""
+    import json
+    try:
+        text = EXCLUDE_FILE.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return []
+    if not text.strip():
+        return []
+    data = json.loads(text)
+    ids: list[str] = []
+    for entry in (data.get("items", []) if isinstance(data, dict) else []):
+        value = str(entry.get("id", "") if isinstance(entry, dict) else entry).strip()
+        if value and value not in ids:
+            ids.append(value)
+    return ids
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     lanes, estimate = _plan(args.profile)
 
@@ -900,6 +921,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         # 케이스 id는 pytest 마커에 있으므로, 필터링은 -k가 아니라 conftest의 수집
         # 훅에서 한다.
         env["BAT_CASE_FILTER"] = args.case
+    if not args.product and not args.case:
+        try:
+            excluded = _load_exclusions()
+        except Exception as exc:
+            print(f"[EXCLUDE] ERROR cannot read {EXCLUDE_FILE}: {exc.__class__.__name__}")
+            return 2
+        if excluded:
+            env["BAT_EXCLUDE"] = ",".join(excluded)
+            command += ["-p", "bat.exclude_plugin"]
+            print(f"[EXCLUDE] items={','.join(excluded)}")
     command += args.pytest_args
 
     print(f"Run id       : {run_id}")
