@@ -39,7 +39,7 @@ markers = [
     "smoke: representative case per product",
     "critical: P0 cases",
     "manual: requires a human action, excluded from the default run",
-    "parked: held back (EDR, RBI, GenAI) — excluded from the default run and the status book; run with --tag parked",
+    "parked: held back (EDR, RBI) — excluded from the default run and the status book; run with --tag parked",
     "crud: only creates/reads/deletes through the API (no traffic, no events) — API-suite territory, excluded from the default run",
     "verifies(*steps): mandatory criteria (user_visible_result, event_validation) — PASS needs a passing assertion on each",
     "known_issue(reason): a failure the user does not treat as a bug — reported as SKIP with the reason",

@@ -163,13 +163,14 @@ BAT-DLP-001:
   test_steps: |-
     1. DLP 키워드 룰(토큰 1개) 정책 생성
     2. 그 DLP 정책을 참조하는 웹 정책(BLOCK) 생성(GraphQL createWebSecurity 경유)
-    3. 토큰이 포함된 POST 바디를 대상 URL로 전송
+    3. 토큰이 포함된 POST 바디를 대상 URL 세 곳(httpbin.org, postman-echo.com, httpbingo.org)으로 각각 전송
     4. 차단(HTTP 상태) 확인
-    5. 보안로그에서 해당 이벤트 확인
+    5. 보안로그에서 호스트마다 그 호스트의 이벤트 확인
+    7. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
     6. 정책 삭제
   test_parameters: |-
     DLP rule type: keyword
-    Target: POST_TARGET_URL(httpbin.org)
+    Target: https://<호스트>/post (httpbin.org, postman-echo.com, httpbingo.org)
     Marker: case_id+run_id 조합의 고유 토큰
   test_data: |-
     DLP keyword rule: ["bat-token", [token]]
@@ -180,7 +181,7 @@ BAT-DLP-002:
     1. /sia/v1/dlp/policy/predefined을 조회해 내장 탐지 룰 목록에서 코드/표시명에 'visa' 또는 'card'가 포함된 카드번호 탐지기를 찾는다(없으면 ERROR).
     2. 해당 코드로 DLP 정책을 생성한다(PREDEFINED 룰, content 없이 name에 코드만 지정).
     3. 이 DLP 정책을 참조하는 DLP_POLICY rule을 가진 웹 정책을 BLOCK/MAJOR로 생성한다.
-    4. 합성 Visa 테스트 카드번호(4111-1111-1111-1111)를 POST 본문(card=...)에 담아 httpbin.org/post로 전송하고, 차단될 때까지 재시도한다.
+    4. 합성 Visa 테스트 카드번호(4111-1111-1111-1111)를 POST 본문(card=...)에 담아 대상 호스트 세 곳(httpbin.org, postman-echo.com, httpbingo.org)의 /post로 전송하고, 차단될 때까지 재시도한다.
     5. 응답이 차단(HTTP 차단 코드)인지 확인한다.
     6. 웹 보안 로그에서 해당 웹 정책명으로 보안 이벤트가 발생했는지 폴링으로 확인한다.
     7. with 블록 종료 시 웹 정책과 DLP 정책을 역순으로 자동 삭제한다.
@@ -193,14 +194,14 @@ BAT-DLP-002:
   test_data: |-
     predefined 룰 code: predefined_rules() 조회 결과 중 코드/표시명에 'visa' 또는 'card'를 포함하는 항목(런타임에 결정, 하드코딩 아님)
     전송 페이로드: card=4111-1111-1111-1111 (SYNTHETIC_CARD, Luhn 유효하나 테스트 전용으로 영구 예약된 번호)
-    대상 URL: https://httpbin.org/post (POST_TARGET_URL)
+    대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
     정책/DLP 이름: resource_name(case.case_id, run_id)로 런마다 동적 생성
   expected_results: 내장 카드번호 탐지 룰을 참조하는 웹 정책이 적용된 상태에서 테스트 카드번호가 포함된 POST 요청이 차단되고, 해당 웹 정책명으로 보안 이벤트가 남아야 한다.
 BAT-DLP-003:
   test_steps: |-
     1. 정규식 룰(이름 'bat-code', 패턴 CUSTOM_REGEX)을 가진 DLP 정책을 생성한다.
     2. 이 DLP 정책을 참조하는 DLP_POLICY rule을 가진 웹 정책을 BLOCK/MAJOR로 생성한다.
-    3. 정규식에 매칭되는 샘플 값(code=BATCODE-####-ZZZ)을 POST 본문으로 httpbin.org/post에 전송하고, 차단될 때까지 재시도한다.
+    3. 정규식에 매칭되는 샘플 값(code=BATCODE-####-ZZZ)을 POST 본문으로 대상 호스트 세 곳(httpbin.org, postman-echo.com, httpbingo.org)의 /post에 전송하고, 차단될 때까지 재시도한다.
     4. 응답이 차단되었는지 확인한다.
     5. 웹 보안 로그에서 해당 웹 정책명으로 보안 이벤트가 발생했는지 폴링으로 확인한다.
     6. with 블록 종료 시 웹 정책과 DLP 정책을 자동 삭제한다.
@@ -214,7 +215,7 @@ BAT-DLP-003:
   test_data: |-
     정규식 패턴: CUSTOM_REGEX = r"BATCODE-[0-9]{4}-[A-Z]{3}"
     전송 페이로드: regex_sample() 결과 — 예: code=BATCODE-1234-ZZZ 형태(숫자부는 uuid4 기반으로 매 실행마다 동적 생성, 접미사는 항상 ZZZ)
-    대상 URL: https://httpbin.org/post (POST_TARGET_URL)
+    대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
     정책/DLP 이름: resource_name(case.case_id, run_id)로 런마다 동적 생성
   expected_results: 정규식 DLP 룰을 참조하는 웹 정책이 적용된 상태에서 그 패턴에 매칭되는 값이 포함된 POST 요청이 차단되고, 해당 웹 정책명으로 보안 이벤트가 남아야 한다.
 BAT-DLP-004:
@@ -222,7 +223,7 @@ BAT-DLP-004:
     1. 키워드 룰(이름 'bat-token', 키워드는 런별 마커 토큰)을 가진 DLP 정책을 생성한다.
     2. 이 DLP 정책을 참조하는 DLP_POLICY rule을 가진 웹 정책을 BLOCK/MAJOR로 생성한다.
     3. 마커 토큰이 포함된 합성 텍스트 파일을 원격 단말에 생성한다(write_temp_file).
-    4. 해당 파일을 httpbin.org/post로 업로드 시도하고, 업로드가 차단될 때까지 재시도한다.
+    4. 해당 파일을 대상 호스트 세 곳(httpbin.org, postman-echo.com, httpbingo.org)의 /post로 업로드 시도하고, 업로드가 차단될 때까지 재시도한다.
     5. 업로드가 차단되었는지 확인한다.
     6. 웹 보안 로그에서 해당 웹 정책명으로 보안 이벤트를 조회하고, 이벤트의 file_name/file_action 필드를 기록한다.
     7. finally 블록에서 원격 단말에 생성한 임시 파일을 삭제하고, with 블록 종료 시 웹/DLP 정책도 자동 삭제한다.
@@ -232,18 +233,18 @@ BAT-DLP-004:
     웹 정책 action_type: BLOCK
     웹 정책 risk_level: MAJOR
     웹 정책 rule subject: DLP_POLICY, condition: IS
-    전송 방식: 파일 업로드 (multipart, httpbin.org/post)
+    전송 방식: 파일 업로드 (multipart, https://<호스트>/post (httpbin.org, postman-echo.com, httpbingo.org))
   test_data: |-
     키워드: marker(case_id, run_id) 결과 — 'BATSENSITIVE' + case_id(하이픈 제거) + run_id 앞 12자(런마다 동적 생성)
     업로드 파일 본문: upload_file_body(token) — "BAT synthetic document\nThis file exists only to exercise DLP upload detection.\nmarker: <token>\n"
     업로드 파일명: {case.case_id}-{run_context.run_id}.txt
-    대상 URL: https://httpbin.org/post (POST_TARGET_URL)
+    대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
   expected_results: 업로드 파일 내용에 DLP 키워드가 포함되면 업로드가 차단되고, 보안 이벤트에서 차단된 파일 정보(file_name/file_action)를 확인할 수 있어야 한다.
 BAT-DLP-005:
   test_steps: |-
     1. 키워드 룰(이름 'bat-token', 키워드는 런별 마커 토큰)을 가진 DLP 정책을 생성한다.
     2. 이 DLP 정책을 참조하는 DLP_POLICY rule을 가진 웹 정책을 BLOCK/MAJOR로 생성한다.
-    3. 키워드가 포함되지 않은 깨끗한 페이로드를 httpbin.org/post로 1회 전송한다(재시도 없음).
+    3. 키워드가 포함되지 않은 깨끗한 페이로드를 대상 호스트 세 곳(httpbin.org, postman-echo.com, httpbingo.org)의 /post로 1회 전송한다(재시도 없음).
     4. 응답이 차단되지 않았는지(정상 전달) 확인한다.
     5. 웹 보안 로그에서 해당 웹 정책명으로 이벤트가 전혀 없는지(no_security_event) 확인한다.
     6. with 블록 종료 시 웹 정책과 DLP 정책을 자동 삭제한다.
@@ -257,13 +258,13 @@ BAT-DLP-005:
   test_data: |-
     키워드(미사용 대조값): marker(case_id, run_id) 결과(런마다 동적 생성)
     전송 페이로드: clean_payload() = "note=quarterly review&owner=bat-suite&secret=nothing-to-see-here" (키워드 미포함)
-    대상 URL: https://httpbin.org/post (POST_TARGET_URL)
+    대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
   expected_results: DLP 키워드가 없는 정상 페이로드는 차단되지 않고 정상 전달되어야 하며, 해당 웹 정책명으로 어떤 보안 이벤트도 남지 않아야 한다(오탐 없음).
 BAT-DLP-006:
   test_steps: |-
     1. 키워드 룰(이름 'bat-token', 키워드는 런별 마커 토큰)을 가진 DLP 정책을 생성한다.
     2. 이 DLP 정책을 참조하는 DLP_POLICY rule을 가진 웹 정책을 BLOCK/MAJOR로 생성한다.
-    3. 키워드가 포함된 페이로드를 전송해 차단되는지 먼저 확인한다(정책이 실제로 걸려 있어야 비활성화 테스트가 의미 있음).
+    3. 키워드가 포함된 페이로드를 대상 호스트 세 곳(httpbin.org, postman-echo.com, httpbingo.org)의 /post로 전송해 차단되는지 먼저 확인한다(정책이 실제로 걸려 있어야 비활성화 테스트가 의미 있음).
     4. web_policies.set_enabled(policy, False)로 웹 정책을 비활성화한다(PATCH .../enable).
     5. 동일한 페이로드를 반복 전송(poll_until)하며 더 이상 차단되지 않고 정상 전달되는지 확인한다.
     6. 비활성화 후 전달 성공 시의 HTTP 상태를 기록한다.
@@ -278,7 +279,7 @@ BAT-DLP-006:
   test_data: |-
     키워드: marker(case_id, run_id) 결과(런마다 동적 생성)
     전송 페이로드: keyword_payload(token) = "note=quarterly review&secret=<token>&owner=bat-suite" (활성화/비활성화 양쪽에 동일 페이로드 재사용)
-    대상 URL: https://httpbin.org/post (POST_TARGET_URL)
+    대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
   expected_results: 정책이 활성 상태일 때는 키워드 페이로드가 차단되고, 정책을 비활성화하면 동일한 페이로드가 다시 정상 전달되어야 한다.
 BAT-DLP-007:
   test_steps: |-
@@ -319,39 +320,41 @@ BAT-DLP-008:
 BAT-FW-001:
   test_steps: |-
     1. DNS Firewall 정책명을 BAT-FW-001-<run_id> 형태로 생성한다.
-    2. rule {subject: "FQDN", condition: "IS", value: ["httpbin.org"]}로 action_type="BLOCK" DNS Firewall 정책을 임시 생성한다(dns_firewall.temporary).
+    2. rule {subject: "FQDN", condition: "IS", value: ["httpbin.org", "postman-echo.com", "httpbingo.org"]}로 action_type="BLOCK" DNS Firewall 정책을 임시 생성한다(dns_firewall.temporary).
     3. 생성된 policy_id를 case.policy_ids에 기록한다.
-    4. 단말에서 httpbin.org를 nslookup으로 반복 조회(dns_lookup_until_blocked)하여 이름 해석이 실패할 때까지 정책 propagation timeout 동안 폴링한다.
+    4. 단말에서 대상 도메인마다 nslookup으로 반복 조회(dns_lookup_until_blocked)하여 이름 해석이 실패할 때까지 정책 propagation timeout 동안 폴링한다.
     5. 이름 해석 실패 여부를 USER_RESULT로 기록하고 traffic.blocked가 True인지 assert한다.
     6. GraphQL SIA.log.dns_security_log에서 이 정책명을 참조하는 이벤트를 event_poll_timeout_sec 동안 폴링해 확인한다(await_network_event, kind="dns").
     7. with 블록 종료 시 정책을 자동 삭제한다(temporary 컨텍스트 매니저); 정리 중 CleanupWarning이 나면 경고로 기록하고 PASS 처리한다.
+    대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED(이벤트는 DNS 보안로그에 도메인 필드가 없어 정책 단위로 한 번 확인)
   test_parameters: |-
     subject: FQDN
     condition: IS
     action_type: BLOCK
     kind(이벤트 로그 종류): dns
   test_data: |-
-    rule value: ["httpbin.org"](BLOCK_TARGET_HOST)
+    rule value: ECHO_HOSTS(httpbin.org, postman-echo.com, httpbingo.org)
     정책명: BAT-FW-001-<run_id>(동적 생성, resource_name)
     조회 로그: SIA.log.dns_security_log
-  expected_results: DNS Firewall BLOCK 정책이 적용된 동안 httpbin.org의 이름 해석이 실패하고, SIA.log.dns_security_log에 해당 정책명을 참조하는 이벤트가 남아야 한다.
+  expected_results: DNS Firewall BLOCK 정책이 적용된 동안 대상 도메인들의 이름 해석이 실패하고, SIA.log.dns_security_log에 해당 정책명을 참조하는 이벤트가 남아야 한다.
 BAT-FW-002:
   test_steps: |-
     1. DNS Firewall 정책명을 BAT-FW-002-<run_id> 형태로 생성한다.
-    2. rule {subject: "FQDN", condition: "IS", value: ["httpbin.org"]}로 action_type="BLOCK" DNS Firewall 정책을 임시 생성한다.
+    2. rule {subject: "FQDN", condition: "IS", value: ["httpbin.org", "postman-echo.com", "httpbingo.org"]}로 action_type="BLOCK" DNS Firewall 정책을 임시 생성한다.
     3. 생성된 policy_id를 case.policy_ids에 기록한다.
-    4. httpbin.org를 nslookup으로 반복 조회해 차단(이름 해석 실패)이 실제로 걸렸는지 확인하고 assert한다.
+    4. 대상 도메인마다 nslookup으로 반복 조회해 차단(이름 해석 실패)이 실제로 걸렸는지 확인하고 assert한다.
     5. with 블록을 빠져나가며 temporary 컨텍스트 매니저가 정책을 삭제한다.
-    6. 정책 삭제 후 httpbin.org를 다시 nslookup으로 반복 조회(dns_lookup_until_allowed)하여 이름 해석이 복구될 때까지 폴링한다.
+    6. 정책 삭제 후 대상 도메인마다 다시 nslookup으로 반복 조회(dns_lookup_until_allowed)하여 이름 해석이 복구될 때까지 폴링한다.
     7. 복구 여부를 USER_RESULT로 기록하고 restored.blocked가 False인지 assert한 뒤 PASS 처리한다.
+    대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
   test_parameters: |-
     subject: FQDN
     condition: IS
     action_type: BLOCK(생성 후 삭제)
   test_data: |-
-    rule value: ["httpbin.org"](BLOCK_TARGET_HOST)
+    rule value: ECHO_HOSTS(httpbin.org, postman-echo.com, httpbingo.org)
     정책명: BAT-FW-002-<run_id>(동적 생성)
-  expected_results: DNS Firewall 정책이 적용된 동안 이름 해석이 실패했다가, 정책을 삭제하면 httpbin.org의 이름 해석이 다시 정상적으로 성공해야 한다.
+  expected_results: DNS Firewall 정책이 적용된 동안 이름 해석이 실패했다가, 정책을 삭제하면 대상 도메인들의 이름 해석이 다시 정상적으로 성공해야 한다.
 BAT-FW-003:
   test_steps: |-
     1. Application Firewall 정책명을 BAT-FW-003-<run_id> 형태로 생성한다.
@@ -436,11 +439,12 @@ BAT-FW-008:
   expected_results: 새 조회(nslookup)는 확실히 막힌다 - curl의 캐시된 연결 유지 여부는 환경마다 달라 단정하지 않음
 BAT-FW-009:
   test_steps: |-
-    1. FQDN=httpbin.org(소문자) BLOCK 정책 생성
-    2. HTTPBIN.ORG(대문자)로 조회
+    1. FQDN=[httpbin.org, postman-echo.com, httpbingo.org](소문자) BLOCK 정책 하나 생성
+    2. 도메인마다 대문자(예: HTTPBIN.ORG)로 조회
     3. 차단되는지 확인
-  test_parameters: 'Subject: FQDN, value: [httpbin.org]'
-  test_data: HTTPBIN.ORG (대문자 조회)
+    4. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
+  test_parameters: 'Subject: FQDN, value: [httpbin.org, postman-echo.com, httpbingo.org]'
+  test_data: HTTPBIN.ORG, POSTMAN-ECHO.COM, HTTPBINGO.ORG (대문자 조회)
   expected_results: 대문자로 조회해도 똑같이 차단된다
 BAT-FW-010:
   test_steps: |-
@@ -452,11 +456,12 @@ BAT-FW-010:
   expected_results: 다른 사용자로 좁히면 안 막히고, 실사용자로 좁히면 막힌다
 BAT-FW-011:
   test_steps: |-
-    1. FQDN BLOCK 정책 생성
-    2. A 레코드 조회 차단 확인
-    3. AAAA(IPv6) 레코드 조회도 차단되는지 확인
-  test_parameters: 'Subject: FQDN, value: [httpbin.org]'
-  test_data: nslookup -type=AAAA httpbin.org
+    1. FQDN=[example.com, example.net, postman-echo.com] BLOCK 정책 하나 생성(AAAA 레코드가 실제로 있는 도메인. httpbin.org는 AAAA가 없어 제외)
+    2. 도메인마다 A 레코드 조회 차단 확인
+    3. 도메인마다 AAAA(IPv6) 조회도 차단되는지 확인(실패 문구가 있거나 응답에 IPv6 주소가 없으면 차단)
+    4. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
+  test_parameters: 'Subject: FQDN, value: [example.com, example.net, postman-echo.com]'
+  test_data: nslookup -type=AAAA <도메인> (example.com, example.net, postman-echo.com, 모두 AAAA 레코드가 있는 도메인)
   expected_results: A/AAAA 둘 다 막힌다 - 듀얼스택 우회 불가
 BAT-FW-012:
   test_steps: |-
@@ -498,44 +503,49 @@ BAT-GAI-001:
   expected_results: GenAI 키워드 탐지(LOGGING) 정책이 생성된 뒤 find_id_by_name 조회에서 정상적으로 검색되어야 한다.
 BAT-SWG-001:
   test_steps: |-
-    1. HTTP_HOST 조건(IS, httpbin.org)으로 BLOCK 웹 정책을 생성한다
-    2. 실제 브라우저로 BLOCK_TARGET_URL(https://httpbin.org/get)을 차단될 때까지 재시도 방문한다
+    대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 아래를 반복한다.
+    1. HTTP_HOST 조건(IS, 그 호스트)으로 BLOCK 웹 정책을 생성한다
+    2. 실제 브라우저로 https://<호스트>/get을 차단될 때까지 재시도 방문한다
     3. 응답이 차단 페이지임을 확인한다
     4. 보안 로그에서 정책명·action=BLOCK·대상 호스트가 일치하는 이벤트를 대기한다
     5. 이벤트에서 접속 사용자 식별 정보를 기록한다
     6. 정책을 삭제한다(temporary 컨텍스트 종료)
+    7. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
   test_parameters: |-
     subject: HTTP_HOST
     condition: IS
     action_type: BLOCK
     risk_level: MAJOR
-  test_data: BLOCK_TARGET_HOST="httpbin.org", BLOCK_TARGET_URL="https://httpbin.org/get", 정책명은 resource_name(case_id, run_id)로 실행마다 동적 생성
+  test_data: 대상 호스트(ECHO_HOSTS)="httpbin.org, postman-echo.com, httpbingo.org", 방문 URL="https://<호스트>/get", 정책명은 resource_name(case_id, run_id, 호스트 이름)으로 실행마다 동적 생성
   expected_results: HTTP_HOST 조건으로 지정한 호스트를 BLOCK하면 실제 브라우저 접속이 차단 페이지로 이어지고, 보안 로그에 BLOCK 액션과 해당 호스트가 기록된 이벤트가 남아야 한다.
 BAT-SWG-002:
   test_steps: |-
     1. HTTP_HOST 조건(IS, httpbin.org)으로 BLOCK 웹 정책을 생성한다
-    2. 정책과 무관한 사이트 ALLOW_TARGET_URL(https://www.iana.org/)을 브라우저로 방문한다
-    3. 정상 접속(허용)됨을 확인한다
+    2. 정책과 무관한 사이트 여러 곳(https://www.iana.org/, https://example.net/, https://example.com/)을 브라우저로 방문한다
+    3. 모두 정상 접속(허용)됨을 확인한다
     4. 보안 로그에 이 정책명을 포함하는 이벤트가 하나도 없는지 확인한다(부재 검증)
     5. 정책을 삭제한다
+    6. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
   test_parameters: |-
     subject: HTTP_HOST
     condition: IS
     action_type: BLOCK
-  test_data: 정책 대상 BLOCK_TARGET_HOST="httpbin.org", 실제 방문 URL ALLOW_TARGET_URL="https://www.iana.org/"
+  test_data: 정책 대상 BLOCK_TARGET_HOST="httpbin.org", 실제 방문 URL(UNRELATED_URLS)="https://www.iana.org/", "https://example.net/", "https://example.com/"
   expected_results: 정책 조건에 매칭되지 않는 사이트는 정상적으로 로드되어야 하고, 그 정책 이름으로 된 보안 이벤트가 전혀 발생하지 않아야 한다.
 BAT-SWG-003:
   test_steps: |-
-    1. HTTP_HOST 조건(IS, httpbin.org)으로 LOGGING probe 정책을 생성해 브라우저로 BLOCK_TARGET_URL을 방문한다
-    2. probe 이벤트의 categories 필드에서 httpbin.org가 실제로 속한 카테고리 id/name을 알아낸다(추측하지 않음)
+    대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 아래를 반복한다.
+    1. HTTP_HOST 조건(IS, 그 호스트)으로 LOGGING probe 정책을 생성해 브라우저로 https://<호스트>/get을 방문한다
+    2. probe 이벤트의 categories 필드에서 그 호스트가 실제로 속한 카테고리 id/name을 알아낸다(추측하지 않음). 카테고리를 알아내지 못한 호스트는 기록만 하고 빼며, 하나도 없으면 ERROR
     3. probe 정책을 삭제하고, 알아낸 카테고리 id로 HTTP_CATEGORY 조건(IN)의 LOGGING 정책을 새로 생성한다(카테고리 전체를 BLOCK하면 관리 API 호스트까지 막힐 수 있어 LOGGING 사용)
     4. 같은 URL을 다시 방문해 정상 허용됨을 확인한다
     5. 보안 로그에서 정책명·대상 호스트가 일치하는 이벤트를 찾고, 그 이벤트의 categories 필드에 값이 채워져 있는지 확인한다
     6. 정책을 삭제한다
+    7. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
   test_parameters: |-
     1단계 probe: subject HTTP_HOST, condition IS, action_type LOGGING, risk_level MINOR
     2단계 본정책: subject HTTP_CATEGORY, condition IN, action_type LOGGING, risk_level MINOR
-  test_data: BLOCK_TARGET_HOST="httpbin.org" 방문 시 실제로 매칭되는 카테고리 id는 probe 이벤트에서 동적으로 발견(하드코딩 아님)
+  test_data: 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 각 호스트 방문 시 실제로 매칭되는 카테고리 id는 probe 이벤트에서 동적으로 발견(하드코딩 아님)
   expected_results: 내장 HTTP 카테고리 조건으로 만든 정책이 실제 트래픽과 매칭되어, 보안 로그 이벤트에 해당 카테고리 이름이 기록되어야 한다.
 BAT-SWG-004:
   test_steps: |-
@@ -556,18 +566,20 @@ BAT-SWG-004:
   expected_results: 정책이 지정한 사용자가 아닐 때는 트래픽이 차단되지 않고, 커넥터 자신의 사용자로 스코프를 바꾸면 차단되며 보안 로그 이벤트의 user_id가 그 사용자와 일치해야 한다.
 BAT-SWG-005:
   test_steps: |-
+    대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 아래를 반복한다.
     1. 커스텀 카테고리를 생성한다(CustomCategoryFactory)
-    2. 그 카테고리에 BLOCK_TARGET_HOST(httpbin.org)를 등록하는 user rule을 생성한다(UserRuleFactory)
+    2. 그 카테고리에 그 호스트를 등록하는 user rule을 생성한다(UserRuleFactory)
     3. HTTP_CATEGORY 조건(IN, 해당 카테고리 id)으로 BLOCK 웹 정책을 생성한다
-    4. 브라우저로 BLOCK_TARGET_URL을 차단될 때까지 재시도 방문한다
+    4. 브라우저로 https://<호스트>/get을 차단될 때까지 재시도 방문한다
     5. 차단됨을 확인한다
     6. 보안 로그에서 정책명·대상 호스트가 일치하는 이벤트를 확인한다
     7. 정책 → user rule → 카테고리 순으로 정리한다
+    8. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
   test_parameters: |-
     subject: HTTP_CATEGORY
     condition: IN
     action_type: BLOCK
-  test_data: category_name/policy_name은 resource_name()으로 동적 생성, 카테고리에 등록한 호스트="httpbin.org", 방문 URL="https://httpbin.org/get"
+  test_data: category_name/policy_name은 resource_name()으로 동적 생성, 카테고리에 등록한 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org, 방문 URL="https://<호스트>/get"
   expected_results: 직접 만든 카테고리에 대상 호스트를 등록하고 그 카테고리를 조건으로 건 정책이 실제 트래픽을 차단하고 보안 로그에 남아야 한다.
 BAT-SWG-006:
   test_steps: |-
@@ -672,19 +684,21 @@ BAT-SWG-013:
   expected_results: LOGGING 조건(DESTINATION_IP_GEO IN country)이 실제 트래픽과 매칭되어 보안로그·감사로그에 남는다(2026-10-06부로 BLOCK에서 LOGGING으로 전환 — 국가 단위 차단은 넓은 조건으로 취급)
 BAT-SWG-014:
   test_steps: |-
-    1. HTTP_URL 조건(IS, BLOCK_TARGET_URL 전체 URL)으로 BLOCK 웹 정책을 생성한다
-    2. 브라우저로 BLOCK_TARGET_URL을 차단될 때까지 재시도 방문해 차단됨을 확인한다
-    3. 같은 호스트의 다른 경로(https://httpbin.org/headers)를 방문해 정상 로드되는지 확인한다
+    대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 아래를 반복한다.
+    1. HTTP_URL 조건(IS, https://<호스트>/get 전체 URL)으로 BLOCK 웹 정책을 생성한다
+    2. 브라우저로 그 URL을 차단될 때까지 재시도 방문해 차단됨을 확인한다
+    3. 같은 호스트의 다른 경로(https://<호스트>/headers)를 방문해 정상 로드되는지 확인한다
     4. 보안 로그에서 정책명이 일치하는 이벤트를 대기한다
     5. audit_log에서 정책명을 포함하는 생성 기록을 확인한다
     6. 정책을 삭제한다
+    7. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
   test_parameters: |-
     subject: HTTP_URL
     condition: IS
     action_type: BLOCK
     risk_level: MAJOR
     value: 스킴 포함 전체 URL
-  test_data: 차단 대상 BLOCK_TARGET_URL="https://httpbin.org/get", 허용돼야 하는 같은 호스트의 다른 경로 other_path_url="https://httpbin.org/headers"
+  test_data: 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 차단 대상 "https://<호스트>/get", 허용돼야 하는 같은 호스트의 다른 경로 "https://<호스트>/headers"
   expected_results: HTTP_URL 조건으로 정확한 URL 하나만 지정한 BLOCK 정책은 그 URL만 차단하고 같은 호스트의 다른 경로는 통과시켜야 하며, 보안 로그와 감사 로그 양쪽에 생성 기록이 남아야 한다.
 BAT-SWG-015:
   test_steps: |-
@@ -732,12 +746,13 @@ BAT-SWG-017:
   expected_results: www.example.org 접속이 차단되고 보안로그에 매칭 이벤트가 남는다. 목록 밖 호스트는 매칭되지 않는다
 BAT-SWG-018:
   test_steps: |-
-    1. HTTP_PATH=/get BLOCK 정책 생성
-    2. https://httpbin.org/get 접속 -> 차단 확인
-    3. https://httpbin.org/headers(다른 경로, 같은 호스트) 접속 -> 통과 확인
-    4. 보안로그/감사로그 확인, 정책 삭제
+    1. HTTP_PATH=/get BLOCK 정책 생성(경로 조건은 호스트를 가리지 않으므로 정책 하나)
+    2. 대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 https://<호스트>/get 접속 -> 차단 확인
+    3. 같은 호스트의 https://<호스트>/headers(다른 경로) 접속 -> 통과 확인
+    4. 호스트마다 그 호스트의 보안로그 이벤트 확인, 감사로그 확인, 정책 삭제
+    5. 대상별 결과가 모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 UNVERIFIED
   test_parameters: 'Subject: HTTP_PATH, Condition: IS, value: ["/get"]'
-  test_data: https://httpbin.org/get (차단 대상), https://httpbin.org/headers (같은 호스트, 다른 경로)
+  test_data: 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. https://<호스트>/get (차단 대상), https://<호스트>/headers (같은 호스트, 다른 경로)
   expected_results: /get만 차단되고 같은 호스트의 다른 경로(/headers)는 영향받지 않는다
 BAT-SWG-019:
   test_steps: |-

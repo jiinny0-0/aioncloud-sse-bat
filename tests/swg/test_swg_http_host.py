@@ -15,11 +15,18 @@ from bat.events.poller import PollTimeout, poll_until
 from bat.fixtures.enums import ActionType, Condition, LogAction, RiskLevel, Subject
 from bat.fixtures.naming import resource_name
 from bat.fixtures.policies import CleanupWarning, WebPolicyFactory
-from bat.fixtures.testdata import ALLOW_TARGET_URL, BLOCK_TARGET_HOST, BLOCK_TARGET_URL
+from bat.fixtures.testdata import (
+    BLOCK_TARGET_HOST,
+    BLOCK_TARGET_URL,
+    ECHO_HOSTS,
+    UNRELATED_URLS,
+    echo_url,
+)
 from bat.events.web_log import matches_policy
 from bat.models import Kind, Step
 from tests.support import (
     accepted_issue,
+    across_targets,
     await_security_event,
     cleanup_failed,
     describe,
@@ -46,11 +53,14 @@ pytestmark = [
 @pytest.mark.critical
 @pytest.mark.smoke
 def test_http_host_block(case, run_context, web_policies, browser_session, web_log):
-    """HTTP Host 조건으로 차단한 사이트가 실제로 차단되고 보안 로그에 남는다."""
-    policy_name = resource_name(case.case_id, run_context.run_id)
-    rule = WebPolicyFactory.build_rule(Subject.HTTP_HOST, Condition.IS, [BLOCK_TARGET_HOST])
+    """HTTP Host 조건으로 차단한 사이트가 실제로 차단되고 보안 로그에 남는다.
 
-    try:
+    대상 호스트마다 정책을 하나씩 만들어 같은 확인을 한다(ECHO_HOSTS).
+    """
+    def check(host: str) -> None:
+        url = echo_url(host)
+        policy_name = resource_name(case.case_id, run_context.run_id, host.split(".")[0])
+        rule = WebPolicyFactory.build_rule(Subject.HTTP_HOST, Condition.IS, [host])
         with web_policies.temporary(
             policy_name, [rule], action_type=ActionType.BLOCK, risk_level=RiskLevel.MAJOR
         ) as policy:
@@ -58,22 +68,18 @@ def test_http_host_block(case, run_context, web_policies, browser_session, web_l
             case.record(
                 Step.SETUP,
                 ok=True,
-                detail=f"web policy {policy_name} (id={policy.policy_id}) "
-                f"blocking {BLOCK_TARGET_HOST}",
+                detail=f"web policy {policy_name} (id={policy.policy_id}) blocking {host}",
             )
 
             traffic = visit_until_blocked(
-                browser_session,
-                BLOCK_TARGET_URL,
-                case.case_id,
-                run_context.policy_propagation_timeout_sec,
+                browser_session, url, case.case_id, run_context.policy_propagation_timeout_sec
             )
             case.record(
                 Step.ACTION,
                 ok=True,
-                detail=f"browser visited {BLOCK_TARGET_URL} from {case.endpoint or 'runner'}",
+                detail=f"browser visited {url} from {case.endpoint or 'runner'}",
             )
-            expect_block(case, traffic, BLOCK_TARGET_URL)
+            expect_block(case, traffic, url)
 
             event = await_security_event(
                 case,
@@ -81,12 +87,14 @@ def test_http_host_block(case, run_context, web_policies, browser_session, web_l
                 policy_name,
                 timeout_sec=run_context.event_poll_timeout_sec,
                 expected_action=LogAction.BLOCK,
-                expected_target=BLOCK_TARGET_HOST,
+                expected_target=host,
                 policy_id=policy.policy_id,
             )
             record_identity(case, event)
-            pass_case(case)
 
+    try:
+        across_targets(case, ECHO_HOSTS, check, what="HTTP_HOST block")
+        pass_case(case)
     except CleanupWarning as warning:
         cleanup_failed(case, warning)
 
@@ -96,9 +104,17 @@ def test_http_host_block(case, run_context, web_policies, browser_session, web_l
 @pytest.mark.priority("P0")
 @pytest.mark.critical
 def test_non_matching_host_allowed(case, run_context, web_policies, browser_session, web_log):
-    """정책에 매칭되지 않는 사이트는 정상 접속되고 보안 로그가 남지 않는다."""
+    """정책에 매칭되지 않는 사이트는 정상 접속되고 보안 로그가 남지 않는다.
+
+    BLOCK_TARGET_HOST만 막은 채로 관계없는 사이트 여러 곳(UNRELATED_URLS)에 접속한다.
+    """
     policy_name = resource_name(case.case_id, run_context.run_id)
     rule = WebPolicyFactory.build_rule(Subject.HTTP_HOST, Condition.IS, [BLOCK_TARGET_HOST])
+
+    def check(url: str) -> None:
+        traffic = browser_session.visit(url, case_id=case.case_id)
+        case.record(Step.ACTION, ok=True, detail=f"browser visited {url}")
+        expect_allowed(case, traffic, url)
 
     try:
         with web_policies.temporary(policy_name, [rule], action_type=ActionType.BLOCK) as policy:
@@ -107,9 +123,7 @@ def test_non_matching_host_allowed(case, run_context, web_policies, browser_sess
                 Step.SETUP, ok=True, detail=f"policy {policy_name} blocks {BLOCK_TARGET_HOST} only"
             )
 
-            traffic = browser_session.visit(ALLOW_TARGET_URL, case_id=case.case_id)
-            case.record(Step.ACTION, ok=True, detail=f"browser visited {ALLOW_TARGET_URL}")
-            expect_allowed(case, traffic, ALLOW_TARGET_URL)
+            across_targets(case, UNRELATED_URLS, check, what="non-matching site delivered")
 
             # 여기서는 부재가 판정의 전부다. 이 테넌트는 접근 로그를 남기지 않으므로
             # 찾아볼 긍정 기록이 없다.

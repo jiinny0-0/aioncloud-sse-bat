@@ -27,23 +27,23 @@ PRODUCT_DIRS = {
     "basic": "tests/basic",
 }
 
-# EDR, RBI, GenAI는 보류(parked)다. `--tag parked`로는 여전히 돌릴 수 있다.
+# EDR, RBI는 보류(parked)다. `--tag parked`로는 여전히 돌릴 수 있다.
 DEFAULT_MARKERS = "not manual and not crud and not parked"
 
 # 케이스당 초. qa 직렬 실행에서 잰 값이다(5초 단위로 올림).
 ESTIMATED_SECONDS = {
     "BAT-BAS-001": 5, "BAT-BAS-002": 5, "BAT-BAS-003": 5, "BAT-BAS-004": 5, "BAT-BAS-005": 5,
     "BAT-BAS-006": 5,
-    "BAT-SWG-001": 10, "BAT-SWG-002": 15, "BAT-SWG-003": 25, "BAT-SWG-004": 35, "BAT-SWG-005": 15,
+    "BAT-SWG-001": 30, "BAT-SWG-002": 25, "BAT-SWG-003": 75, "BAT-SWG-004": 35, "BAT-SWG-005": 45,
     "BAT-SWG-006": 110, "BAT-SWG-007": 10, "BAT-SWG-008": 15, "BAT-SWG-009": 5, "BAT-SWG-010": 5,
-    "BAT-SWG-011": 40, "BAT-SWG-012": 40, "BAT-SWG-013": 35, "BAT-SWG-014": 15, "BAT-SWG-015": 15,
-    "BAT-SWG-016": 25, "BAT-SWG-017": 15, "BAT-SWG-018": 15, "BAT-SWG-019": 25, "BAT-SWG-020": 10,
+    "BAT-SWG-011": 40, "BAT-SWG-012": 40, "BAT-SWG-013": 35, "BAT-SWG-014": 45, "BAT-SWG-015": 15,
+    "BAT-SWG-016": 25, "BAT-SWG-017": 15, "BAT-SWG-018": 30, "BAT-SWG-019": 25, "BAT-SWG-020": 10,
     "BAT-SWG-021": 15, "BAT-SWG-022": 20, "BAT-SWG-023": 25,
-    "BAT-DLP-001": 15, "BAT-DLP-002": 15, "BAT-DLP-003": 15, "BAT-DLP-004": 15, "BAT-DLP-005": 15,
-    "BAT-DLP-006": 5, "BAT-DLP-007": 20, "BAT-DLP-008": 25,
-    "BAT-FW-001": 15, "BAT-FW-002": 5, "BAT-FW-003": 15, "BAT-FW-004": 5, "BAT-FW-005": 5,
-    "BAT-FW-006": 15, "BAT-FW-007": 5, "BAT-FW-008": 5, "BAT-FW-009": 5, "BAT-FW-010": 15,
-    "BAT-FW-011": 5, "BAT-FW-012": 5, "BAT-FW-013": 15,
+    "BAT-DLP-001": 35, "BAT-DLP-002": 35, "BAT-DLP-003": 35, "BAT-DLP-004": 35, "BAT-DLP-005": 25,
+    "BAT-DLP-006": 15, "BAT-DLP-007": 20, "BAT-DLP-008": 25,
+    "BAT-FW-001": 25, "BAT-FW-002": 15, "BAT-FW-003": 15, "BAT-FW-004": 5, "BAT-FW-005": 5,
+    "BAT-FW-006": 15, "BAT-FW-007": 5, "BAT-FW-008": 5, "BAT-FW-009": 10, "BAT-FW-010": 15,
+    "BAT-FW-011": 15, "BAT-FW-012": 5, "BAT-FW-013": 15,
     "BAT-RBI-001": 25, "BAT-RBI-002": 5,
     "BAT-CASB-001": 5, "BAT-CASB-002": 5, "BAT-CASB-003": 10, "BAT-CASB-004": 55, "BAT-CASB-005": 5,
     "BAT-GAI-001": 5,

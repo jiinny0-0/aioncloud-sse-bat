@@ -14,15 +14,18 @@ from bat.fixtures.naming import resource_name
 from bat.fixtures.policies import CleanupWarning, DlpPolicyFactory, WebPolicyFactory
 from bat.fixtures.testdata import (
     CUSTOM_REGEX,
+    ECHO_HOSTS,
     SYNTHETIC_CARD,
     POST_TARGET_URL,
     clean_payload,
+    echo_url,
     keyword_payload,
     marker,
     regex_sample,
 )
 from bat.traffic.http import post_payload
 from tests.support import (
+    across_targets,
     await_security_event,
     cleanup_failed,
     curl_until_blocked,
@@ -52,6 +55,14 @@ def _attach(web_policies: WebPolicyFactory, policy_name: str, dlp_policy_id: str
     )
 
 
+def _await_dlp_event(case, run_context, web_log, web_name: str, policy, host: str):
+    """그 호스트로 보낸 요청의 DLP 이벤트. 정책 하나가 여러 호스트를 막으므로 호스트로도 찾는다."""
+    return await_security_event(
+        case, web_log, web_name, timeout_sec=run_context.event_poll_timeout_sec,
+        expected_target=host, target_in_search=True, policy_id=policy.policy_id,
+    )
+
+
 @pytest.mark.case("BAT-DLP-001")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P0")
@@ -78,30 +89,31 @@ def test_keyword_detection_blocks_upload(
                     detail=f"DLP {dlp_name} referenced by web policy {web_name}",
                 )
 
-                traffic = curl_until_blocked(
-                    executor,
-                    POST_TARGET_URL,
-                    run_context.policy_propagation_timeout_sec,
-                    method="POST",
-                    data=keyword_payload(token),
-                )
-                case.record(
-                    Step.USER_RESULT,
-                    ok=traffic.blocked,
-                    detail=f"HTTP {traffic.status_code}",
-                    expected="blocked",
-                    actual=f"HTTP {traffic.status_code}",
-                )
-                assert traffic.blocked, (
-                    f"Upload containing the DLP keyword returned HTTP "
-                    f"{traffic.status_code}; expected it to be refused"
-                )
+                def check(host: str) -> None:
+                    url = echo_url(host, "/post")
+                    traffic = curl_until_blocked(
+                        executor,
+                        url,
+                        run_context.policy_propagation_timeout_sec,
+                        method="POST",
+                        data=keyword_payload(token),
+                    )
+                    case.record(
+                        Step.USER_RESULT,
+                        ok=traffic.blocked,
+                        detail=f"{url}: HTTP {traffic.status_code}",
+                        expected="blocked",
+                        actual=f"HTTP {traffic.status_code}",
+                    )
+                    assert traffic.blocked, (
+                        f"Upload containing the DLP keyword to {url} returned HTTP "
+                        f"{traffic.status_code}; expected it to be refused"
+                    )
 
-                event = await_security_event(
-                    case, web_log, web_name, timeout_sec=run_context.event_poll_timeout_sec,
-                    policy_id=policy.policy_id,
-                )
-                record_identity(case, event)
+                    event = _await_dlp_event(case, run_context, web_log, web_name, policy, host)
+                    record_identity(case, event)
+
+                across_targets(case, ECHO_HOSTS, check, what="DLP keyword block")
                 pass_case(case)
     except CleanupWarning as warning:
         cleanup_failed(case, warning)
@@ -127,20 +139,21 @@ def test_regex_detection_blocks_upload(
             with _attach(web_policies, web_name, rule.policy_id) as policy:
                 case.policy_ids.append(policy.policy_id)
 
-                traffic = curl_until_blocked(
-                    executor,
-                    POST_TARGET_URL,
-                    run_context.policy_propagation_timeout_sec,
-                    method="POST",
-                    data=f"code={regex_sample()}",
-                )
-                assert traffic.blocked, (
-                    f"Payload matching {CUSTOM_REGEX} returned HTTP {traffic.status_code}"
-                )
-                await_security_event(
-                    case, web_log, web_name, timeout_sec=run_context.event_poll_timeout_sec,
-                    policy_id=policy.policy_id,
-                )
+                def check(host: str) -> None:
+                    url = echo_url(host, "/post")
+                    traffic = curl_until_blocked(
+                        executor,
+                        url,
+                        run_context.policy_propagation_timeout_sec,
+                        method="POST",
+                        data=f"code={regex_sample()}",
+                    )
+                    assert traffic.blocked, (
+                        f"Payload matching {CUSTOM_REGEX} to {url} returned HTTP {traffic.status_code}"
+                    )
+                    _await_dlp_event(case, run_context, web_log, web_name, policy, host)
+
+                across_targets(case, ECHO_HOSTS, check, what="DLP regex block", step=Step.EVENT)
                 pass_case(case)
     except CleanupWarning as warning:
         cleanup_failed(case, warning)
@@ -164,14 +177,18 @@ def test_clean_payload_passes(case, run_context, rest, web_policies, executor, w
             with _attach(web_policies, web_name, rule.policy_id) as policy:
                 case.policy_ids.append(policy.policy_id)
 
-                traffic = post_payload(executor, POST_TARGET_URL, clean_payload())
-                expect_delivered(
-                    case,
-                    traffic,
-                    expected="delivered",
-                    failure=f"A payload without the keyword was refused (HTTP "
-                    f"{traffic.status_code}); this is a false positive",
-                )
+                def check(host: str) -> None:
+                    url = echo_url(host, "/post")
+                    traffic = post_payload(executor, url, clean_payload())
+                    expect_delivered(
+                        case,
+                        traffic,
+                        expected=f"delivered to {url}",
+                        failure=f"A payload without the keyword was refused by {url} (HTTP "
+                        f"{traffic.status_code}); this is a false positive",
+                    )
+
+                across_targets(case, ECHO_HOSTS, check, what="clean payload delivered")
 
                 quiet = web_log.no_security_event(
                     matches_policy(web_name)
@@ -209,34 +226,38 @@ def test_disabling_the_policy_restores_delivery(
             with _attach(web_policies, web_name, rule.policy_id) as policy:
                 case.policy_ids.append(policy.policy_id)
 
-                blocked = curl_until_blocked(
-                    executor,
-                    POST_TARGET_URL,
-                    run_context.policy_propagation_timeout_sec,
-                    method="POST",
-                    data=payload,
-                )
-                assert blocked.blocked, (
-                    "The policy never took effect, so disabling it would prove nothing"
-                )
+                def check_blocked(host: str) -> None:
+                    blocked = curl_until_blocked(
+                        executor,
+                        echo_url(host, "/post"),
+                        run_context.policy_propagation_timeout_sec,
+                        method="POST",
+                        data=payload,
+                    )
+                    assert blocked.blocked, (
+                        f"The policy never took effect on {host}, so disabling it would prove nothing"
+                    )
 
+                def check_delivered(host: str) -> None:
+                    # post_payload()가 보내는 것과 같은 요청을, 통과할 때까지 재시도한다.
+                    delivered = curl_until_delivered(
+                        executor,
+                        echo_url(host, "/post"),
+                        run_context.policy_propagation_timeout_sec,
+                        method="POST",
+                        data=payload,
+                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    )
+                    expect_delivered(
+                        case,
+                        delivered,
+                        expected=f"delivered to {host} once disabled",
+                        failure=f"Still blocked on {host} after the policy was disabled",
+                    )
+
+                across_targets(case, ECHO_HOSTS, check_blocked, what="DLP block before disabling")
                 web_policies.set_enabled(policy, False)
-
-                # post_payload()가 보내는 것과 같은 요청을, 통과할 때까지 재시도한다.
-                delivered = curl_until_delivered(
-                    executor,
-                    POST_TARGET_URL,
-                    run_context.policy_propagation_timeout_sec,
-                    method="POST",
-                    data=payload,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                )
-                expect_delivered(
-                    case,
-                    delivered,
-                    expected="delivered once disabled",
-                    failure="Still blocked after the policy was disabled",
-                )
+                across_targets(case, ECHO_HOSTS, check_delivered, what="delivery after disabling")
                 pass_case(case)
     except CleanupWarning as warning:
         cleanup_failed(case, warning)
@@ -345,29 +366,29 @@ def test_predefined_rule_detects_card_number(
             with _attach(web_policies, web_name, dlp_policy.policy_id) as policy:
                 case.policy_ids.append(policy.policy_id)
 
-                traffic = curl_until_blocked(
-                    executor,
-                    POST_TARGET_URL,
-                    run_context.policy_propagation_timeout_sec,
-                    method="POST",
-                    data=f"card={SYNTHETIC_CARD}",
-                )
-                case.record(
-                    Step.USER_RESULT,
-                    ok=traffic.blocked,
-                    detail=f"HTTP {traffic.status_code}",
-                    expected="blocked",
-                    actual=f"HTTP {traffic.status_code}",
-                )
-                assert traffic.blocked, (
-                    f"The test card number was not detected by {card.get('code')} "
-                    f"(HTTP {traffic.status_code})"
-                )
+                def check(host: str) -> None:
+                    url = echo_url(host, "/post")
+                    traffic = curl_until_blocked(
+                        executor,
+                        url,
+                        run_context.policy_propagation_timeout_sec,
+                        method="POST",
+                        data=f"card={SYNTHETIC_CARD}",
+                    )
+                    case.record(
+                        Step.USER_RESULT,
+                        ok=traffic.blocked,
+                        detail=f"{url}: HTTP {traffic.status_code}",
+                        expected="blocked",
+                        actual=f"HTTP {traffic.status_code}",
+                    )
+                    assert traffic.blocked, (
+                        f"The test card number sent to {url} was not detected by "
+                        f"{card.get('code')} (HTTP {traffic.status_code})"
+                    )
+                    _await_dlp_event(case, run_context, web_log, web_name, policy, host)
 
-                await_security_event(
-                    case, web_log, web_name, timeout_sec=run_context.event_poll_timeout_sec,
-                    policy_id=policy.policy_id,
-                )
+                across_targets(case, ECHO_HOSTS, check, what="DLP predefined card block")
                 pass_case(case)
     except CleanupWarning as warning:
         cleanup_failed(case, warning)
@@ -399,47 +420,49 @@ def test_file_upload_detection(case, run_context, rest, web_policies, executor, 
 
                 from bat.events.poller import PollTimeout, poll_until
 
-                def probe():
-                    result = upload_file(executor, POST_TARGET_URL, remote_path=remote_path)
-                    return result if result.blocked else None
+                def check(host: str) -> None:
+                    url = echo_url(host, "/post")
 
-                try:
-                    traffic = poll_until(
-                        probe,
-                        timeout_sec=run_context.policy_propagation_timeout_sec,
-                        description="upload to be refused",
-                        initial_interval=2.0,
+                    def probe():
+                        result = upload_file(executor, url, remote_path=remote_path)
+                        return result if result.blocked else None
+
+                    try:
+                        traffic = poll_until(
+                            probe,
+                            timeout_sec=run_context.policy_propagation_timeout_sec,
+                            description=f"upload to {url} to be refused",
+                            initial_interval=2.0,
+                        )
+                    except PollTimeout as timeout:
+                        raise AssertionError(
+                            f"The file containing the DLP keyword was delivered to {url}: {timeout}"
+                        ) from timeout
+
+                    case.record(
+                        Step.USER_RESULT,
+                        ok=True,
+                        detail=f"{url}: HTTP {traffic.status_code}",
+                        expected="blocked",
+                        actual=f"HTTP {traffic.status_code}",
+                        kind=Kind.ASSERTION,
                     )
-                except PollTimeout as timeout:
-                    raise AssertionError(
-                        f"The file containing the DLP keyword was delivered: {timeout}"
-                    ) from timeout
 
-                case.record(
-                    Step.USER_RESULT,
-                    ok=True,
-                    detail=f"HTTP {traffic.status_code}",
-                    expected="blocked",
-                    actual=f"HTTP {traffic.status_code}",
-                    kind=Kind.ASSERTION,
-                )
+                    event = _await_dlp_event(case, run_context, web_log, web_name, policy, host)
+                    case.record(
+                        Step.EVENT,
+                        ok=True,
+                        detail=f"file_name on the event: {event.get('file_name')!r}, "
+                        f"file_action: {event.get('file_action')!r}",
+                        expected="the event identifies the file",
+                        actual={
+                            "file_name": event.get("file_name"),
+                            "file_action": event.get("file_action"),
+                        },
+                        kind=Kind.EVIDENCE,
+                    )
 
-                event = await_security_event(
-                    case, web_log, web_name, timeout_sec=run_context.event_poll_timeout_sec,
-                    policy_id=policy.policy_id,
-                )
-                case.record(
-                    Step.EVENT,
-                    ok=True,
-                    detail=f"file_name on the event: {event.get('file_name')!r}, "
-                    f"file_action: {event.get('file_action')!r}",
-                    expected="the event identifies the file",
-                    actual={
-                        "file_name": event.get("file_name"),
-                        "file_action": event.get("file_action"),
-                    },
-                    kind=Kind.EVIDENCE,
-                )
+                across_targets(case, ECHO_HOSTS, check, what="DLP file upload block")
                 pass_case(case)
     except CleanupWarning as warning:
         cleanup_failed(case, warning)

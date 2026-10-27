@@ -25,6 +25,20 @@ SECOND_URL = "https://example.com/"
 OTHER_COUNTRY_HOST = "www.korea.kr"
 OTHER_COUNTRY_URL = "https://www.korea.kr/"
 
+# 같은 확인을 대상 여러 개에 돌릴 때 쓰는 호스트. 대상 하나의 특이성(예: httpbin.org에는
+# AAAA 레코드가 없다)이 판정을 정하지 않게 한다. 결과를 합치는 규칙은
+# tests.support.across_targets에 있다.
+# 셋 다 /get, /post, /headers를 받는 에코 서비스이고, 첫 번째가 BLOCK_TARGET_HOST다.
+ECHO_HOSTS = (BLOCK_TARGET_HOST, "postman-echo.com", "httpbingo.org")
+# AAAA(IPv6) 레코드가 있는 호스트.
+AAAA_HOSTS = (SECOND_HOST, "example.net", "postman-echo.com")
+# ECHO_HOSTS 어디에도 매칭되지 않아야 하는 음성 대조 대상.
+UNRELATED_URLS = (ALLOW_TARGET_URL, "https://example.net/", SECOND_URL)
+
+
+def echo_url(host: str, path: str = "/get") -> str:
+    return f"https://{host}{path}"
+
 # public-proxy 시그니처 케이스용 공개 HTTP 프록시 실시간 목록. 무료 프록시는
 # 계속 바뀌므로 후보는 실행 시점에 가져온다(bat.traffic.http.find_live_proxies).
 # JSON에 anonymity 필드가 들어 있다.

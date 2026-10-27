@@ -23,6 +23,7 @@ from bat.fixtures.policies import CleanupWarning, WebPolicyFactory
 from bat.fixtures.testdata import (
     BLOCK_TARGET_HOST,
     BLOCK_TARGET_URL,
+    ECHO_HOSTS,
     EICAR_STRING,
     OTHER_COUNTRY_HOST,
     OTHER_COUNTRY_URL,
@@ -32,6 +33,7 @@ from bat.fixtures.testdata import (
     SIGNATURE_DENYLIST_URL,
     SIGNATURE_PROBE_HOST,
     SIGNATURE_TARGET_HOST,
+    echo_url,
 )
 from bat.models import Kind, Step
 from bat.traffic.http import (
@@ -42,6 +44,7 @@ from bat.traffic.http import (
     write_temp_file,
 )
 from tests.support import (
+    across_targets,
     await_security_event,
     cleanup_failed,
     curl_until_blocked,
@@ -516,30 +519,30 @@ def test_http_url_block_is_more_specific_than_host(
 ):
     """HTTP_URL로 특정 URL 하나만 막으면 그 URL만 막히고, 같은 호스트의 다른 경로는 통과한다.
 
-    값은 스킴을 포함한 전체 URL이다. 실패하면 먼저 단독 재실행으로 재현되는지 확인한다.
+    값은 스킴을 포함한 전체 URL이다. 대상 호스트마다(ECHO_HOSTS) 정책을 하나씩 만들어 같은
+    확인을 한다. 실패하면 먼저 단독 재실행으로 재현되는지 확인한다.
     """
-    other_path_url = f"https://{BLOCK_TARGET_HOST}/headers"
-    policy_name = resource_name(case.case_id, run_context.run_id)
-    rule = WebPolicyFactory.build_rule(Subject.HTTP_URL, Condition.IS, [BLOCK_TARGET_URL])
-
-    try:
+    def check(host: str) -> None:
+        url, other_path_url = echo_url(host), echo_url(host, "/headers")
+        policy_name = resource_name(case.case_id, run_context.run_id, host.split(".")[0])
+        rule = WebPolicyFactory.build_rule(Subject.HTTP_URL, Condition.IS, [url])
         with web_policies.temporary(
             policy_name, [rule], action_type=ActionType.BLOCK, risk_level=RiskLevel.MAJOR
         ) as policy:
             case.policy_ids.append(policy.policy_id)
-            case.record(Step.SETUP, ok=True, detail=f"BLOCK scoped to exactly {BLOCK_TARGET_URL}")
+            case.record(Step.SETUP, ok=True, detail=f"BLOCK scoped to exactly {url}")
 
             traffic = visit_until_blocked(
-                browser_session, BLOCK_TARGET_URL, case.case_id, run_context.policy_propagation_timeout_sec
+                browser_session, url, case.case_id, run_context.policy_propagation_timeout_sec
             )
-            expect_block(case, traffic, BLOCK_TARGET_URL)
+            expect_block(case, traffic, url)
 
             other = browser_session.visit(other_path_url, case_id=case.case_id)
             expect_delivered(
                 case,
                 other,
                 expected=f"{other_path_url} still loads (URL-specific, not host-wide)",
-                failure=f"A policy scoped to the exact URL {BLOCK_TARGET_URL} also blocked "
+                failure=f"A policy scoped to the exact URL {url} also blocked "
                 f"{other_path_url} on the same host — HTTP_URL is not URL-specific",
             )
 
@@ -548,7 +551,10 @@ def test_http_url_block_is_more_specific_than_host(
                 policy_id=policy.policy_id,
             )
             _check_audit_log(case, run_context, audit_log, policy_name)
-            pass_case(case)
+
+    try:
+        across_targets(case, ECHO_HOSTS, check, what="HTTP_URL block")
+        pass_case(case)
     except CleanupWarning as warning:
         cleanup_failed(case, warning)
 
@@ -745,9 +751,9 @@ def test_http_path_block_is_path_specific(
 ):
     """HTTP_PATH로 특정 경로만 막으면 그 경로만 막히고, 같은 호스트의 다른 경로는 통과한다.
 
-    값은 `IS` + `/`로 시작하는 경로다(예 `"/get"`).
+    값은 `IS` + `/`로 시작하는 경로다(예 `"/get"`). 경로 조건은 호스트를 가리지 않으므로
+    정책 하나로 대상 호스트 여러 곳(ECHO_HOSTS)을 확인한다.
     """
-    other_path_url = f"https://{BLOCK_TARGET_HOST}/headers"
     policy_name = resource_name(case.case_id, run_context.run_id)
     rule = WebPolicyFactory.build_rule(Subject.HTTP_PATH, Condition.IS, ["/get"])
 
@@ -758,34 +764,41 @@ def test_http_path_block_is_path_specific(
             case.policy_ids.append(policy.policy_id)
             case.record(Step.SETUP, ok=True, detail="BLOCK scoped to HTTP_PATH /get")
 
-            traffic = curl_until_blocked(
-                executor, BLOCK_TARGET_URL, run_context.policy_propagation_timeout_sec
-            )
-            case.record(
-                Step.USER_RESULT,
-                ok=traffic.blocked,
-                detail=f"HTTP {traffic.status_code}",
-                expected=f"{BLOCK_TARGET_URL} (/get) is blocked",
-                actual=f"HTTP {traffic.status_code}",
-            )
-            assert traffic.blocked, (
-                f"A policy scoped to HTTP_PATH /get did not block {BLOCK_TARGET_URL} "
-                f"(HTTP {traffic.status_code})"
-            )
+            def check(host: str) -> None:
+                url, other_path_url = echo_url(host), echo_url(host, "/headers")
+                traffic = curl_until_blocked(
+                    executor, url, run_context.policy_propagation_timeout_sec
+                )
+                case.record(
+                    Step.USER_RESULT,
+                    ok=traffic.blocked,
+                    detail=f"HTTP {traffic.status_code}",
+                    expected=f"{url} (/get) is blocked",
+                    actual=f"HTTP {traffic.status_code}",
+                )
+                assert traffic.blocked, (
+                    f"A policy scoped to HTTP_PATH /get did not block {url} "
+                    f"(HTTP {traffic.status_code})"
+                )
 
-            other = curl_until_blocked(executor, other_path_url, 8)
-            expect_delivered(
-                case,
-                other,
-                expected=f"{other_path_url} still loads (path-specific, not host-wide)",
-                failure=f"A policy scoped to HTTP_PATH /get also blocked {other_path_url} on "
-                f"the same host — HTTP_PATH is not path-specific",
-            )
+                other = curl_until_blocked(executor, other_path_url, 8)
+                expect_delivered(
+                    case,
+                    other,
+                    expected=f"{other_path_url} still loads (path-specific, not host-wide)",
+                    failure=f"A policy scoped to HTTP_PATH /get also blocked {other_path_url} "
+                    f"on the same host — HTTP_PATH is not path-specific",
+                )
 
-            await_security_event(
-                case, web_log, policy_name, timeout_sec=run_context.event_poll_timeout_sec,
-                policy_id=policy.policy_id,
-            )
+                await_security_event(
+                    case, web_log, policy_name, timeout_sec=run_context.event_poll_timeout_sec,
+                    expected_target=host,
+                    # 정책 하나가 여러 호스트를 막으므로 그 호스트의 이벤트로 찾는다.
+                    target_in_search=True,
+                    policy_id=policy.policy_id,
+                )
+
+            across_targets(case, ECHO_HOSTS, check, what="HTTP_PATH block")
             _check_audit_log(case, run_context, audit_log, policy_name)
             pass_case(case)
     except CleanupWarning as warning:

@@ -17,8 +17,6 @@ pytestmark = [
     pytest.mark.product("genai"),
     pytest.mark.lane("d"),
     pytest.mark.xdist_group("lane-d"),
-    # 보류: 기본 실행과 현황 엑셀에서 빠진다.
-    pytest.mark.parked,
 ]
 
 TARGET_APP = "chatgpt"

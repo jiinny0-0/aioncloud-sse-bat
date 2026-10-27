@@ -9,7 +9,7 @@ BAT(Business Acceptance Test) 자동화입니다. API 테스트(응답·CRUD)나
    → 사용자 가시 결과 → 이벤트/로그 검증 → 리소스 회수
 ```
 
-대상 제품: basic, swg, dlp, fwaas, casb, ztna, cross (edr, rbi, genai와 BAT-X-010은 보류)
+대상 제품: basic, swg, dlp, fwaas, casb, genai, ztna, cross (edr, rbi와 BAT-X-010은 보류)
 
 ---
 
@@ -131,6 +131,10 @@ Lane e   ztna, edr
 - **SKIP**: 사용자가 버그로 보지 않기로 한 결과. `@pytest.mark.known_issue("이유")`를 붙인 케이스는 실패해도
   FAIL 대신 SKIP으로 기록되고, 이유 앞에 `known issue (...)`가 붙어 원래 실패 이유와 함께 남습니다.
 - **ERROR**: 실행 조건이 갖춰지지 않음(커넥터·단말·자격증명·테넌트 데이터 없음)이나 예상하지 못한 오류.
+
+호스트·URL·카테고리를 대상으로 하는 SWG·DLP·DNS Firewall 케이스 일부는 대상 하나에 기대지 않도록 같은 확인을
+대상 2~3곳에서 합니다(`bat/fixtures/testdata.py`의 `ECHO_HOSTS`, `AAAA_HOSTS`, `UNRELATED_URLS`). 대상별 결과가
+모두 기대대로면 PASS, 모두 어긋나면 FAIL, 일부만 어긋나면 대상 탓인지 제품 탓인지 가릴 수 없어 UNVERIFIED입니다.
 
 **리소스 회수.** 생성물은 모두 `BAT-<PRODUCT>-<NNN>-<run_id>` 이름을 갖고, 실패해도
 삭제를 시도합니다. 삭제 실패는 `cleanup_warnings`로 남고, `bat sweep`이 남은 것을 찾습니다.

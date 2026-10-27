@@ -1192,6 +1192,38 @@ def cleanup_failed(case: CaseResult, warning: Exception) -> None:
         ) from warning
 
 
+def across_targets(case: CaseResult, targets, check: Callable[[str], None], *, what: str,
+                   step: Step = Step.USER_RESULT) -> None:
+    """같은 확인을 대상 여러 개에 돌리고 결과를 합친다.
+
+    check(target)는 기대와 다르면 AssertionError를, 확인할 수 없으면 VerificationUnavailable을
+    던진다. 전부 기대대로면 그냥 돌아오고, 전부 어긋나면 FAIL이다. 일부만 어긋나거나 확인하지
+    못한 대상이 있으면, 대상의 특이성인지 제품 문제인지 가릴 수 없으므로 UNVERIFIED다.
+    """
+    failed: dict[str, str] = {}
+    unknown: dict[str, str] = {}
+    for target in targets:
+        try:
+            check(target)
+        except VerificationUnavailable as exc:
+            unknown[target] = str(exc).splitlines()[0][:200]
+        except AssertionError as exc:
+            failed[target] = (str(exc).splitlines() or [type(exc).__name__])[0][:200]
+    if not failed and not unknown:
+        return
+    passed = [t for t in targets if t not in failed and t not in unknown]
+    summary = "; ".join(f"{t}: {m}" for t, m in {**failed, **unknown}.items())
+    if failed and not passed and not unknown:
+        raise AssertionError(f"{what} failed on every target {list(targets)} — {summary}")
+    unverified(
+        case,
+        step,
+        f"{what} held on {passed} but not on {list(failed)}"
+        + (f" and could not be checked on {list(unknown)}" if unknown else "")
+        + f" — target-specific or a product issue: {summary}",
+    )
+
+
 def unverified(case: CaseResult, step: Step, reason: str) -> NoReturn:
     """중단한다: 이 케이스가 확인하려는 동작을 확인할 수 없다."""
     case.record(step, ok=False, detail=reason, kind=Kind.UNAVAILABLE)

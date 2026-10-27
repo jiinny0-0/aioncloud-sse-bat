@@ -13,16 +13,25 @@ Application Firewall: 빈 `source: {}`는 아무것도 매칭하지 않으므로
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from bat.fixtures.graphql_policies import ApplicationFirewallFactory, DnsFirewallFactory
 from bat.fixtures.naming import resource_name
 from bat.fixtures.policies import CleanupWarning
-from bat.fixtures.testdata import BLOCK_TARGET_HOST, BLOCK_TARGET_URL, SECOND_HOST
+from bat.fixtures.testdata import (
+    AAAA_HOSTS,
+    BLOCK_TARGET_HOST,
+    BLOCK_TARGET_URL,
+    ECHO_HOSTS,
+    SECOND_HOST,
+)
 from bat.models import Kind, Step
 from bat.events.poller import PollTimeout
 from bat.traffic.http import curl_status, dns_lookup, resolve_ip
 from tests.support import (
+    across_targets,
     await_network_event,
     cleanup_failed,
     curl_until_reachable,
@@ -41,33 +50,42 @@ pytestmark = [
     pytest.mark.xdist_group("lane-b"),
 ]
 
+# nslookup 응답에 든 IPv6 주소(콜론이 둘 이상인 16진수 묶음).
+_IPV6_RE = re.compile(r"\b[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,7}\b", re.IGNORECASE)
+
 
 @pytest.mark.case("BAT-FW-001")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P1")
 def test_dns_firewall_blocks_a_domain(case, run_context, dns_firewall, executor, network_log):
-    """DNS Firewall로 도메인을 차단하면 실제로 이름 해석이 실패하고 이벤트가 남는다."""
+    """DNS Firewall로 도메인을 차단하면 실제로 이름 해석이 실패하고 이벤트가 남는다.
+
+    정책 하나에 대상 도메인 여러 개(ECHO_HOSTS)를 넣고 도메인마다 해석을 확인한다. DNS
+    보안로그에는 도메인 필드가 없어 이벤트는 정책 단위로 한 번 본다.
+    """
     policy_name = resource_name(case.case_id, run_context.run_id)
-    rule = DnsFirewallFactory.fqdn_rule([BLOCK_TARGET_HOST])
+    rule = DnsFirewallFactory.fqdn_rule(list(ECHO_HOSTS))
+
+    def check(host: str) -> None:
+        traffic = dns_lookup_until_blocked(
+            executor, host, run_context.policy_propagation_timeout_sec
+        )
+        case.record(
+            Step.USER_RESULT,
+            ok=traffic.blocked,
+            detail=traffic.detail,
+            expected=f"{host}: name resolution fails",
+            actual="resolution failed" if traffic.blocked else "resolution succeeded",
+        )
+        assert traffic.blocked, (
+            f"{host} still resolved with the DNS Firewall block policy active: {traffic.detail}"
+        )
 
     try:
         with dns_firewall.temporary(policy_name, [rule], action_type="BLOCK") as policy:
             case.policy_ids.append(policy.policy_id)
 
-            traffic = dns_lookup_until_blocked(
-                executor, BLOCK_TARGET_HOST, run_context.policy_propagation_timeout_sec
-            )
-            case.record(
-                Step.USER_RESULT,
-                ok=traffic.blocked,
-                detail=traffic.detail,
-                expected="name resolution fails",
-                actual="resolution failed" if traffic.blocked else "resolution succeeded",
-            )
-            assert traffic.blocked, (
-                f"{BLOCK_TARGET_HOST} still resolved with the DNS Firewall block "
-                f"policy active: {traffic.detail}"
-            )
+            across_targets(case, ECHO_HOSTS, check, what="DNS Firewall block")
 
             await_network_event(
                 case,
@@ -86,30 +104,38 @@ def test_dns_firewall_blocks_a_domain(case, run_context, dns_firewall, executor,
 @pytest.mark.verifies(Step.USER_RESULT)
 @pytest.mark.priority("P2")
 def test_dns_firewall_removal_restores_resolution(case, run_context, dns_firewall, executor):
-    """DNS Firewall 정책을 지우면 도메인 이름 해석이 다시 정상 동작한다."""
+    """DNS Firewall 정책을 지우면 도메인 이름 해석이 다시 정상 동작한다.
+
+    정책 하나에 대상 도메인 여러 개(ECHO_HOSTS)를 넣고 도메인마다 확인한다.
+    """
     policy_name = resource_name(case.case_id, run_context.run_id)
-    rule = DnsFirewallFactory.fqdn_rule([BLOCK_TARGET_HOST])
+    rule = DnsFirewallFactory.fqdn_rule(list(ECHO_HOSTS))
+
+    def check_blocked(host: str) -> None:
+        blocked = dns_lookup_until_blocked(
+            executor, host, run_context.policy_propagation_timeout_sec
+        )
+        assert blocked.blocked, (
+            f"The DNS Firewall policy never took effect on {host}, so removing it would prove nothing"
+        )
+
+    def check_restored(host: str) -> None:
+        restored = dns_lookup_until_allowed(
+            executor, host, run_context.policy_propagation_timeout_sec
+        )
+        expect_delivered(
+            case,
+            restored,
+            expected=f"{host}: name resolution succeeds once the policy is gone",
+            failure=f"{host} still fails to resolve after the DNS Firewall policy was deleted",
+        )
 
     with dns_firewall.temporary(policy_name, [rule], action_type="BLOCK") as policy:
         case.policy_ids.append(policy.policy_id)
-        blocked = dns_lookup_until_blocked(
-            executor, BLOCK_TARGET_HOST, run_context.policy_propagation_timeout_sec
-        )
-        assert blocked.blocked, (
-            "The DNS Firewall policy never took effect, so removing it would prove nothing"
-        )
+        across_targets(case, ECHO_HOSTS, check_blocked, what="DNS Firewall block before removal")
 
     # 이 시점에는 컨텍스트 매니저가 정책을 이미 지웠다.
-    restored = dns_lookup_until_allowed(
-        executor, BLOCK_TARGET_HOST, run_context.policy_propagation_timeout_sec
-    )
-    expect_delivered(
-        case,
-        restored,
-        expected="name resolution succeeds once the policy is gone",
-        failure=f"{BLOCK_TARGET_HOST} still fails to resolve after the DNS Firewall "
-        f"policy was deleted",
-    )
+    across_targets(case, ECHO_HOSTS, check_restored, what="resolution after removal")
     pass_case(case)
 
 
@@ -409,33 +435,37 @@ def test_dns_firewall_block_does_not_evict_an_already_cached_name(
 def test_dns_firewall_fqdn_match_is_case_insensitive(case, run_context, dns_firewall, executor):
     """DNS Firewall의 FQDN 조건은 대소문자와 무관하게 매칭된다.
 
-    BAT-SWG-023(HTTP_HOST 대소문자)과 같은 점검을 DNS 계층에 한다.
+    BAT-SWG-023(HTTP_HOST 대소문자)과 같은 점검을 DNS 계층에 한다. 정책 하나에 대상 도메인
+    여러 개(ECHO_HOSTS)를 소문자로 넣고 도메인마다 대문자로 조회한다.
     """
     policy_name = resource_name(case.case_id, run_context.run_id)
-    rule = DnsFirewallFactory.fqdn_rule([BLOCK_TARGET_HOST.lower()])
-    uppercase_host = BLOCK_TARGET_HOST.upper()
+    rule = DnsFirewallFactory.fqdn_rule([host.lower() for host in ECHO_HOSTS])
+
+    def check(host: str) -> None:
+        uppercase_host = host.upper()
+        traffic = dns_lookup_until_blocked(
+            executor, uppercase_host, run_context.policy_propagation_timeout_sec
+        )
+        case.record(
+            Step.USER_RESULT,
+            ok=traffic.blocked,
+            detail=traffic.detail,
+            expected=f"{uppercase_host} fails to resolve despite the uppercase spelling",
+            actual="resolution failed" if traffic.blocked else "resolution succeeded",
+        )
+        assert traffic.blocked, (
+            f"A DNS Firewall rule blocking {host.lower()!r} did not block "
+            f"the uppercase spelling {uppercase_host!r} — FQDN matching is case-sensitive"
+        )
 
     try:
         with dns_firewall.temporary(policy_name, [rule], action_type="BLOCK") as policy:
             case.policy_ids.append(policy.policy_id)
             case.record(
-                Step.SETUP, ok=True, detail=f"BLOCK scoped to {BLOCK_TARGET_HOST.lower()!r} (lowercase)"
+                Step.SETUP, ok=True, detail=f"BLOCK scoped to {[h.lower() for h in ECHO_HOSTS]} (lowercase)"
             )
 
-            traffic = dns_lookup_until_blocked(
-                executor, uppercase_host, run_context.policy_propagation_timeout_sec
-            )
-            case.record(
-                Step.USER_RESULT,
-                ok=traffic.blocked,
-                detail=traffic.detail,
-                expected=f"{uppercase_host} fails to resolve despite the uppercase spelling",
-                actual="resolution failed" if traffic.blocked else "resolution succeeded",
-            )
-            assert traffic.blocked, (
-                f"A DNS Firewall rule blocking {BLOCK_TARGET_HOST.lower()!r} did not block "
-                f"the uppercase spelling {uppercase_host!r} — FQDN matching is case-sensitive"
-            )
+            across_targets(case, ECHO_HOSTS, check, what="case-insensitive FQDN block")
             pass_case(case)
 
     except CleanupWarning as warning:
@@ -521,39 +551,50 @@ def test_dns_firewall_applies_only_to_its_users(case, run_context, dns_firewall,
 @pytest.mark.verifies(Step.USER_RESULT)
 @pytest.mark.priority("P3")
 def test_dns_firewall_blocks_aaaa_queries_too(case, run_context, dns_firewall, executor):
-    """DNS Firewall 차단은 A 레코드뿐 아니라 AAAA(IPv6) 조회도 막는다."""
-    policy_name = resource_name(case.case_id, run_context.run_id)
-    rule = DnsFirewallFactory.fqdn_rule([BLOCK_TARGET_HOST])
+    """DNS Firewall 차단은 A 레코드뿐 아니라 AAAA(IPv6) 조회도 막는다.
 
-    def _aaaa_blocked() -> bool:
-        result = executor.run(f"nslookup -type=AAAA {BLOCK_TARGET_HOST}", timeout_sec=15)
-        output = f"{result.stdout}\n{result.stderr}".lower()
-        return any(
-            marker in output
+    대상은 AAAA 레코드가 실제로 있는 도메인들(AAAA_HOSTS)이다. httpbin.org는 AAAA 레코드가
+    없어 차단 여부와 상관없이 AAAA 조회가 주소 없이 끝나므로 쓰지 않는다. 그래서 실패 문구가
+    있거나 응답에 IPv6 주소가 없으면 차단으로 본다.
+    """
+    policy_name = resource_name(case.case_id, run_context.run_id)
+    rule = DnsFirewallFactory.fqdn_rule(list(AAAA_HOSTS))
+
+    def aaaa_lookup(host: str) -> tuple[bool, str]:
+        result = executor.run(f"nslookup -type=AAAA {host}", timeout_sec=15)
+        output = f"{result.stdout}\n{result.stderr}"
+        failed = any(
+            marker in output.lower()
             for marker in ("non-existent domain", "can't find", "server failed", "no answer")
+        )
+        # 서버 주소(맨 위)는 빼고, 응답 부분(Name: 아래)에 IPv6 주소가 있는지 본다.
+        answer = output.split("Name:", 1)[1] if "Name:" in output else ""
+        has_ipv6 = bool(_IPV6_RE.search(answer))
+        return failed or not has_ipv6, " ".join(output.split())[-300:]
+
+    def check(host: str) -> None:
+        a_blocked = dns_lookup_until_blocked(
+            executor, host, run_context.policy_propagation_timeout_sec
+        )
+        assert a_blocked.blocked, f"A-record lookup for {host} never blocked: {a_blocked.detail}"
+
+        aaaa_blocked, output = aaaa_lookup(host)
+        case.record(
+            Step.USER_RESULT,
+            ok=aaaa_blocked,
+            detail=f"AAAA lookup for {host} {'blocked' if aaaa_blocked else 'resolved'}: {output}",
+            expected="AAAA query also fails",
+            actual="blocked" if aaaa_blocked else "resolved",
+        )
+        assert aaaa_blocked, (
+            f"A DNS Firewall rule blocking {host} stopped the A-record "
+            f"query but let an AAAA (IPv6) query for the same name through: {output}"
         )
 
     try:
         with dns_firewall.temporary(policy_name, [rule], action_type="BLOCK") as policy:
             case.policy_ids.append(policy.policy_id)
-
-            a_blocked = dns_lookup_until_blocked(
-                executor, BLOCK_TARGET_HOST, run_context.policy_propagation_timeout_sec
-            )
-            assert a_blocked.blocked, f"A-record lookup never blocked: {a_blocked.detail}"
-
-            aaaa_blocked = _aaaa_blocked()
-            case.record(
-                Step.USER_RESULT,
-                ok=aaaa_blocked,
-                detail=f"AAAA lookup for {BLOCK_TARGET_HOST} {'blocked' if aaaa_blocked else 'resolved'}",
-                expected="AAAA query also fails",
-                actual="blocked" if aaaa_blocked else "resolved",
-            )
-            assert aaaa_blocked, (
-                f"A DNS Firewall rule blocking {BLOCK_TARGET_HOST} stopped the A-record "
-                f"query but let an AAAA (IPv6) query for the same name through"
-            )
+            across_targets(case, AAAA_HOSTS, check, what="AAAA block")
             pass_case(case)
 
     except CleanupWarning as warning:

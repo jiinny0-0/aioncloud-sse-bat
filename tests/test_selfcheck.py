@@ -663,7 +663,11 @@ def test_the_condition_under_test_passes_on_its_own_event(module, function, case
     assert status is Status.PASS, reason
     own = resource_name(case_id, RUN_ID)
     judged = [s.actual for s in case.steps if isinstance(s.actual, dict) and "policy_id" in s.actual]
-    assert judged and all(actual["policy"] == own for actual in judged)
+    # 대상 여러 개를 도는 케이스는 정책 이름 끝에 대상 이름이 붙는다. probe 정책만 아니면 된다.
+    assert judged and all(
+        actual["policy"] == own or (actual["policy"].startswith(own + "-") and "probe" not in actual["policy"])
+        for actual in judged
+    )
 
 
 # -- SWG-011/012/013의 음성 대조 ------------------------------------
@@ -2288,15 +2292,15 @@ def test_the_catalog_reads_every_case_in_tests():
 
 
 def test_parked_products_stay_out_of_the_default_run_and_the_tracker(tmp_path):
-    """보류(parked)된 EDR·RBI·GenAI 케이스는 기본 실행에서 돌지 않고, 현황에 오르지 않으며, 다음 sync에서 지워진다."""
+    """보류(parked)된 EDR·RBI 케이스는 기본 실행에서 돌지 않고, 현황에 오르지 않으며, 다음 sync에서 지워진다."""
     from bat import cli
     from bat.report import status_book
 
     assert "not parked" in cli.DEFAULT_MARKERS
     parked = status_book.parked_ids()
     assert {i for i in parked if i.startswith("BAT-EDR-")} == {f"BAT-EDR-00{n}" for n in range(1, 6)}
-    assert {"BAT-RBI-001", "BAT-RBI-002", "BAT-X-004", "BAT-GAI-001"} <= parked, "X-004 lives in the RBI file"
-    assert not any(i.startswith(("BAT-EDR-", "BAT-RBI-", "BAT-GAI-")) for i in {e["case_id"] for e in status_book.catalog()})
+    assert {"BAT-RBI-001", "BAT-RBI-002", "BAT-X-004"} <= parked, "X-004 lives in the RBI file"
+    assert not any(i.startswith(("BAT-EDR-", "BAT-RBI-")) for i in {e["case_id"] for e in status_book.catalog()})
 
     tests_dir, reports_dir = _tracker(tmp_path)
     _write_cases(tests_dir, ("BAT-SWG-001", ""))
@@ -2667,6 +2671,51 @@ def test_result_book_has_only_the_published_columns(tmp_path):
     assert table[1][0] == "BAT-SWG-001" and table[1][4] == "1. 요청" and len(table) == 5
 
 
+def test_results_across_targets_are_pass_fail_or_unverified():
+    """대상 여러 개: 전부 기대대로면 통과, 전부 어긋나면 FAIL, 섞이거나 확인 못 한 대상이 있으면 UNVERIFIED."""
+    from bat.verdict import Raised, classify
+    from tests.support import VerificationUnavailable, across_targets, unverified
+
+    def run(outcomes: dict[str, str]):
+        case = CaseResult(case_id="BAT-SWG-001", product="swg", scenario="s",
+                          criteria=[Step.USER_RESULT.value])
+
+        def check(target: str) -> None:
+            outcome = outcomes[target]
+            ok = outcome == "pass"
+            if outcome == "unknown":
+                unverified(case, Step.USER_RESULT, f"{target}: no answer")
+            case.record(Step.USER_RESULT, ok=ok, detail=target)
+            assert ok, f"{target} was not blocked"
+
+        try:
+            across_targets(case, list(outcomes), check, what="block")
+        except VerificationUnavailable as exc:
+            return classify(case, Raised.UNAVAILABLE, str(exc))
+        except AssertionError as exc:
+            return classify(case, Raised.ASSERTION, str(exc))
+        case.status = Status.PASS
+        return classify(case, Raised.NOTHING)
+
+    assert run({"a": "pass", "b": "pass", "c": "pass"})[0] is Status.PASS
+    status, reason = run({"a": "fail", "b": "fail", "c": "fail"})
+    assert status is Status.FAIL and "every target" in reason
+    status, reason = run({"a": "pass", "b": "fail", "c": "pass"})
+    assert status is Status.UNVERIFIED and "['b']" in reason
+    assert run({"a": "fail", "b": "unknown", "c": "fail"})[0] is Status.UNVERIFIED
+
+
+def test_multi_target_hosts_are_distinct_and_aaaa_hosts_exclude_httpbin():
+    from bat.fixtures import testdata
+
+    for hosts in (testdata.ECHO_HOSTS, testdata.AAAA_HOSTS, testdata.UNRELATED_URLS):
+        assert 2 <= len(hosts) <= 3 and len(set(hosts)) == len(hosts)
+    assert testdata.ECHO_HOSTS[0] == testdata.BLOCK_TARGET_HOST
+    assert "httpbin.org" not in testdata.AAAA_HOSTS, "httpbin.org has no AAAA record"
+    assert testdata.SIGNATURE_TARGET_HOST not in testdata.ECHO_HOSTS + testdata.AAAA_HOSTS
+    assert not any(h in url for url in testdata.UNRELATED_URLS for h in testdata.ECHO_HOSTS)
+
+
 def test_skip_is_only_for_user_accepted_results():
     """SKIP은 사용자가 버그로 보지 않기로 한 결과(known_issue, accepted_issue)에만 쓴다.
 
@@ -2684,7 +2733,7 @@ def test_skip_is_only_for_user_accepted_results():
             if "pytest.skip(" in line:
                 offenders.append(f"{path.relative_to(TESTS_DIR)}:{number}")
     assert not offenders, offenders
-    assert {"BAT-GAI-001", "BAT-X-010"} <= status_book.parked_ids()
+    assert "BAT-X-010" in status_book.parked_ids()
 
 
 def test_every_case_has_a_description():
