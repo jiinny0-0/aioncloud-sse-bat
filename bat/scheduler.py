@@ -134,13 +134,13 @@ def estimate_runtime(lanes: list[Lane], case_durations: dict[str, float]) -> dic
 
 
 _PRODUCT_BY_PREFIX = {
-    "BAS": "basic",
+    "BASIC": "basic",
     "SWG": "swg",
     "DLP": "dlp",
     "FW": "fwaas",
     "RBI": "rbi",
     "CASB": "casb",
-    "GAI": "genai",
+    "GEN": "genai",
     "ZTNA": "ztna",
     "EDR": "edr",
     "X": "cross",

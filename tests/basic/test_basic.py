@@ -30,7 +30,7 @@ pytestmark = [
 ]
 
 
-@pytest.mark.case("BAT-BAS-001")
+@pytest.mark.case("BAT-BASIC-001")
 @pytest.mark.diagnostic
 @pytest.mark.priority("P0")
 @pytest.mark.critical
@@ -52,7 +52,7 @@ def test_api_token_is_accepted(case, rest):
     pass_case(case)
 
 
-@pytest.mark.case("BAT-BAS-002")
+@pytest.mark.case("BAT-BASIC-002")
 @pytest.mark.diagnostic
 @pytest.mark.priority("P0")
 @pytest.mark.critical
@@ -93,7 +93,7 @@ def test_policy_can_be_written_and_read_back(case, run_context, web_policies):
         cleanup_failed(case, warning)
 
 
-@pytest.mark.case("BAT-BAS-003")
+@pytest.mark.case("BAT-BASIC-003")
 @pytest.mark.diagnostic
 @pytest.mark.priority("P0")
 @pytest.mark.critical
@@ -128,7 +128,7 @@ def test_security_log_is_readable(case, web_log):
     pass_case(case)
 
 
-@pytest.mark.case("BAT-BAS-004")
+@pytest.mark.case("BAT-BASIC-004")
 @pytest.mark.diagnostic
 @pytest.mark.priority("P1")
 def test_endpoint_is_behind_the_connector(case, run_context, executor, web_log, browser_session):
@@ -162,7 +162,7 @@ def test_endpoint_is_behind_the_connector(case, run_context, executor, web_log, 
     pass_case(case)
 
 
-@pytest.mark.case("BAT-BAS-005")
+@pytest.mark.case("BAT-BASIC-005")
 @pytest.mark.diagnostic
 @pytest.mark.priority("P2")
 def test_no_leftovers_from_previous_runs(case, rest, run_context):
@@ -191,7 +191,7 @@ def test_no_leftovers_from_previous_runs(case, rest, run_context):
     pass_case(case)
 
 
-@pytest.mark.case("BAT-BAS-006")
+@pytest.mark.case("BAT-BASIC-006")
 @pytest.mark.diagnostic
 @pytest.mark.priority("P1")
 @pytest.mark.critical
@@ -214,7 +214,7 @@ def test_management_api_is_not_intercepted(case, run_context, rest, executor):
             rest.post(
                 "/sia/v1/web/policy",
                 json={
-                    "name": f"BAT-BAS-006-probe-{case.case_id}",
+                    "name": f"BAT-BASIC-006-probe-{case.case_id}",
                     "description": "probe, deleted immediately",
                     "enable": False,
                     "event_logging": False,

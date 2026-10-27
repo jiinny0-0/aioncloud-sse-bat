@@ -38,7 +38,7 @@ def _resolve_app(genai_policies: GenAIPolicyFactory) -> dict:
     return app
 
 
-@pytest.mark.case("BAT-GAI-001")
+@pytest.mark.case("BAT-GEN-001")
 @pytest.mark.verifies(Step.USER_RESULT)
 @pytest.mark.priority("P1")
 def test_keyword_policy_round_trip(case, run_context, genai_policies):

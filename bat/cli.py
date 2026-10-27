@@ -32,8 +32,8 @@ DEFAULT_MARKERS = "not manual and not crud and not parked"
 
 # 케이스당 초. qa 직렬 실행에서 잰 값이다(5초 단위로 올림).
 ESTIMATED_SECONDS = {
-    "BAT-BAS-001": 5, "BAT-BAS-002": 5, "BAT-BAS-003": 5, "BAT-BAS-004": 5, "BAT-BAS-005": 5,
-    "BAT-BAS-006": 5,
+    "BAT-BASIC-001": 5, "BAT-BASIC-002": 5, "BAT-BASIC-003": 5, "BAT-BASIC-004": 5, "BAT-BASIC-005": 5,
+    "BAT-BASIC-006": 5,
     "BAT-SWG-001": 30, "BAT-SWG-002": 25, "BAT-SWG-003": 75, "BAT-SWG-004": 35, "BAT-SWG-005": 45,
     "BAT-SWG-006": 110, "BAT-SWG-007": 10, "BAT-SWG-008": 15, "BAT-SWG-009": 5, "BAT-SWG-010": 5,
     "BAT-SWG-011": 40, "BAT-SWG-012": 40, "BAT-SWG-013": 35, "BAT-SWG-014": 45, "BAT-SWG-015": 15,
@@ -46,7 +46,7 @@ ESTIMATED_SECONDS = {
     "BAT-FW-011": 15, "BAT-FW-012": 5, "BAT-FW-013": 15,
     "BAT-RBI-001": 25, "BAT-RBI-002": 5,
     "BAT-CASB-001": 5, "BAT-CASB-002": 5, "BAT-CASB-003": 10, "BAT-CASB-004": 55, "BAT-CASB-005": 5,
-    "BAT-GAI-001": 5,
+    "BAT-GEN-001": 5,
     "BAT-ZTNA-001": 5, "BAT-ZTNA-002": 5, "BAT-ZTNA-003": 5, "BAT-ZTNA-004": 5, "BAT-ZTNA-005": 5,
     "BAT-ZTNA-006": 5, "BAT-ZTNA-007": 5, "BAT-ZTNA-008": 5,
     "BAT-EDR-001": 5, "BAT-EDR-002": 5, "BAT-EDR-003": 5, "BAT-EDR-004": 60, "BAT-EDR-005": 60,
@@ -901,8 +901,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         # 수집 범위도 좁힌다. 그래야 워커 다섯 개가 전부 버릴 테스트 모듈을 각자
         # 다 import하지 않는다.
         prefix = args.case.split("-")[1].lower() if "-" in args.case else ""
-        mapped = {"swg": "swg", "dlp": "dlp", "fw": "fwaas", "rbi": "rbi", "casb": "casb",
-                  "gai": "genai", "ztna": "ztna", "edr": "edr", "x": "cross"}.get(prefix)
+        mapped = {"basic": "basic", "swg": "swg", "dlp": "dlp", "fw": "fwaas", "rbi": "rbi", "casb": "casb",
+                  "gen": "genai", "ztna": "ztna", "edr": "edr", "x": "cross"}.get(prefix)
         if mapped:
             targets = [PRODUCT_DIRS[mapped]]
     # 케이스 하나에는 워커 하나면 된다. 워커가 워크스페이스보다 많으면 케이스끼리

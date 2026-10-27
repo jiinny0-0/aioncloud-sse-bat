@@ -37,6 +37,11 @@ RENUMBERINGS: list[tuple[str, dict[str, str | None]]] = [
     }),
     # RBI: 002~004는 쓰인 적이 없다.
     ("2026-10-15T14:50:00", {"BAT-RBI-005": "BAT-RBI-002"}),
+    # 약어 변경(2026-10-28): BAS -> BASIC, GAI -> GEN. 기한은 옛 코드가 아직 돌 수 있는 기간을 넉넉히 잡았다.
+    ("2026-11-15T00:00:00", {
+        **{f"BAT-BAS-00{n}": f"BAT-BASIC-00{n}" for n in range(1, 7)},
+        "BAT-GAI-001": "BAT-GEN-001",
+    }),
 ]
 
 

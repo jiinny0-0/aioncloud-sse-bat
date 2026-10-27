@@ -15,7 +15,7 @@ from typing import Callable
 
 log = logging.getLogger(__name__)
 
-PREFLIGHT_CASE = "BAT-BAS-004"
+PREFLIGHT_CASE = "BAT-BASIC-004"
 TIMEOUT_SEC = 60
 INTERVAL_SEC = 5
 

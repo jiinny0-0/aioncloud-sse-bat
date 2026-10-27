@@ -246,7 +246,7 @@ def test_run_report_covers_every_worker_and_shows_unverified(tmp_path):
     second = ResultCollector(report_dir=tmp_path, run_id=RUN_ID, profile="qa")
     first.add(_finished("BAT-SWG-001", Status.PASS, ["user_visible_result"], "ok"))
     second.add(_finished("BAT-SWG-002", Status.UNVERIFIED, ["event_validation"], "criteria never evaluated"))
-    second.add(_finished("BAT-BAS-001", Status.UNVERIFIED, [], "diagnostic: no criterion"))
+    second.add(_finished("BAT-BASIC-001", Status.UNVERIFIED, [], "diagnostic: no criterion"))
     second.write_run_report()
 
     report = json.loads((tmp_path / "run-report.json").read_text(encoding="utf-8"))
@@ -255,7 +255,7 @@ def test_run_report_covers_every_worker_and_shows_unverified(tmp_path):
     summary = (tmp_path / "human-summary.md").read_text(encoding="utf-8")
     assert "Unverified: 2" in summary
     assert "BAT-SWG-002 [scenario] — criteria never evaluated" in summary
-    assert "BAT-BAS-001 [diagnostic]" in summary
+    assert "BAT-BASIC-001 [diagnostic]" in summary
 
 
 @pytest.mark.parametrize(
@@ -524,11 +524,11 @@ def test_the_leftover_check_ignores_policies_of_its_own_run():
         rows = [{"id": n, "name": name} for n, name in enumerate(names)]
         return SimpleNamespace(get=lambda path, params=None: {"policies": rows})
 
-    case = CaseResult(case_id="BAT-BAS-005", product="basic", scenario="leftovers")
+    case = CaseResult(case_id="BAT-BASIC-005", product="basic", scenario="leftovers")
     body(case=case, rest=listing(f"BAT-DLP-003-{RUN_ID}", "tt"), run_context=RUN_CONTEXT)
     assert case.steps[0].ok
 
-    case = CaseResult(case_id="BAT-BAS-005", product="basic", scenario="leftovers")
+    case = CaseResult(case_id="BAT-BASIC-005", product="basic", scenario="leftovers")
     with pytest.raises(AssertionError, match="BAT-DLP-006-20261012-163648-87bb50"):
         body(case=case, rest=listing(f"BAT-DLP-003-{RUN_ID}", "BAT-DLP-006-20261012-163648-87bb50-dlp"),
              run_context=RUN_CONTEXT)
@@ -2374,10 +2374,10 @@ def test_preflight_sees_the_endpoints_own_traffic_or_says_it_did_not(connected):
     from bat.preflight import traffic_reaches
 
     tenant = _FakePreflightTenant(connected=connected)
-    ok, detail = traffic_reaches(tenant, tenant, tenant, "BAT-BAS-004-x-preflight-b", "httpbin.org",
+    ok, detail = traffic_reaches(tenant, tenant, tenant, "BAT-BASIC-004-x-preflight-b", "httpbin.org",
                                  timeout_sec=30, interval_sec=5, sleep=tenant.sleep, clock=lambda: tenant.now)
     assert ok is connected, detail
-    assert tenant.created == [("BAT-BAS-004-x-preflight-b", "LOGGING", ["httpbin.org"])], \
+    assert tenant.created == [("BAT-BASIC-004-x-preflight-b", "LOGGING", ["httpbin.org"])], \
         "one LOGGING policy on one host: it can neither block nor lock the runner out"
     assert not tenant.active, "the probe policy is removed either way"
     if connected:
@@ -2391,7 +2391,7 @@ def test_preflight_names_a_policy_that_takes_the_test_host_first():
     from bat.preflight import traffic_reaches
 
     tenant = _FakePreflightTenant(connected=True, taken_by="tt")
-    ok, detail = traffic_reaches(tenant, tenant, tenant, "BAT-BAS-004-x-preflight-b", "httpbin.org",
+    ok, detail = traffic_reaches(tenant, tenant, tenant, "BAT-BASIC-004-x-preflight-b", "httpbin.org",
                                  timeout_sec=30, interval_sec=5, sleep=tenant.sleep, clock=lambda: tenant.now)
     assert ok is False
     assert detail.startswith("connected, but policy 'tt' (id 20, BLOCK)"), detail
@@ -2497,6 +2497,8 @@ def test_renumberings_apply_in_turn_and_only_to_runs_before_them():
     assert current_id("BAT-RBI-005", "2026-10-15T14:01:17") == "BAT-RBI-002"
     assert current_id("BAT-RBI-005", "2026-10-16T09:00:00") == "BAT-RBI-005", "a later run keeps its id"
     assert current_id("BAT-ZTNA-013", "2026-10-14T16:10:54") == "BAT-ZTNA-008"
+    assert current_id("BAT-BAS-004", "2026-10-27T10:00:00") == "BAT-BASIC-004"
+    assert current_id("BAT-GAI-001", "2026-10-26T14:43:38") == "BAT-GEN-001"
     assert current_id("BAT-ZTNA-014", "2026-10-14T16:10:54") is None
     assert current_id("BAT-SWG-001", "2026-10-01T00:00:00") == "BAT-SWG-001"
 
@@ -2751,7 +2753,7 @@ def test_result_book_takes_only_this_runs_cases(tmp_path):
     """결과 CSV의 상태는 그 실행의 케이스 결과뿐이다. 다른 실행의 결과는 섞이지 않는다."""
     from bat.report import result_book
 
-    for run_id, case_id, status in [("20261023-090000-aaaaaa", "BAT-BAS-001", "PASS"),
+    for run_id, case_id, status in [("20261023-090000-aaaaaa", "BAT-BASIC-001", "PASS"),
                                     ("20261023-100000-bbbbbb", "BAT-SWG-001", "FAIL")]:
         case_dir = tmp_path / "2026-10-23" / run_id / case_id
         case_dir.mkdir(parents=True)

@@ -3,7 +3,7 @@
 # actual_result는 PASS가 아닐 때 쓰는 한글 설명이다. PASS면 expected_results를 그대로 쓴다.
 # 새 케이스를 추가하면 여기에도 항목을 추가한다(selfcheck가 확인한다).
 
-BAT-BAS-001:
+BAT-BASIC-001:
   test_steps: |-
     1. Open API 토큰이 설정된 REST 클라이언트로 GET /sia/v1/user/group/list 요청
     2. 응답 payload가 dict(JSON 객체) 타입인지 확인
@@ -13,7 +13,7 @@ BAT-BAS-001:
     Params: offset=1, limit=1
   test_data: 'offset: 1, limit: 1 (고정 리터럴, rest.get 호출 params)'
   expected_results: API 응답이 dict 형태의 JSON 객체여야 하며, 이는 요청이 실제로 API까지 도달해 정상 처리되었음을 의미한다.
-BAT-BAS-002:
+BAT-BASIC-002:
   test_steps: |-
     1. case_id와 run_id를 조합해 정책 이름 생성(resource_name)
     2. Subject=HTTP_HOST, Condition=IS, value=[BLOCK_TARGET_HOST] rule 생성
@@ -27,9 +27,9 @@ BAT-BAS-002:
     Condition: IS
     Action Type: BLOCK
     Value: BLOCK_TARGET_HOST
-  test_data: 'policy_name: 동적 생성(resource_name(case_id, run_id) 조합, 예 BAT-BAS-002-<run_id>), rule value: ["httpbin.org"](BLOCK_TARGET_HOST), action_type: BLOCK'
+  test_data: 'policy_name: 동적 생성(resource_name(case_id, run_id) 조합, 예 BAT-BASIC-002-<run_id>), rule value: ["httpbin.org"](BLOCK_TARGET_HOST), action_type: BLOCK'
   expected_results: 생성 요청 직후 재조회한 정책의 name, action_type(BLOCK), enable(true)이 요청한 값과 정확히 일치해야 한다.
-BAT-BAS-003:
+BAT-BASIC-003:
   test_steps: |-
     1. web_log.security_events(lookback_min=1440)으로 최근 24시간 보안 이벤트 조회
     2. 이벤트가 0건이면 실행 조건 미비로 ERROR 처리(트래픽 부재로 스키마 검증 불가)
@@ -40,7 +40,7 @@ BAT-BAS-003:
     Required fields: id, time, policy_name, action
   test_data: lookback_min=1440 (고정 리터럴), required 필드 튜플 ("id", "time", "policy_name", "action")
   expected_results: 최근 24시간 내 보안 이벤트가 조회되고, 가장 최신 이벤트에 id/time/policy_name/action 필드가 모두 포함되어야 한다.
-BAT-BAS-004:
+BAT-BASIC-004:
   test_steps: |-
     1. 커넥터 프로세스(AIConnector for Client)가 실행 중인지 확인
     2. web_log.security_events(lookback_min=1440)으로 기존 이벤트 건수(before) 확인
@@ -52,7 +52,7 @@ BAT-BAS-004:
     Lookback: 24시간(1440분)
   test_data: ALLOW_TARGET_URL = "https://www.iana.org/"
   expected_results: 커넥터 프로세스(AIConnector for Client)가 실행 중이어야 하며, 브라우저로 허용 대상 URL을 방문한 뒤에도 보안 로그 API가 정상 조회되어야 한다(정책에 걸리지 않는 허용 트래픽이므로 신규 이벤트 발생 자체는 검증 대상이 아님).
-BAT-BAS-005:
+BAT-BASIC-005:
   test_steps: |-
     1. GET /sia/v1/web/policy/list 조회(offset=1, limit=500)
     2. 응답에서 policies/list/data 중 존재하는 키로 정책 목록 추출
@@ -64,7 +64,7 @@ BAT-BAS-005:
     Filter: is_bat_resource(name)
   test_data: 'offset: 1, limit: 500 (고정 리터럴, rest.get 호출 params)'
   expected_results: 이전 실행에서 생성된 BAT 명명 규칙(BAT-<PRODUCT>-<NNN>-<run_id>)의 웹 정책이 하나도 남아있지 않아야 한다.
-BAT-BAS-006:
+BAT-BASIC-006:
   test_steps: |-
     1. 커넥터 프로세스(AIConnector for Client) 확인 — 실행 중이 아니면 ERROR
     2. 커넥터가 켜진 상태에서 관리 API로 두 가지 쓰기 요청 전송: POST /sia/v1/web/policy(테스트용 정책), POST /sia/v1/user(테스트용 사용자)
@@ -74,7 +74,7 @@ BAT-BAS-006:
     Connector process: AIConnector for Client (고정)
     Target API: POST /sia/v1/web/policy, POST /sia/v1/user
   test_data: |-
-    POST /sia/v1/web/policy {name:"BAT-BAS-006-probe-...", action_type:BLOCK, users:[0], rule: HTTP_HOST IS bat-probe.invalid}
+    POST /sia/v1/web/policy {name:"BAT-BASIC-006-probe-...", action_type:BLOCK, users:[0], rule: HTTP_HOST IS bat-probe.invalid}
     POST /sia/v1/user {login_id:"bat-bas-006-...@bat.local", role:"USER"}
   expected_results: 두 관리 API 요청 모두 SSE에 가로채이지 않고 API에 도달한다(정상 수락 또는 API 에러 — 차단 페이지만 아니면 됨)
 BAT-CASB-001:
@@ -479,7 +479,7 @@ BAT-FW-013:
   test_parameters: 'Subject: FQDN, value: [httpbin.org]'
   test_data: httpbin.org
   expected_results: 4개 필드(user_id, user_name, src_ip, src_country_code) 전부 채워져 있어야 사고 조사가 가능하다
-BAT-GAI-001:
+BAT-GEN-001:
   test_steps: |-
     1. GenAI 서비스 카탈로그(SIA.common.genai_app)에서 이름에 "chatgpt"가 포함된 앱을 조회한다(없으면 ERROR)
     2. BAT 네이밍 규칙(resource_name)으로 정책 이름을 생성한다
@@ -499,7 +499,7 @@ BAT-GAI-001:
   test_data: |-
     value: ["password"]
     rule id: 1
-    policy_name: resource_name(case.case_id, run_context.run_id)로 실행 시마다 동적 생성(BAT-GAI-001-<run_id> 형태)
+    policy_name: resource_name(case.case_id, run_context.run_id)로 실행 시마다 동적 생성(BAT-GEN-001-<run_id> 형태)
   expected_results: GenAI 키워드 탐지(LOGGING) 정책이 생성된 뒤 find_id_by_name 조회에서 정상적으로 검색되어야 한다.
 BAT-SWG-001:
   test_steps: |-
