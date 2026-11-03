@@ -43,7 +43,7 @@ LANE_PRODUCTS: dict[str, tuple[str, ...]] = {
     "b": ("basic", "swg", "fwaas", "cross"),
     "c": ("dlp", "rbi"),
     "d": ("casb", "genai"),
-    "e": ("ztna", "edr"),
+    "e": ("ztna",),
 }
 
 
@@ -142,7 +142,6 @@ _PRODUCT_BY_PREFIX = {
     "CASB": "casb",
     "GEN": "genai",
     "ZTNA": "ztna",
-    "EDR": "edr",
     "X": "cross",
 }
 

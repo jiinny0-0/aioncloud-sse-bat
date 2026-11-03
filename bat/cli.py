@@ -22,12 +22,11 @@ PRODUCT_DIRS = {
     "casb": "tests/casb",
     "genai": "tests/genai",
     "ztna": "tests/ztna",
-    "edr": "tests/edr",
     "cross": "tests/cross",
     "basic": "tests/basic",
 }
 
-# EDR, RBI는 보류(parked)다. `--tag parked`로는 여전히 돌릴 수 있다.
+# RBI는 보류(parked)다. `--tag parked`로는 여전히 돌릴 수 있다.
 DEFAULT_MARKERS = "not manual and not crud and not parked"
 
 # 케이스당 초. qa 직렬 실행에서 잰 값이다(5초 단위로 올림).
@@ -49,7 +48,6 @@ ESTIMATED_SECONDS = {
     "BAT-GEN-001": 5,
     "BAT-ZTNA-001": 5, "BAT-ZTNA-002": 5, "BAT-ZTNA-003": 5, "BAT-ZTNA-004": 5, "BAT-ZTNA-005": 5,
     "BAT-ZTNA-006": 5, "BAT-ZTNA-007": 5, "BAT-ZTNA-008": 5,
-    "BAT-EDR-001": 5, "BAT-EDR-002": 5, "BAT-EDR-003": 5, "BAT-EDR-004": 60, "BAT-EDR-005": 60,
     "BAT-X-001": 25, "BAT-X-002": 20, "BAT-X-003": 25, "BAT-X-004": 25, "BAT-X-005": 20,
     "BAT-X-006": 50, "BAT-X-007": 20, "BAT-X-008": 15, "BAT-X-009": 15, "BAT-X-010": 70,
     "BAT-X-011": 50,
@@ -74,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("pytest_args", nargs="*", help="extra args passed through to pytest")
 
-    sub.add_parser("progress", help="print the latest run's progress (also in reports/run-progress.md)")
+    sub.add_parser("progress", help="print the latest run's progress")
 
     lanes_cmd = sub.add_parser("lanes", help="print the lane assignment for the current config")
     lanes_cmd.add_argument("--profile", default=os.getenv("BAT_PROFILE", "qa"))
@@ -902,7 +900,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         # 다 import하지 않는다.
         prefix = args.case.split("-")[1].lower() if "-" in args.case else ""
         mapped = {"basic": "basic", "swg": "swg", "dlp": "dlp", "fw": "fwaas", "rbi": "rbi", "casb": "casb",
-                  "gen": "genai", "ztna": "ztna", "edr": "edr", "x": "cross"}.get(prefix)
+                  "gen": "genai", "ztna": "ztna", "x": "cross"}.get(prefix)
         if mapped:
             targets = [PRODUCT_DIRS[mapped]]
     # 케이스 하나에는 워커 하나면 된다. 워커가 워크스페이스보다 많으면 케이스끼리
@@ -957,17 +955,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     pytest_code = subprocess.call(command, cwd=str(ROOT), env=env)
     code = bat_exit_code(pytest_code, run_id)
     _record_in_status_book(args.profile, run_id)
-    _finish_progress(run_id)
     return code
-
-
-def _finish_progress(run_id: str) -> None:
-    from bat.report import progress
-    from bat.settings import REPORTS_DIR
-
-    for run_dir in REPORTS_DIR.glob(f"*/{run_id}"):
-        if (run_dir / progress.PLAN_NAME).exists() and progress.update(run_dir, finished=True):
-            print(f"Progress     : {REPORTS_DIR / progress.PROGRESS_NAME}")
 
 
 def cmd_progress() -> int:

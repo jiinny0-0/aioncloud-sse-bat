@@ -32,14 +32,14 @@ namespaces = false
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
-    "product(name): SSE product under test (basic, swg, dlp, fwaas, rbi, casb, genai, ztna, edr, cross)",
+    "product(name): SSE product under test (basic, swg, dlp, fwaas, rbi, casb, genai, ztna, cross)",
     "case(id): BAT case id, e.g. BAT-SWG-001",
     "priority(level): P0..P4",
     "lane(name): resource lane (api, b, c, d, e)",
     "smoke: representative case per product",
     "critical: P0 cases",
     "manual: requires a human action, excluded from the default run",
-    "parked: held back (EDR, RBI) — excluded from the default run and the status book; run with --tag parked",
+    "parked: held back (RBI) — excluded from the default run and the status book; run with --tag parked",
     "crud: only creates/reads/deletes through the API (no traffic, no events) — API-suite territory, excluded from the default run",
     "verifies(*steps): mandatory criteria (user_visible_result, event_validation) — PASS needs a passing assertion on each",
     "known_issue(reason): a failure the user does not treat as a bug — reported as SKIP with the reason",

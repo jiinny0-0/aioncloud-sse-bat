@@ -9,7 +9,7 @@ BAT(Business Acceptance Test) 자동화입니다. API 테스트(응답·CRUD)나
    → 사용자 가시 결과 → 이벤트/로그 검증 → 리소스 회수
 ```
 
-대상 제품: basic, swg, dlp, fwaas, casb, genai, ztna, cross (edr, rbi와 BAT-X-010은 보류)
+대상 제품: basic, swg, dlp, fwaas, casb, genai, ztna, cross (rbi와 BAT-X-010은 보류)
 
 ---
 
@@ -85,7 +85,7 @@ bat run --case BAT-SWG-001 --headed  # 브라우저 표시
 bat run --profile <스테이지>
 bat run --dry-run                    # 계획만 출력
 
-bat progress                         # 진행 중인 실행의 현황 (reports/run-progress.md)
+bat progress                         # 진행 중인 실행의 현황
 ```
 
 `bat run`은 시작 전에 연결을 점검합니다. 워크스페이스마다 LOGGING 정책을 하나 걸고 단말에서
@@ -115,7 +115,7 @@ bat progress                         # 진행 중인 실행의 현황 (reports/r
 Lane b   basic, swg, fwaas, cross
 Lane c   dlp, rbi
 Lane d   casb, genai
-Lane e   ztna, edr
+Lane e   ztna
 ```
 
 단말이 레인보다 적으면 레인이 병합됩니다. BAT 정책은 워크스페이스의 모든 사용자에게

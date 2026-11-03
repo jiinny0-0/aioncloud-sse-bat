@@ -21,8 +21,6 @@ log = logging.getLogger(__name__)
 # 스테이지마다 다를 수 있어 environments.yaml의 connector_process로 바꾼다(lguplus 계열은 U+SASE).
 # 프로세스가 떠 있다고 워크스페이스에 로그인돼 있다는 뜻은 아니다. 그건 bat run의 preflight가 본다.
 CONNECTOR_PROCESS = "AIConnector for Client"
-# EDR 에이전트 서비스다.
-EDR_SERVICE = "monster"
 CONNECTOR_LOG_DIR = r"C:\ProgramData\Monitorapp\AIConnector for Client\log"
 
 
@@ -150,15 +148,6 @@ def build_executor(endpoint: Endpoint, username: str = "", password: str = "") -
     return WinRmExecutor(endpoint, username, password)
 
 
-def service_state(executor: Executor, service: str) -> str:
-    """Running / Stopped / NotFound 중 하나를 반환한다."""
-    result = executor.run_powershell(
-        f"(Get-Service -Name '{service}' -ErrorAction SilentlyContinue).Status"
-    )
-    state = result.stdout.strip()
-    return state or "NotFound"
-
-
 def process_state(executor: Executor, process: str) -> str:
     """Running(프로세스가 하나 이상 있음) / NotRunning 중 하나를 반환한다."""
     result = executor.run_powershell(
@@ -174,18 +163,3 @@ def connector_state(executor: Executor, process: str = CONNECTOR_PROCESS) -> str
 def connector_running(executor: Executor, process: str = CONNECTOR_PROCESS) -> bool:
     return connector_state(executor, process).lower() == "running"
 
-
-def edr_agent_running(executor: Executor) -> bool:
-    return service_state(executor, EDR_SERVICE).lower() == "running"
-
-
-def edr_agent_version(executor: Executor) -> str:
-    """설치된 Monster 에이전트 버전을 서비스 바이너리에서 읽는다."""
-    script = (
-        "$svc = Get-CimInstance Win32_Service -Filter \"Name='monster'\";"
-        "if ($svc) {"
-        "  $path = $svc.PathName.Trim('\"');"
-        "  (Get-Item $path).VersionInfo.ProductVersion"
-        "}"
-    )
-    return executor.run_powershell(script).stdout.strip()

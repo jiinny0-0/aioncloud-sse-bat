@@ -350,8 +350,8 @@ def test_a_cleanup_failure_behind_a_failed_body_still_reaches_the_report():
 
 # -- 스위트 자체에 대한 정적 가드 -------------------------------------
 
-# EDR은 보류(parked)다. 그 케이스는 이 점검에서 제외된다.
-UNDECLARED_ALLOWED_DIRS = {"edr"}
+# 기준 선언 점검에서 뺄 제품 폴더(지금은 없음).
+UNDECLARED_ALLOWED_DIRS: set[str] = set()
 
 
 def _case_functions():
@@ -2292,26 +2292,25 @@ def test_the_catalog_reads_every_case_in_tests():
 
 
 def test_parked_products_stay_out_of_the_default_run_and_the_tracker(tmp_path):
-    """보류(parked)된 EDR·RBI 케이스는 기본 실행에서 돌지 않고, 현황에 오르지 않으며, 다음 sync에서 지워진다."""
+    """보류(parked)된 RBI 케이스는 기본 실행에서 돌지 않고, 현황에 오르지 않으며, 다음 sync에서 지워진다."""
     from bat import cli
     from bat.report import status_book
 
     assert "not parked" in cli.DEFAULT_MARKERS
     parked = status_book.parked_ids()
-    assert {i for i in parked if i.startswith("BAT-EDR-")} == {f"BAT-EDR-00{n}" for n in range(1, 6)}
     assert {"BAT-RBI-001", "BAT-RBI-002", "BAT-X-004"} <= parked, "X-004 lives in the RBI file"
-    assert not any(i.startswith(("BAT-EDR-", "BAT-RBI-")) for i in {e["case_id"] for e in status_book.catalog()})
+    assert not any(i.startswith("BAT-RBI-") for i in {e["case_id"] for e in status_book.catalog()})
 
     tests_dir, reports_dir = _tracker(tmp_path)
     _write_cases(tests_dir, ("BAT-SWG-001", ""))
-    (tests_dir / "edr").mkdir()
-    (tests_dir / "edr" / "test_edr_x.py").write_text(
-        'import pytest\npytestmark = [pytest.mark.product("edr"), pytest.mark.parked]\n\n'
-        '@pytest.mark.case("BAT-EDR-001")\ndef test_x():\n    """EDR."""\n', encoding="utf-8")
-    status_book.write_rows([{"case_id": "BAT-EDR-001", "status": "PASS"}], status_book.book_path(reports_dir))
+    (tests_dir / "rbi").mkdir()
+    (tests_dir / "rbi" / "test_rbi_x.py").write_text(
+        'import pytest\npytestmark = [pytest.mark.product("rbi"), pytest.mark.parked]\n\n'
+        '@pytest.mark.case("BAT-RBI-001")\ndef test_x():\n    """RBI."""\n', encoding="utf-8")
+    status_book.write_rows([{"case_id": "BAT-RBI-001", "status": "PASS"}], status_book.book_path(reports_dir))
     status_book.sync_catalog(reports_dir, tests_dir)
     _write_run(reports_dir, "qa", "20261015-150000-aaaaaa", "2026-10-15T15:00:00",
-               {"BAT-SWG-001": "PASS", "BAT-EDR-001": "SKIP"})
+               {"BAT-SWG-001": "PASS", "BAT-RBI-001": "SKIP"})
     status_book.record_run("qa", "20261015-150000-aaaaaa", reports_dir, tests_dir)
     assert set(_rows(reports_dir)) == {"BAT-SWG-001"}
 
@@ -2440,7 +2439,7 @@ def test_lanes_on_one_workspace_never_run_side_by_side():
                  products=products)
             for ws, name, products in pairs]
 
-    merged = lanes(("sbatest1", "b", ("basic", "swg", "fwaas", "cross", "dlp", "rbi", "casb", "genai", "ztna", "edr")))
+    merged = lanes(("sbatest1", "b", ("basic", "swg", "fwaas", "cross", "dlp", "rbi", "casb", "genai", "ztna")))
     assert parallel_slots(merged) == 1
     assert {concurrency_group(merged, p) for p in ("swg", "dlp", "casb", "cross")} == {"ws-sbatest1"}
 
@@ -2499,6 +2498,7 @@ def test_renumberings_apply_in_turn_and_only_to_runs_before_them():
     assert current_id("BAT-ZTNA-013", "2026-10-14T16:10:54") == "BAT-ZTNA-008"
     assert current_id("BAT-BAS-004", "2026-10-27T10:00:00") == "BAT-BASIC-004"
     assert current_id("BAT-GAI-001", "2026-10-26T14:43:38") == "BAT-GEN-001"
+    assert current_id("BAT-EDR-003", "2026-10-15T09:00:00") is None, "EDR cases were removed"
     assert current_id("BAT-ZTNA-014", "2026-10-14T16:10:54") is None
     assert current_id("BAT-SWG-001", "2026-10-01T00:00:00") == "BAT-SWG-001"
 
@@ -2521,7 +2521,7 @@ def test_a_new_stage_gets_its_columns_on_the_next_sync(tmp_path, monkeypatch):
 
 
 def test_run_progress_counts_what_the_run_left_on_disk(tmp_path):
-    """reports/run-progress.md: plan.json + result.json 파일에서 완료/전체, 상태별 개수,
+    """bat progress: plan.json + result.json 파일에서 완료/전체, 상태별 개수,
     도는 중인 케이스, FAIL/ERROR id, 남은 시간을 낸다."""
     from datetime import datetime
     from bat.report import progress
@@ -2543,9 +2543,6 @@ def test_run_progress_counts_what_the_run_left_on_disk(tmp_path):
     (run_dir / "run-report.json").write_text("{}", encoding="utf-8")
     done = progress.render(run_dir, estimates={})
     assert "끝남" in done and "현재:" not in done, done
-    out = tmp_path / "run-progress.md"
-    assert progress.update(run_dir, out=out) == out and out.read_text(encoding="utf-8") == done
-    assert progress.update(tmp_path / "no-such-run", out=out) is None, "never raises into a run"
     assert progress.latest_run_dir(tmp_path) == run_dir
 
 
@@ -2726,7 +2723,7 @@ def test_skip_is_only_for_user_accepted_results():
     """
     from bat.report import status_book
 
-    parked_dirs = {"edr", "rbi"}
+    parked_dirs = {"rbi"}
     offenders = []
     for path in sorted(TESTS_DIR.rglob("*.py")):
         if path.name in ("support.py", "test_selfcheck.py") or path.parent.name in parked_dirs:

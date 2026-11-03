@@ -344,7 +344,6 @@ def case(request, run_context, lane, collector) -> Iterator[CaseResult]:
     request.node._bat_case = result
     UNRAISED_CLEANUP_FAILURES.clear()  # 케이스는 자기 본문이 남긴 것만 가진다
     progress.mark_running(run_context.report_dir, result.case_id)
-    progress.update(run_context.report_dir)
     try:
         yield result
     except Exception as exc:
@@ -358,7 +357,6 @@ def case(request, run_context, lane, collector) -> Iterator[CaseResult]:
             result.error = result.verdict_reason or "case did not set a status"
         collector.add(result)
         progress.mark_running(run_context.report_dir, None)
-        progress.update(run_context.report_dir)
 
 
 def _take_unraised_cleanup_failures(result: CaseResult) -> None:
@@ -494,7 +492,7 @@ def _group_by_workspace(items) -> None:
 
 
 def pytest_collection_finish(session):
-    """reports/run-progress.md용으로 이번 실행의 계획(돌 케이스)을 쓴다.
+    """`bat progress`용으로 이번 실행의 계획(돌 케이스)을 쓴다.
 
     모든 워커가 같은 item을 수집하므로 계획은 하나면 된다.
     """
@@ -507,9 +505,8 @@ def pytest_collection_finish(session):
         context = build_run_context(profile_name=env("BAT_PROFILE", "qa"))
         progress.write_plan(context.report_dir, context.run_id, context.profile.name, case_ids,
                             int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1")))
-        progress.update(context.report_dir)
     except Exception as exc:  # noqa: BLE001 - 진행 상황 기록 때문에 실행이 멈추면 안 된다
-        log.warning("No progress file for this run: %s", exc)
+        log.warning("No progress plan for this run: %s", exc)
 
 
 def pytest_configure(config):

@@ -16,7 +16,7 @@ from bat.verdict import counts_against_run
 
 log = logging.getLogger(__name__)
 
-PRODUCT_ORDER = ["ztna", "edr", "fwaas", "rbi", "swg", "casb", "genai", "dlp", "cross"]
+PRODUCT_ORDER = ["ztna", "fwaas", "rbi", "swg", "casb", "genai", "dlp", "cross"]
 
 
 def load_cases(report_dir: Path) -> list[dict[str, Any]]:

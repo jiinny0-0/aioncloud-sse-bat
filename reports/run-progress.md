@@ -1,3 +1,0 @@
-Run 20261023-144728-9557b1 (lguplus) — 1/1 (100%), 시작 14:47, 경과 0분, 끝남
-PASS 1 / FAIL 0 / UNVERIFIED 0 / SKIP 0 / ERROR 0
-FAIL/ERROR: -

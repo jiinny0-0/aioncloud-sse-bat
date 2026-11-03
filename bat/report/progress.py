@@ -1,4 +1,4 @@
-"""실행의 실시간 진행 상황: reports/run-progress.md와 `bat progress`.
+"""실행의 실시간 진행 상황: `bat progress`.
 
 실행이 디스크에 남기는 파일로 만들므로 xdist 워커끼리 공유하는 것이 없다.
 plan.json(이번 실행이 돌 케이스), <case>/result.json(끝난 케이스마다 하나),
@@ -16,7 +16,6 @@ from typing import Any
 from bat.settings import REPORTS_DIR
 
 PLAN_NAME = "plan.json"
-PROGRESS_NAME = "run-progress.md"
 STATUSES = ("PASS", "FAIL", "UNVERIFIED", "SKIP", "ERROR")
 
 
@@ -81,14 +80,6 @@ def render(report_dir: Path, *, finished: bool = False, now: datetime | None = N
         lines.append(f"현재: {', '.join(s['running'])}")
     lines.append(f"FAIL/ERROR: {', '.join(s['failed']) or '-'}")
     return "\n".join(lines) + "\n"
-
-
-def update(report_dir: Path, *, finished: bool = False, out: Path | None = None) -> Path | None:
-    """reports/run-progress.md를 다시 쓴다. 예외를 내지 않는다. 진행 표시가 실행을 깨면 안 된다."""
-    try:
-        return _atomic_write(out or REPORTS_DIR / PROGRESS_NAME, render(report_dir, finished=finished))
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def latest_run_dir(reports_dir: Path = REPORTS_DIR) -> Path | None:

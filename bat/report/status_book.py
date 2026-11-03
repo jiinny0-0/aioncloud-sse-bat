@@ -42,6 +42,8 @@ RENUMBERINGS: list[tuple[str, dict[str, str | None]]] = [
         **{f"BAT-BAS-00{n}": f"BAT-BASIC-00{n}" for n in range(1, 7)},
         "BAT-GAI-001": "BAT-GEN-001",
     }),
+    # EDR 케이스는 지웠다(2026-11-03, 테스트하지 않음).
+    ("2026-12-01T00:00:00", {f"BAT-EDR-00{n}": None for n in range(1, 6)}),
 ]
 
 
