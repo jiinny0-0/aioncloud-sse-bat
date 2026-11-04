@@ -1,7 +1,9 @@
 """REST OpenAPI 범위 밖의 모든 작업에 쓰는 콘솔 GraphQL 클라이언트다."""
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import logging
 from typing import Any
 
@@ -22,20 +24,35 @@ def _looks_like_block_page(response: Any) -> bool:
     head = response.text[:400].lower()
     return any(marker.lower() in head for marker in _BLOCK_PAGE_MARKERS)
 
+# 2026-11-04 콘솔 업데이트로 authorization.console이 없어졌다. 세션 토큰(JWT)은 이제 응답 본문이
+# 아니라 Set-Cookie(예: sia_qastage_console)로 오고, 그 값을 Bearer로 보내면 이전과 같이 인증된다.
 CONSOLE_LOGIN = """
 mutation BatConsoleLogin($email: String!, $password: String!, $workspace: String!) {
   authorization {
-    console(email: $email, password: $password, workspace: $workspace) {
-      token_value
-      user_name
-      user_role
-      admin_level
-      workspace
-      expire_at
+    session {
+      issuance(email: $email, password: $password, workspace: $workspace) {
+        expire_at
+      }
     }
   }
 }
 """
+
+def _session_cookie(cookies: httpx.Cookies) -> str:
+    """로그인 응답이 남긴 세션 쿠키 값. 이름이 스테이지마다 달라(sia_<stage>_console) JWT 모양으로 찾는다."""
+    jwts = [(c.name, c.value) for c in cookies.jar if c.value and c.value.count(".") == 2]
+    jwts.sort(key=lambda item: not item[0].endswith("_console"))  # *_console을 먼저
+    return jwts[0][1] if jwts else ""
+
+
+def _jwt_claims(token: str) -> dict[str, Any]:
+    """서명은 확인하지 않고 표시용 정보(role, exp 등)만 읽는다."""
+    try:
+        part = token.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    except (IndexError, ValueError):
+        return {}
+
 
 MAKE_OPENAPI_TOKEN = """
 mutation BatMakeOpenAPIToken($token_expiration: Int) {
@@ -74,17 +91,21 @@ class GraphQLClient:
             },
             authenticated=False,
         )
-        console = (payload.get("authorization") or {}).get("console") or {}
-        token = console.get("token_value")
+        issuance = ((payload.get("authorization") or {}).get("session") or {}).get("issuance") or {}
+        token = _session_cookie(self._client.cookies)
         if not token:
-            raise AuthError(f"Console login returned no token for workspace {self.workspace}")
+            raise AuthError(f"Console login returned no session cookie for workspace {self.workspace}")
         self._token = token
-        log.info(
-            "Console session established: workspace=%s role=%s",
-            console.get("workspace"),
-            console.get("user_role"),
-        )
-        return console
+        claims = _jwt_claims(token)
+        session = {
+            "token_value": token,
+            "user_name": claims.get("user_name") or login_id,
+            "user_role": claims.get("role"),
+            "workspace": self.workspace,
+            "expire_at": issuance.get("expire_at") or claims.get("exp"),
+        }
+        log.info("Console session established: workspace=%s role=%s", self.workspace, session["user_role"])
+        return session
 
     def make_openapi_token(self, expiration_sec: int | None = None) -> str:
         """REST OpenAPI 토큰을 발급한다. 호출자는 반드시 TokenBudget을 거쳐야 한다."""
