@@ -64,6 +64,7 @@ BAT_OPENAPI_TOKEN_<WORKSPACE>=...     # 워크스페이스별 (우선)
 | 변수 | 기본값 |
 | --- | --- |
 | `BAT_PROFILE` | `qa` |
+| `BAT_WORKSPACE` | 없음(설정 파일의 워크스페이스). 있으면 스테이지의 모든 워크스페이스 이름을 이 값으로 바꿈 |
 | `BAT_EVENT_TIMEOUT_SEC` / `BAT_POLICY_TIMEOUT_SEC` | 30 / 20 |
 | `BAT_TOKEN_BUDGET` | 10 |
 

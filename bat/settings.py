@@ -207,9 +207,11 @@ def _build_profile(name: str, item: dict) -> Profile:
 
 
 def _build_workspaces(item: dict) -> list[Workspace]:
+    # 설정 파일을 고치지 않고 워크스페이스를 바꿔 돌릴 때(봇의 /bat custom 등) 쓴다.
+    forced = env("BAT_WORKSPACE")
     return [
         Workspace(
-            name=row["name"],
+            name=forced or row["name"],
             lane=row["lane"],
             admin_env_user=row.get("admin_env_user", "BAT_CONSOLE_USER"),
             admin_env_password=row.get("admin_env_password", "BAT_CONSOLE_PASSWORD"),
