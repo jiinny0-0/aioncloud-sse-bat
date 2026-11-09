@@ -72,6 +72,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-preflight", action="store_true",
         help="do not first check that each endpoint's traffic reaches its workspace",
     )
+    run.add_argument(
+        "--lang", choices=["ko", "en"], default=None,
+        help="language of the result CSV (default: BAT_REPORT_LANG, else ko)",
+    )
     run.add_argument("pytest_args", nargs="*", help="extra args passed through to pytest")
 
     sub.add_parser("progress", help="print the latest run's progress")
@@ -96,6 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status.add_argument("case_id", nargs="?", default="", help="for show")
     status.add_argument("--profile", default=os.getenv("BAT_PROFILE", "qa"), help="for result")
+    status.add_argument(
+        "--lang", choices=["ko", "en"], default=None,
+        help="for result: CSV language (default: BAT_REPORT_LANG, else ko)",
+    )
 
     diag = sub.add_parser("traffic", help="check whether this machine's traffic reaches SSE")
     diag.add_argument("--profile", default=os.getenv("BAT_PROFILE", "qa"))
@@ -936,6 +944,8 @@ def _load_exclusions() -> list[str]:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    if args.lang:  # --lang는 BAT_REPORT_LANG과 같은 값이다(결과 CSV를 쓸 때 읽는다)
+        os.environ["BAT_REPORT_LANG"] = args.lang
     lanes, estimate = _plan(args.profile)
 
     if args.dry_run:
@@ -1065,7 +1075,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         if not run_id:
             print(f"No saved run for {args.profile}")
             return 1
-        print(result_book.write_for_run(args.profile, run_id))
+        print(result_book.write_for_run(args.profile, run_id, lang=args.lang))
         return 0
     row = next((r for r in status_book.read_rows(path) if r["case_id"] == args.case_id), None)
     print(row or f"{args.case_id} not in {path.name}")

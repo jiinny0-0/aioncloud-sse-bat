@@ -2,6 +2,9 @@
 # Expected Results, Actual Result 열을 채운다.
 # actual_result는 PASS가 아닐 때 쓰는 한글 설명이다. PASS면 expected_results를 그대로 쓴다.
 # 새 케이스를 추가하면 여기에도 항목을 추가한다(selfcheck가 확인한다).
+# en: 아래에는 BAT_REPORT_LANG=en일 때 쓰는 영어판을 같은 키로 둔다. scenario는 영어판에만
+# 있다(한국어는 테스트 docstring 첫 줄). 한국어를 고치면 en도 같이 고친다. 빠진 키는 한국어로
+# 대체되고 결과 CSV를 쓸 때 경고가 남는다(selfcheck가 누락을 확인한다).
 
 BAT-BASIC-001:
   test_steps: |-
@@ -13,6 +16,17 @@ BAT-BASIC-001:
     Params: offset=1, limit=1
   test_data: 'offset: 1, limit: 1 (고정 리터럴, rest.get 호출 params)'
   expected_results: API 응답이 dict 형태의 JSON 객체여야 하며, 이는 요청이 실제로 API까지 도달해 정상 처리되었음을 의미한다.
+  en:
+    scenario: A request authenticated with an Open API token is processed normally.
+    test_steps: |-
+      1. Send GET /sia/v1/user/group/list with a REST client that has the Open API token configured
+      2. Check that the response payload is a dict (JSON object)
+      3. Record the result and mark the case PASS
+    test_parameters: |-
+      Endpoint: GET /sia/v1/user/group/list
+      Params: offset=1, limit=1
+    test_data: 'offset: 1, limit: 1 (fixed literals, params of the rest.get call)'
+    expected_results: The API response must be a JSON object (dict), which means the request actually reached the API and was processed normally.
 BAT-BASIC-002:
   test_steps: |-
     1. case_id와 run_id를 조합해 정책 이름 생성(resource_name)
@@ -29,6 +43,23 @@ BAT-BASIC-002:
     Value: BLOCK_TARGET_HOST
   test_data: 'policy_name: 동적 생성(resource_name(case_id, run_id) 조합, 예 BAT-BASIC-002-<run_id>), rule value: ["httpbin.org"](BLOCK_TARGET_HOST), action_type: BLOCK'
   expected_results: 생성 요청 직후 재조회한 정책의 name, action_type(BLOCK), enable(true)이 요청한 값과 정확히 일치해야 한다.
+  en:
+    scenario: When a policy is created, the stored content is read back exactly as requested.
+    test_steps: |-
+      1. Build the policy name from case_id and run_id (resource_name)
+      2. Create a rule with Subject=HTTP_HOST, Condition=IS, value=[BLOCK_TARGET_HOST]
+      3. Temporarily create a web policy with action_type=BLOCK via web_policies.temporary()
+      4. Record the created policy_id in case.policy_ids
+      5. Re-read the created policy with web_policies.get()
+      6. Compare the read name/action_type/enable with the requested values
+      7. The policy is deleted automatically when the with block ends (temporary context)
+    test_parameters: |-
+      Subject: HTTP_HOST
+      Condition: IS
+      Action Type: BLOCK
+      Value: BLOCK_TARGET_HOST
+    test_data: 'policy_name: generated dynamically (combination of resource_name(case_id, run_id), e.g. BAT-BASIC-002-<run_id>), rule value: ["httpbin.org"] (BLOCK_TARGET_HOST), action_type: BLOCK'
+    expected_results: The name, action_type (BLOCK) and enable (true) of the policy re-read right after the create request must match the requested values exactly.
 BAT-BASIC-003:
   test_steps: |-
     1. web_log.security_events(lookback_min=1440)으로 최근 24시간 보안 이벤트 조회
@@ -40,6 +71,18 @@ BAT-BASIC-003:
     Required fields: id, time, policy_name, action
   test_data: lookback_min=1440 (고정 리터럴), required 필드 튜플 ("id", "time", "policy_name", "action")
   expected_results: 최근 24시간 내 보안 이벤트가 조회되고, 가장 최신 이벤트에 id/time/policy_name/action 필드가 모두 포함되어야 한다.
+  en:
+    scenario: The security log API can be queried and contains the required fields.
+    test_steps: |-
+      1. Query security events of the last 24 hours with web_log.security_events(lookback_min=1440)
+      2. If there are 0 events, treat it as an unmet execution condition and mark ERROR (the schema cannot be verified without traffic)
+      3. Check that the required fields (id, time, policy_name, action) exist in the latest event (raw)
+      4. Verify that no field is missing
+    test_parameters: |-
+      Lookback: 24 hours (1440 minutes)
+      Required fields: id, time, policy_name, action
+    test_data: lookback_min=1440 (fixed literal), required field tuple ("id", "time", "policy_name", "action")
+    expected_results: Security events within the last 24 hours are returned, and the latest event must contain all of the id/time/policy_name/action fields.
 BAT-BASIC-004:
   test_steps: |-
     1. 커넥터 프로세스가 실행 중인지 확인
@@ -53,6 +96,20 @@ BAT-BASIC-004:
     Lookback: 24시간(1440분)
   test_data: ALLOW_TARGET_URL = "https://www.iana.org/"
   expected_results: 커넥터 프로세스가 실행 중이고, 단말이 보낸 마커 요청이 LOGGING 정책의 보안 로그 행으로 찍힌다(트래픽이 실제로 SSE를 경유).
+  en:
+    scenario: Traffic from the test endpoint actually passes through SSE.
+    test_steps: |-
+      1. Check that the connector process is running
+      2. Create an HTTP_HOST LOGGING policy for the ALLOW_TARGET_URL host (www.iana.org)
+      3. Repeatedly visit the marked ALLOW_TARGET_URL with the endpoint browser for the propagation time
+      4. Check that a row containing that marker appears in the security log with this policy id (evidence that this endpoint's traffic passes through SSE). The row's device_id, user and source IP are kept as evidence
+      5. Delete the policy
+    test_parameters: |-
+      Connector process: AIConnector for Client
+      Target URL: ALLOW_TARGET_URL
+      Lookback: 24 hours (1440 minutes)
+    test_data: ALLOW_TARGET_URL = "https://www.iana.org/"
+    expected_results: The connector process is running, and the marked request sent by the endpoint appears as a security log row of the LOGGING policy (traffic actually passes through SSE).
 BAT-BASIC-005:
   test_steps: |-
     1. 웹, DLP, GenAI, CASB 두 종류, RBI, DNS/Application Firewall, ZTNA 접근제어·터널·접근정책 목록을 모두 읽음(웹·DLP는 total로 전체를 읽었는지 확인)
@@ -63,6 +120,17 @@ BAT-BASIC-005:
     Filter: BAT 이름 규칙이면서 이번 실행(run_id)이 아닌 것(GenAI는 description의 이름)
   test_data: 이번 실행의 run_id(같은 실행의 리소스는 제외)
   expected_results: 이전 실행이 남긴 BAT 리소스가 어떤 정책 종류에도 없다.
+  en:
+    scenario: No BAT resources are left over from previous runs.
+    test_steps: |-
+      1. Read all lists: web, DLP, GenAI, two kinds of CASB, RBI, DNS/Application Firewall, ZTNA access control, tunnel and access policy (for web and DLP, confirm from total that the whole list was read)
+      2. FAIL if there is any BAT resource that is not from this run
+      3. UNVERIFIED if nothing is left over but some list could not be read
+    test_parameters: |-
+      Lists: web (GET /sia/v1/web/policy/list, limit 500), DLP (GET /sia/v1/dlp/policy, limit 100), 9 kinds of GraphQL policy lists
+      Filter: matches the BAT naming rule and is not from this run (run_id) (for GenAI, the name in description)
+    test_data: run_id of this run (resources of the same run are excluded)
+    expected_results: No BAT resource left over from a previous run exists in any policy type.
 BAT-BASIC-006:
   test_steps: |-
     1. 커넥터 실행 중인지 확인
@@ -76,6 +144,20 @@ BAT-BASIC-006:
     POST /sia/v1/web/policy {name:"BAT-BASIC-006-probe-...", action_type:BLOCK, users:[0], rule: HTTP_HOST IS bat-probe.invalid}
     POST /sia/v1/user {login_id:"bat-bas-006-...@bat.local", role:"USER"}
   expected_results: 커넥터가 켜진 상태에서 관리 API 쓰기 요청이 SSE에 가로채이지 않고 API에 도달한다.
+  en:
+    scenario: Management API requests are not intercepted by SSE even while the connector is running.
+    test_steps: |-
+      1. Check that the connector is running
+      2. Send POST /sia/v1/web/policy (disabled probe policy) and POST /sia/v1/user (probe user)
+      3. If the response is an SSE block page (HTML, whether with an error code or 2xx), the verdict is intercepted; if it is a JSON response from the API (including errors), the verdict is reached
+      4. Delete the probe policy and user and re-check that they are gone (if that fails, a cleanup warning)
+    test_parameters: |-
+      Connector process: AIConnector for Client (fixed)
+      Target API: POST /sia/v1/web/policy, POST /sia/v1/user
+    test_data: |-
+      POST /sia/v1/web/policy {name:"BAT-BASIC-006-probe-...", action_type:BLOCK, users:[0], rule: HTTP_HOST IS bat-probe.invalid}
+      POST /sia/v1/user {login_id:"bat-bas-006-...@bat.local", role:"USER"}
+    expected_results: With the connector running, management API write requests are not intercepted by SSE and reach the API.
 BAT-CASB-001:
   test_steps: |-
     1. 전체 앱 In-App Control LOGGING 정책 생성
@@ -93,6 +175,24 @@ BAT-CASB-001:
     정책명: BAT-CASB-001-<run_id>
     application: [{"id": 1, "saas_desc_id": 1, "function": [2, 6, 5, 7]}] (전체 앱)
   expected_results: In-App Control 정책이 요청한 동작·위험도로 저장되고, 삭제하면 목록에서 사라진다.
+  en:
+    scenario: A CASB policy is stored as requested when created, and disappears when deleted.
+    test_steps: |-
+      1. Create an In-App Control LOGGING policy for all apps
+      2. Re-read the list and compare action_type (LOGGING) and risk_level (Minor) with the requested values (FAIL if different, UNVERIFIED if it cannot be read)
+      3. Delete the policy (re-read the list to confirm it is gone)
+    test_parameters: |-
+      product: casb
+      lane: d
+      policy_type: in_app_control
+      action_type: LOGGING
+      risk_level: Minor
+      users: [0] (all users)
+      user_groups: [0] (all)
+    test_data: |-
+      Policy name: BAT-CASB-001-<run_id>
+      application: [{"id": 1, "saas_desc_id": 1, "function": [2, 6, 5, 7]}] (all apps)
+    expected_results: The In-App Control policy is stored with the requested action and risk level, and disappears from the list when deleted.
 BAT-CASB-002:
   test_steps: |-
     1. Notion 앱 SaaS Access LOGGING 정책 생성
@@ -107,6 +207,21 @@ BAT-CASB-002:
     application: [3] (Notion)
   test_data: 정책명은 resource_name(case_id, run_id)로 동적 생성. application=[CASB_SAAS_APP_ID]=[3](bat/fixtures/testdata.py의 CASB_SAAS_APPS["Notion"]).
   expected_results: SaaS Access 정책이 요청한 동작·위험도·앱으로 저장되고, 삭제하면 목록에서 사라진다.
+  en:
+    scenario: A CASB SaaS Access policy is stored as requested when created, and disappears when deleted.
+    test_steps: |-
+      1. Create a SaaS Access LOGGING policy for the Notion app
+      2. Re-read the list and compare action_type (LOGGING), risk_level (Minor) and application ([Notion id]) with the requested values
+      3. Delete the policy (re-read the list to confirm it is gone)
+    test_parameters: |-
+      product: casb
+      lane: d
+      policy_type: saas_access
+      action_type: LOGGING
+      risk_level: Minor
+      application: [3] (Notion)
+    test_data: The policy name is generated dynamically with resource_name(case_id, run_id). application=[CASB_SAAS_APP_ID]=[3] (CASB_SAAS_APPS["Notion"] in bat/fixtures/testdata.py).
+    expected_results: The SaaS Access policy is stored with the requested action, risk level and app, and disappears from the list when deleted.
 BAT-CASB-003:
   test_steps: |-
     1. Notion으로 좁힌 SaaS Access LOGGING 정책 생성
@@ -124,6 +239,24 @@ BAT-CASB-003:
     event_timeout_sec: run_context.event_poll_timeout_sec
   test_data: CASB_SAAS_APP_ID=3(Notion), CASB_SAAS_APP_NAME="Notion", CASB_SAAS_URL="https://www.notion.so/", CASB_OTHER_APP_URL="https://github.com/"(bat/fixtures/testdata.py). 정책명은 resource_name()으로 동적 생성.
   expected_results: 지정한 앱만 기록되고, 다른 앱(GitHub)은 렌더링되며 이 정책으로 기록되지 않는다.
+  en:
+    scenario: CASB SaaS Access detects only the specified SaaS app and does not touch other apps.
+    test_steps: |-
+      1. Create a SaaS Access LOGGING policy narrowed to Notion
+      2. Visit Notion and GitHub with the browser and check that both render
+      3. Check this policy's Notion row
+      4. Visit Notion once more as a marker; after that new row appears, check that none of this policy's rows is for an app other than Notion (UNVERIFIED if the marker row does not appear)
+      5. Delete the policy
+    test_parameters: |-
+      product: casb
+      lane: d
+      policy_type: saas_access
+      action_type: LOGGING
+      risk_level: Minor
+      application: [3] (scoped to Notion only)
+      event_timeout_sec: run_context.event_poll_timeout_sec
+    test_data: CASB_SAAS_APP_ID=3 (Notion), CASB_SAAS_APP_NAME="Notion", CASB_SAAS_URL="https://www.notion.so/", CASB_OTHER_APP_URL="https://github.com/" (bat/fixtures/testdata.py). The policy name is generated dynamically with resource_name().
+    expected_results: Only the specified app is logged; the other app (GitHub) renders and is not logged by this policy.
 BAT-CASB-004:
   test_steps: |-
     1. resource_name()으로 BAT-CASB-004-<run_id> 정책명을 만든다.
@@ -143,6 +276,26 @@ BAT-CASB-004:
     event_timeout_sec: run_context.event_poll_timeout_sec
   test_data: CASB_SAAS_APP_ID=3(Notion), CASB_SAAS_URL="https://www.notion.so/". 정책명은 resource_name()으로 동적 생성.
   expected_results: BLOCK 정책이 걸린 상태에서 Notion 방문 트래픽에 대해 casb_security_log 이벤트의 action이 반드시 BLOCK으로 기록되어야 한다(화면상 차단 여부는 판정 기준이 아님).
+  en:
+    scenario: When CASB SaaS Access is set to BLOCK, access to that app is actually blocked, and that request is logged as BLOCK.
+    test_steps: |-
+      1. Build the policy name BAT-CASB-004-<run_id> with resource_name().
+      2. Create a policy with application=[CASB_SAAS_APP_ID] (Notion), action_type=BLOCK, risk_level=Major via saas_access.temporary().
+      3. With visit_until_blocked(), repeatedly visit CASB_SAAS_URL (Notion) with the browser and retry for run_context.policy_propagation_timeout_sec until the block page appears (the result is only recorded and is not used for the pass/fail verdict).
+      4. With await_casb_event(), poll casb_security_log for an event for this policy name (expected service name Notion).
+      5. Check and assert that the event's action field is BLOCK.
+      6. After passing, delete the policy when temporary() exits.
+    test_parameters: |-
+      product: casb
+      lane: d
+      policy_type: saas_access
+      action_type: BLOCK
+      risk_level: Major
+      application: [3] (Notion)
+      propagation_timeout_sec: run_context.policy_propagation_timeout_sec
+      event_timeout_sec: run_context.event_poll_timeout_sec
+    test_data: CASB_SAAS_APP_ID=3 (Notion), CASB_SAAS_URL="https://www.notion.so/". The policy name is generated dynamically with resource_name().
+    expected_results: With the BLOCK policy in place, the action of the casb_security_log event for the Notion visit traffic must be recorded as BLOCK (whether the screen is blocked is not a verdict criterion).
 BAT-CASB-005:
   test_steps: |-
     1. SIA.casb.in_app_control 목록 조회
@@ -153,6 +306,17 @@ BAT-CASB-005:
     조회 대상: SIA.casb.in_app_control (읽기 전용, 정책 생성/삭제 없음)
   test_data: 별도 리터럴 데이터 없음 — 테넌트에 이미 존재하는 In-App Control 정책 목록을 그대로 조회.
   expected_results: In-App Control 목록 조회가 오류 없이 응답한다(보안 동작이 아닌 환경 점검).
+  en:
+    scenario: The CASB In-App Control policy list can be queried (environment check, not a security behavior).
+    test_steps: |-
+      1. Query the SIA.casb.in_app_control list
+      2. Pass if the query answers (environment check, diagnostic). A query failure is ERROR
+    test_parameters: |-
+      product: casb
+      lane: d
+      Query target: SIA.casb.in_app_control (read-only, no policy create/delete)
+    test_data: 'No separate literal data: the list of In-App Control policies already existing in the tenant is queried as is.'
+    expected_results: The In-App Control list query responds without error (environment check, not a security behavior).
 BAT-DLP-001:
   test_steps: |-
     1. DLP 키워드 룰 정책과 그것을 연결한 BLOCK 웹 정책 생성
@@ -168,6 +332,22 @@ BAT-DLP-001:
     DLP keyword rule: ["bat-token", [token]]
     POST body: token을 포함한 payload
   expected_results: 키워드가 든 업로드가 호스트마다 차단되고 그 요청의 행이 남는다.
+  en:
+    scenario: Sending data that matches a DLP keyword rule is blocked and an event is logged.
+    test_steps: |-
+      1. Create a DLP keyword rule policy and a BLOCK web policy linked to it
+      2. For each target host (ECHO_HOSTS), POST keyword data to a marked /post, repeating until it is blocked
+      3. Check the DLP policy row of that request itself (marker) and the identity information
+      4. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+      5. Delete the policy
+    test_parameters: |-
+      DLP rule type: keyword
+      Target: https://<host>/post (httpbin.org, postman-echo.com, httpbingo.org)
+      Marker: unique token combining case_id and run_id
+    test_data: |-
+      DLP keyword rule: ["bat-token", [token]]
+      POST body: payload containing the token
+    expected_results: The upload containing the keyword is blocked on every host and a row for that request is logged.
 BAT-DLP-002:
   test_steps: |-
     1. 내장 탐지 룰 중 카드번호(Visa 우선) 룰로 DLP 정책과 연결 BLOCK 웹 정책 생성
@@ -187,6 +367,26 @@ BAT-DLP-002:
     대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
     정책/DLP 이름: resource_name(case.case_id, run_id)로 런마다 동적 생성
   expected_results: 테스트 카드번호 업로드가 호스트마다 차단되고 그 요청의 행이 남는다.
+  en:
+    scenario: The built-in detection rule (card number) works in actual transmission.
+    test_steps: |-
+      1. Create a DLP policy and a linked BLOCK web policy using the card number rule (Visa preferred) among the built-in detection rules
+      2. For each target host, POST the test card number to a marked /post, repeating until it is blocked
+      3. Check the DLP policy row of that request itself (marker)
+      4. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+      5. Delete the policy
+    test_parameters: |-
+      DLP rule type: PREDEFINED
+      Web policy action_type: BLOCK
+      Web policy risk_level: MAJOR
+      Web policy rule subject: DLP_POLICY, condition: IS
+      Transmission method: POST (curl)
+    test_data: |-
+      predefined rule code: the item among the predefined_rules() query results whose code/display name contains 'visa' or 'card' (decided at runtime, not hardcoded)
+      Payload: card=4111-1111-1111-1111 (SYNTHETIC_CARD, Luhn-valid but a number permanently reserved for testing)
+      Target URL: https://<host>/post, target hosts (ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. There is one policy, and transmission, block and event (that host's event) are checked per host. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+      Policy/DLP name: generated dynamically per run with resource_name(case.case_id, run_id)
+    expected_results: The test card number upload is blocked on every host and a row for that request is logged.
 BAT-DLP-003:
   test_steps: |-
     1. DLP 정규식 룰 정책과 연결 BLOCK 웹 정책 생성
@@ -207,6 +407,27 @@ BAT-DLP-003:
     대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
     정책/DLP 이름: resource_name(case.case_id, run_id)로 런마다 동적 생성
   expected_results: 정규식에 맞는 업로드가 호스트마다 차단되고 그 요청의 행이 남는다.
+  en:
+    scenario: Data matching a DLP regex rule is blocked.
+    test_steps: |-
+      1. Create a DLP regex rule policy and a linked BLOCK web policy
+      2. For each target host, POST regex-matching data to a marked /post, repeating until it is blocked
+      3. Check the DLP policy row of that request itself (marker)
+      4. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+      5. Delete the policy
+    test_parameters: |-
+      DLP rule type: REGEX
+      DLP rule name: bat-code
+      Web policy action_type: BLOCK
+      Web policy risk_level: MAJOR
+      Web policy rule subject: DLP_POLICY, condition: IS
+      Transmission method: POST (curl)
+    test_data: |-
+      Regex pattern: CUSTOM_REGEX = r"BATCODE-[0-9]{4}-[A-Z]{3}"
+      Payload: result of regex_sample(), e.g. code=BATCODE-1234-ZZZ (the digits are generated dynamically each run from uuid4, the suffix is always ZZZ)
+      Target URL: https://<host>/post, target hosts (ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. There is one policy, and transmission, block and event (that host's event) are checked per host. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+      Policy/DLP name: generated dynamically per run with resource_name(case.case_id, run_id)
+    expected_results: The upload matching the regex is blocked on every host and a row for that request is logged.
 BAT-DLP-004:
   test_steps: |-
     1. 키워드가 든 합성 파일(BAT-DLP-004-<run_id>.txt)을 단말에 씀
@@ -228,6 +449,28 @@ BAT-DLP-004:
     업로드 파일명: {case.case_id}-{run_context.run_id}.txt
     대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
   expected_results: 키워드가 든 파일 업로드가 차단되고, 그 요청의 행이 업로드한 파일 이름을 기록한다.
+  en:
+    scenario: Uploading a file containing a sensitive string is blocked.
+    test_steps: |-
+      1. Write a synthetic file containing the keyword (BAT-DLP-004-<run_id>.txt) on the endpoint
+      2. Create a DLP keyword rule policy and a linked BLOCK web policy
+      3. For each target host, upload the file to a marked /post, repeating until it is blocked
+      4. Find the row of that upload request itself (marker) and compare the row's file_name with the uploaded file name (FAIL if different, UNVERIFIED if missing)
+      5. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+      6. Delete the policy and the file
+    test_parameters: |-
+      DLP rule type: KEYWORD
+      DLP rule name: bat-token
+      Web policy action_type: BLOCK
+      Web policy risk_level: MAJOR
+      Web policy rule subject: DLP_POLICY, condition: IS
+      Transmission method: file upload (multipart, https://<host>/post (httpbin.org, postman-echo.com, httpbingo.org))
+    test_data: |-
+      Keyword: result of marker(case_id, run_id) — 'BATSENSITIVE' + case_id (hyphens removed) + first 12 characters of run_id (generated dynamically per run)
+      Upload file body: upload_file_body(token) — "BAT synthetic document\nThis file exists only to exercise DLP upload detection.\nmarker: <token>\n"
+      Upload file name: {case.case_id}-{run_context.run_id}.txt
+      Target URL: https://<host>/post, target hosts (ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. There is one policy, and transmission, block and event (that host's event) are checked per host. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+    expected_results: The upload of the file containing the keyword is blocked, and the row for that request records the uploaded file name.
 BAT-DLP-005:
   test_steps: |-
     1. 키워드 룰(이름 'bat-token', 키워드는 런별 마커 토큰)을 가진 DLP 정책을 생성한다.
@@ -250,6 +493,29 @@ BAT-DLP-005:
     전송 페이로드: clean_payload() = "note=quarterly review&owner=bat-suite&secret=nothing-to-see-here" (키워드 미포함)
     대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
   expected_results: 정책이 키워드 데이터를 실제로 막는 상태에서, 키워드가 없는 정상 페이로드는 매번 차단되지 않고 전달되어야 하며 그 요청들에 대해 이 웹 정책의 보안 이벤트가 남지 않아야 한다(오탐 없음).
+  en:
+    scenario: Data that does not match the detection condition is transmitted normally and no event is logged.
+    test_steps: |-
+      1. Create a DLP policy with a keyword rule (name 'bat-token', keyword is the per-run marker token).
+      2. Create a web policy with BLOCK/MAJOR that has a DLP_POLICY rule referencing this DLP policy.
+      3. Positive control: send the keyword payload to the marked https://httpbin.org/post and check that it is blocked and that the event of that request itself (marker) is logged with this policy id.
+      4. Send a clean payload without the keyword to /post of the three target hosts (httpbin.org, postman-echo.com, httpbingo.org), each with its own marker, 3 times each, and check that it is delivered normally every time (FAIL if blocked even once).
+      5. Marker request: send the keyword payload once more to the marked httpbin.org/post and wait until that row appears in the log (UNVERIFIED if it does not appear).
+      6. Then check that none of the rows containing the markers of the clean requests belongs to this policy (absence check).
+      7. The web policy and DLP policy are deleted automatically when the with block ends.
+      8. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+    test_parameters: |-
+      DLP rule type: KEYWORD
+      DLP rule name: bat-token
+      Web policy action_type: BLOCK
+      Web policy risk_level: MAJOR
+      Web policy rule subject: DLP_POLICY, condition: IS
+      Transmission method: POST (post_payload, one-shot)
+    test_data: |-
+      Keyword (unused control value): result of marker(case_id, run_id) (generated dynamically per run)
+      Payload: clean_payload() = "note=quarterly review&owner=bat-suite&secret=nothing-to-see-here" (does not contain the keyword)
+      Target URL: https://<host>/post, target hosts (ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. There is one policy, and transmission, block and event (that host's event) are checked per host. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+    expected_results: While the policy is actually blocking keyword data, a normal payload without the keyword must be delivered without being blocked every time, and no security event of this web policy must be logged for those requests (no false positives).
 BAT-DLP-006:
   test_steps: |-
     1. DLP 키워드 룰 정책과 연결 BLOCK 웹 정책 생성
@@ -270,6 +536,27 @@ BAT-DLP-006:
     전송 페이로드: keyword_payload(token) = "note=quarterly review&secret=<token>&owner=bat-suite" (활성화/비활성화 양쪽에 동일 페이로드 재사용)
     대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
   expected_results: 정책이 막던 데이터가 비활성화(재조회로 확인) 후 다시 통과하고 그대로 유지된다.
+  en:
+    scenario: When the policy is disabled, the same data is transmitted normally again.
+    test_steps: |-
+      1. Create a DLP keyword rule policy and a linked BLOCK web policy
+      2. For each target host, check that a marked keyword POST is blocked and a policy row for that request itself is logged
+      3. Disable the web policy and re-read it to check that it is stored as enable=false
+      4. For each host, check that requests start passing within the propagation budget and pass 3 times in a row after the budget has elapsed
+      5. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+      6. Delete the policy
+    test_parameters: |-
+      DLP rule type: KEYWORD
+      DLP rule name: bat-token
+      Web policy action_type: BLOCK
+      Web policy risk_level: MAJOR
+      Web policy rule subject: DLP_POLICY, condition: IS
+      Policy state change: enable=True → enable=False (PATCH /sia/v1/web/policy/{id}/enable)
+    test_data: |-
+      Keyword: result of marker(case_id, run_id) (generated dynamically per run)
+      Payload: keyword_payload(token) = "note=quarterly review&secret=<token>&owner=bat-suite" (the same payload is reused for both enabled and disabled)
+      Target URL: https://<host>/post, target hosts (ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. There is one policy, and transmission, block and event (that host's event) are checked per host. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+    expected_results: The data the policy was blocking passes again after the policy is disabled (confirmed by re-reading) and stays that way.
 BAT-DLP-007:
   test_steps: |-
     1. DLP 키워드 룰 정책과 연결 BLOCK 웹 정책 생성
@@ -289,6 +576,26 @@ BAT-DLP-007:
     전송 페이로드: keyword_payload(token) = "note=quarterly review&secret=<token>&owner=bat-suite"
     대상 URL: https://httpbin.org/post (POST_TARGET_URL)
   expected_results: DLP 이벤트에 그 요청의 대상, 이 단말, 실제 사용자, 정책, 행위가 맞는 값으로 기록된다.
+  en:
+    scenario: The user, endpoint, policy, action and target are all recorded in the DLP event.
+    test_steps: |-
+      1. Create a DLP keyword rule policy and a linked BLOCK web policy
+      2. A marked keyword POST is blocked, and find the row of that request itself
+      3. Record the row's detail fields and the event detail query result as evidence
+      4. Compare by value that the row's device_id is this endpoint's id (configured value or hardware UUID), user_name is the user_name in the same endpoint's auth log, and policy_name/action are this policy and BLOCK (FAIL if different or empty)
+      5. Delete the policy
+    test_parameters: |-
+      DLP rule type: KEYWORD
+      DLP rule name: bat-token
+      Web policy action_type: BLOCK
+      Web policy risk_level: MAJOR
+      Web policy rule subject: DLP_POLICY, condition: IS
+      Event fields verified: user_name, policy_name, action (required); file_name etc. are additionally recorded via details_of
+    test_data: |-
+      Keyword: result of marker(case_id, run_id) (generated dynamically per run)
+      Payload: keyword_payload(token) = "note=quarterly review&secret=<token>&owner=bat-suite"
+      Target URL: https://httpbin.org/post (POST_TARGET_URL)
+    expected_results: The DLP event records the target of that request, this endpoint, the actual user, the policy and the action with correct values.
 BAT-DLP-008:
   test_steps: |-
     1. 키워드 룰과 정규식 룰을 함께 담은 DLP 정책 하나와 연결 BLOCK 웹 정책 생성
@@ -301,6 +608,19 @@ BAT-DLP-008:
     정규식 payload: CUSTOM_REGEX에 매칭되는 샘플 문자열
   expected_results: 한 정책의 두 룰이 각자 자기 데이터를 막고, 요청마다 행이 남는다.
   actual_result: 키워드 payload는 차단됐지만, 정규식만 일치하는 payload는 차단되지 않음(HTTP 200)
+  en:
+    scenario: When multiple rules are put in one DLP policy, a match on any one of them is blocked.
+    test_steps: |-
+      1. Create one DLP policy containing both a keyword rule and a regex rule, and a linked BLOCK web policy
+      2. Check that a keyword-only POST with the marker keyword is blocked and a row for that request itself is logged
+      3. Check that a regex-only POST with the marker regex is blocked and a row for that request itself is logged
+      4. Delete the policy
+    test_parameters: 'DLP rules: keyword("bat-token", token) + regex("bat-regex", CUSTOM_REGEX), registered together in one policy'
+    test_data: |-
+      Keyword payload: string containing the token
+      Regex payload: sample string matching CUSTOM_REGEX
+    expected_results: The two rules of one policy each block their own data, and a row is logged for each request.
+    actual_result: The keyword payload was blocked, but the payload matching only the regex was not blocked (HTTP 200)
 BAT-FW-001:
   test_steps: |-
     1. 정책 전에 대상 도메인(ECHO_HOSTS)마다 이름이 해석되는지 확인(기준선, 해석 안 되면 그 대상은 UNVERIFIED)
@@ -319,6 +639,25 @@ BAT-FW-001:
     정책명: BAT-FW-001-<run_id>(동적 생성, resource_name)
     조회 로그: SIA.log.dns_security_log
   expected_results: 정책 전에는 해석되던 대상 도메인들이 정책 뒤 해석에 실패하고, 도메인마다 그 조회의 BLOCK 행이 DNS 보안로그에 남는다.
+  en:
+    scenario: When a domain is blocked with DNS Firewall, name resolution actually fails and an event is logged.
+    test_steps: |-
+      1. Before the policy, check that the name resolves for each target domain (ECHO_HOSTS) (baseline; if it does not resolve, that target is UNVERIFIED)
+      2. Create a BLOCK DNS Firewall policy with rule FQDN IS [httpbin.org, postman-echo.com, httpbingo.org]
+      3. For each domain, repeat the lookup for the propagation time until nslookup fails (or returns the DNS block page address on lguplus)
+      4. After that lookup, check that a new DNS log row of this policy (A record, identified by the row ids before and after the lookup) is logged as BLOCK (if there is no row, a resolution failure is not accepted as a policy block, FAIL)
+      5. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+      6. Delete the policy (re-read the list to confirm it is gone)
+    test_parameters: |-
+      subject: FQDN
+      condition: IS
+      action_type: BLOCK
+      kind (event log type): dns
+    test_data: |-
+      rule value: ECHO_HOSTS (httpbin.org, postman-echo.com, httpbingo.org)
+      Policy name: BAT-FW-001-<run_id> (generated dynamically, resource_name)
+      Log queried: SIA.log.dns_security_log
+    expected_results: The target domains that resolved before the policy fail to resolve after the policy, and for each domain a BLOCK row of that lookup is logged in the DNS security log.
 BAT-FW-002:
   test_steps: |-
     1. 정책 전에 대상 도메인(ECHO_HOSTS)마다 이름이 해석되는지 확인(기준선)
@@ -334,6 +673,22 @@ BAT-FW-002:
     rule value: ECHO_HOSTS(httpbin.org, postman-echo.com, httpbingo.org)
     정책명: BAT-FW-002-<run_id>(동적 생성)
   expected_results: 정책이 실제로 막았다는 것(해석 실패 + 정책 행)을 보인 뒤, 삭제하면 도메인마다 이름 해석이 다시 정상 동작한다.
+  en:
+    scenario: After a DNS Firewall policy is deleted, domain name resolution works normally again.
+    test_steps: |-
+      1. Before the policy, check that each target domain (ECHO_HOSTS) resolves (baseline)
+      2. After creating an FQDN BLOCK DNS Firewall policy, check for each domain that resolution fails and that the policy's row for that lookup (A record) exists
+      3. Delete the policy (re-read the list to confirm it is gone)
+      4. Query repeatedly until a response containing an address returns for each domain
+      5. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+    test_parameters: |-
+      subject: FQDN
+      condition: IS
+      action_type: BLOCK (created, then deleted)
+    test_data: |-
+      rule value: ECHO_HOSTS (httpbin.org, postman-echo.com, httpbingo.org)
+      policy name: BAT-FW-002-<run_id> (generated dynamically)
+    expected_results: After showing that the policy actually blocked (resolution failure + policy row), deleting it makes name resolution work normally again for each domain.
 BAT-FW-003:
   test_steps: |-
     1. httpbin.org를 IP 하나로 해석하고, 정책 전에 그 IP로 붙인(pin_ip) 요청이 응답하는지 확인(기준선)
@@ -352,6 +707,25 @@ BAT-FW-003:
     source_ips: ["0.0.0.0/0"]
     정책명: BAT-FW-003-<run_id>(동적 생성)
   expected_results: 정책 전에는 응답하던 목적지 IP로의 연결이 정책 뒤 끊기고, dst_ip가 그 IP인 BLOCK 행이 방화벽 보안로그에 남는다.
+  en:
+    scenario: Blocking a destination with Application Firewall actually drops the connection and leaves an event.
+    test_steps: |-
+      1. Resolve httpbin.org to one IP, and before the policy check that a request pinned to that IP (pin_ip) gets a response (baseline)
+      2. Create a BLOCK Application Firewall policy with source 0.0.0.0/0 and destination [that IP]
+      3. Repeat until the connection of the curl request pinned to that IP is dropped (000)
+      4. Check that a new firewall log row of this policy remains as BLOCK with dst_ip equal to that IP (without a row, a connection failure is not accepted as a policy block)
+      5. Delete the policy (re-read the list to confirm it is gone)
+    test_parameters: |-
+      subject.source.ip_address: ["0.0.0.0/0"]
+      subject.destination.ip_address: [destination_ip resolved dynamically]
+      action_type: BLOCK
+      kind (event log type): firewall
+    test_data: |-
+      target URL: https://httpbin.org/get (BLOCK_TARGET_URL)
+      target host: httpbin.org (BLOCK_TARGET_HOST), the actual IP obtained with resolve_ip (dynamic)
+      source_ips: ["0.0.0.0/0"]
+      policy name: BAT-FW-003-<run_id> (generated dynamically)
+    expected_results: The connection to the destination IP, which responded before the policy, is dropped after the policy, and a BLOCK row with dst_ip equal to that IP remains in the firewall security log.
 BAT-FW-004:
   test_steps: |-
     1. httpbin.org IP로 붙인 요청이 정책 전에 응답하는지 확인(기준선)
@@ -368,6 +742,23 @@ BAT-FW-004:
     source_ips: ["0.0.0.0/0"]
     정책명: BAT-FW-004-<run_id>(동적 생성)
   expected_results: 차단 단계에서 연결 끊김과 정책 행이 확인되고, 정책 삭제 후 같은 IP로의 요청이 다시 정상 응답(전달)된다.
+  en:
+    scenario: After an Application Firewall policy is deleted, connections to the destination work normally again.
+    test_steps: |-
+      1. Check that a request pinned to the httpbin.org IP gets a response before the policy (baseline)
+      2. Create a BLOCK Application Firewall policy for that IP, and check the connection drop and the policy row with dst_ip equal to that IP
+      3. Delete the policy (re-read the list to confirm it is gone)
+      4. Repeat until a request pinned to that IP is delivered. FAIL if the connection stays dropped to the end; UNVERIFIED if the connection is made but the response is 403 or 5xx
+    test_parameters: |-
+      subject.source.ip_address: ["0.0.0.0/0"]
+      subject.destination.ip_address: [destination_ip resolved dynamically]
+      action_type: BLOCK (created, then deleted)
+    test_data: |-
+      target URL: https://httpbin.org/get (BLOCK_TARGET_URL)
+      target host: httpbin.org (BLOCK_TARGET_HOST), the actual IP obtained with resolve_ip (dynamic)
+      source_ips: ["0.0.0.0/0"]
+      policy name: BAT-FW-004-<run_id> (generated dynamically)
+    expected_results: The connection drop and the policy row are confirmed in the block phase, and after the policy is deleted a request to the same IP is answered normally (delivered) again.
 BAT-FW-005:
   test_steps: |-
     1. httpbin.org IP로 붙인 HTTP 요청이 정책 전에 응답하는지, 그 IP로의 ping이 응답하는지 확인(기준선)
@@ -381,6 +772,20 @@ BAT-FW-005:
   test_data: BLOCK_TARGET_URL (HTTP/TCP 요청)
   expected_results: ICMP로 좁힌 정책이 걸려 있어도 HTTP(TCP)는 계속 통과하고, 같은 목적지의 ICMP는 막히며 그 정책의 행이 남는다.
   actual_result: ICMP(protocol 1)로 좁힌 정책이 대상 IP로 가는 HTTP(TCP) 연결까지 끊음
+  en:
+    scenario: An Application Firewall policy with a protocol specified blocks only that protocol.
+    test_steps: |-
+      1. Check that an HTTP request pinned to the httpbin.org IP gets a response before the policy, and that ping to that IP gets a response (baseline)
+      2. Create a BLOCK Application Firewall policy with source 0.0.0.0/0, destination [that IP], and protocol 1 (ICMP)
+      3. Check that the HTTP request pinned to that IP is delivered throughout the propagation budget and then 3 times in a row afterwards (FAIL if it is dropped)
+      4. Positive check: confirm that ping to the same IP is blocked and that a firewall row (dst_ip) of this policy remains. UNVERIFIED if ping did not respond even before the policy or still responds after it, because policy enforcement cannot be shown
+      5. Delete the policy
+    test_parameters: |-
+      protocol: 1 (ICMP) - 17 (UDP) / 6 (TCP) / 253 (unassigned) were also measured separately, all with the same result
+      source_ips: ["0.0.0.0/0"], destination_ips: [resolved IP]
+    test_data: BLOCK_TARGET_URL (HTTP/TCP request)
+    expected_results: Even with a policy narrowed to ICMP in place, HTTP (TCP) keeps passing, while ICMP to the same destination is blocked and a row of that policy remains.
+    actual_result: The policy narrowed to ICMP (protocol 1) also dropped HTTP (TCP) connections to the target IP
 BAT-FW-006:
   test_steps: |-
     1. 정책 전에 httpbin.org, example.com, www.iana.org가 해석되는지 확인(기준선)
@@ -391,6 +796,17 @@ BAT-FW-006:
   test_parameters: 'Subject: FQDN, value: [httpbin.org, example.com]'
   test_data: httpbin.org, example.com(차단 대상) / www.iana.org(비교 대상, 목록 밖)
   expected_results: 한 rule에 넣은 두 도메인만 해석이 실패하고(각자 정책 행이 남음) 목록에 없는 도메인은 계속 해석된다.
+  en:
+    scenario: When several domains are put in one DNS Firewall rule, only those domains are blocked and the rest pass.
+    test_steps: |-
+      1. Before the policy, check that httpbin.org, example.com and www.iana.org resolve (baseline)
+      2. Create a BLOCK DNS Firewall policy with rule FQDN IS [httpbin.org, example.com]
+      3. For each of httpbin.org and example.com, check that resolution fails and that, after that lookup, a new DNS log row of this policy (A record, distinguished by the row ids before and after the lookup) remains as BLOCK (without a row, a resolution failure is not accepted as a policy block, FAIL)
+      4. Check that www.iana.org, which is not in the list, keeps resolving (FAIL if it is blocked)
+      5. Delete the policy
+    test_parameters: 'Subject: FQDN, value: [httpbin.org, example.com]'
+    test_data: httpbin.org, example.com (block targets) / www.iana.org (comparison target, not in the list)
+    expected_results: Only the two domains put in one rule fail to resolve (each leaves a policy row), and the domain not in the list keeps resolving.
 BAT-FW-007:
   test_steps: |-
     1. 정책 전에 iana.org와 www.iana.org가 해석되는지 확인(기준선)
@@ -401,6 +817,17 @@ BAT-FW-007:
   test_parameters: 'Subject: FQDN, value: [iana.org]'
   test_data: iana.org(apex, 차단 대상), www.iana.org(서브도메인, 비교 대상)
   expected_results: apex(iana.org)만 막고(정책 행 남음) 서브도메인(www.iana.org)은 해석된다.
+  en:
+    scenario: Even if DNS Firewall blocks a parent (apex) domain, its subdomains are treated separately.
+    test_steps: |-
+      1. Before the policy, check that iana.org and www.iana.org resolve (baseline)
+      2. Create a BLOCK DNS Firewall policy with rule FQDN IS [iana.org]
+      3. Check that iana.org resolution fails and that, after that lookup, a new DNS log row of this policy (A record, distinguished by the row ids before and after the lookup) remains as BLOCK (without a row, a resolution failure is not accepted as a policy block, FAIL)
+      4. Check that www.iana.org keeps resolving (FAIL if it is blocked)
+      5. Delete the policy
+    test_parameters: 'Subject: FQDN, value: [iana.org]'
+    test_data: iana.org (apex, block target), www.iana.org (subdomain, comparison target)
+    expected_results: Only the apex (iana.org) is blocked (a policy row remains) and the subdomain (www.iana.org) resolves.
 BAT-FW-009:
   test_steps: |-
     1. 정책 전에 대상 도메인(ECHO_HOSTS)마다 대문자 이름이 해석되는지 확인(기준선)
@@ -411,6 +838,17 @@ BAT-FW-009:
   test_parameters: 'Subject: FQDN, value: [httpbin.org, postman-echo.com, httpbingo.org]'
   test_data: HTTPBIN.ORG, POSTMAN-ECHO.COM, HTTPBINGO.ORG (대문자 조회)
   expected_results: 소문자로 막은 도메인을 대문자로 조회해도 해석이 실패하고 그 조회의 정책 행이 남는다.
+  en:
+    scenario: The FQDN condition of DNS Firewall matches regardless of letter case.
+    test_steps: |-
+      1. Before the policy, check that the uppercase name of each target domain (ECHO_HOSTS) resolves (baseline)
+      2. Create an FQDN BLOCK DNS Firewall policy with the domains in lowercase
+      3. For each domain, check that resolution of the uppercase name fails and that, after that lookup, a new DNS log row of this policy (A record, distinguished by the row ids before and after the lookup) remains as BLOCK (without a row, a resolution failure is not accepted as a policy block, FAIL)
+      4. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+      5. Delete the policy
+    test_parameters: 'Subject: FQDN, value: [httpbin.org, postman-echo.com, httpbingo.org]'
+    test_data: HTTPBIN.ORG, POSTMAN-ECHO.COM, HTTPBINGO.ORG (uppercase lookups)
+    expected_results: Even when domains blocked in lowercase are looked up in uppercase, resolution fails and a policy row for that lookup remains.
 BAT-FW-010:
   test_steps: |-
     1. 정책 전에 httpbin.org가 해석되는지 확인(기준선)
@@ -421,6 +859,17 @@ BAT-FW-010:
   test_parameters: 'Subject: FQDN, users: [다른 id] 그리고 [실사용자 id]'
   test_data: httpbin.org
   expected_results: 다른 사용자로 좁힌 정책은 이 단말을 막지 않고, 커넥터 사용자로 좁힌 정책은 막으며 그 정책 행이 남는다.
+  en:
+    scenario: A DNS Firewall policy applies only to the users specified in it and does not apply to other users.
+    test_steps: |-
+      1. Before the policy, check that httpbin.org resolves (baseline)
+      2. Find the connector user id in the DNS log with a LOGGING probe policy
+      3. BLOCK policy narrowed to another user id: check that it resolves throughout the propagation budget and then 3 times in a row afterwards (FAIL if it is blocked even once)
+      4. BLOCK policy narrowed to the connector user id: check that resolution fails and that, after that lookup, a new DNS log row of this policy (A record, distinguished by the row ids before and after the lookup) remains as BLOCK (without a row, a resolution failure is not accepted as a policy block, FAIL)
+      5. Delete the policy
+    test_parameters: 'Subject: FQDN, users: [another id] and then [actual user id]'
+    test_data: httpbin.org
+    expected_results: The policy narrowed to another user does not block this endpoint, and the policy narrowed to the connector user blocks it and its policy row remains.
 BAT-FW-011:
   test_steps: |-
     1. 정책 전 기준선: 도메인마다 AAAA 조회가 IPv6 주소를 돌려주는지 확인(없던 도메인은 그 도메인만 UNVERIFIED)
@@ -432,6 +881,18 @@ BAT-FW-011:
   test_parameters: 'Subject: FQDN, value: [example.com, example.net, postman-echo.com]'
   test_data: nslookup -type=AAAA <도메인> (example.com, example.net, postman-echo.com, 모두 AAAA 레코드가 있는 도메인)
   expected_results: A/AAAA 둘 다 막히고 AAAA 차단이 DNS 로그에 record_type AAAA, action BLOCK으로 남는다 - 듀얼스택 우회 불가
+  en:
+    scenario: A DNS Firewall block blocks not only A record lookups but also AAAA (IPv6) lookups.
+    test_steps: |-
+      1. Baseline before the policy: check for each domain that an AAAA lookup returns an IPv6 address (a domain that had none is UNVERIFIED for that domain only)
+      2. Create one BLOCK policy with FQDN=[example.com, example.net, postman-echo.com] (domains that actually have AAAA records; httpbin.org is excluded because it has no AAAA)
+      3. Check that the A record lookup is blocked for each domain
+      4. Check that the AAAA (IPv6) lookup is also blocked for each domain (blocked if a failure message appears or the IPv6 address that was in the baseline disappears)
+      5. Check that after that AAAA lookup a new DNS log row of this policy remains with record_type AAAA and action BLOCK (the row of that lookup is distinguished by the row ids before and after the lookup)
+      6. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+    test_parameters: 'Subject: FQDN, value: [example.com, example.net, postman-echo.com]'
+    test_data: nslookup -type=AAAA <domain> (example.com, example.net, postman-echo.com, all domains that have AAAA records)
+    expected_results: Both A and AAAA are blocked, and the AAAA block remains in the DNS log with record_type AAAA and action BLOCK - no dual-stack bypass.
 BAT-FW-012:
   test_steps: |-
     1. 정책 전에 www.iana.org와 iana.org가 해석되는지 확인(기준선)
@@ -442,6 +903,17 @@ BAT-FW-012:
   test_parameters: 'Subject: FQDN, value: [*.iana.org]'
   test_data: www.iana.org(서브도메인, 차단 대상), iana.org(apex, 비교 대상)
   expected_results: 와일드카드 값은 서브도메인만 막고(정책 행 남음) apex는 막지 않는다.
+  en:
+    scenario: Entering a value as a wildcard such as `*.domain` can block all subdomains.
+    test_steps: |-
+      1. Before the policy, check that www.iana.org and iana.org resolve (baseline)
+      2. Create a BLOCK DNS Firewall policy with rule FQDN IS [*.iana.org]
+      3. Check that www.iana.org resolution fails and that, after that lookup, a new DNS log row of this policy (A record, distinguished by the row ids before and after the lookup) remains as BLOCK (without a row, a resolution failure is not accepted as a policy block, FAIL)
+      4. Check that iana.org keeps resolving (FAIL if it is blocked)
+      5. Delete the policy
+    test_parameters: 'Subject: FQDN, value: [*.iana.org]'
+    test_data: www.iana.org (subdomain, block target), iana.org (apex, comparison target)
+    expected_results: The wildcard value blocks only subdomains (a policy row remains) and does not block the apex.
 BAT-FW-013:
   test_steps: |-
     1. 정책 전에 httpbin.org가 해석되는지 확인(기준선)
@@ -452,6 +924,17 @@ BAT-FW-013:
   test_parameters: 'Subject: FQDN, value: [httpbin.org]'
   test_data: httpbin.org
   expected_results: DNS 차단 행의 사용자·출발지 IP·국가가 같은 단말의 웹 보안로그 행과 같은 값으로 기록된다.
+  en:
+    scenario: A DNS security log event contains the information needed for investigation, such as user, source IP and country.
+    test_steps: |-
+      1. Before the policy, check that httpbin.org resolves (baseline)
+      2. Apply a LOGGING web policy to httpbin.org and keep the web security log row of a marker request sent by this endpoint (comparison reference). UNVERIFIED if it cannot be obtained
+      3. Create a BLOCK DNS Firewall policy with rule FQDN IS [httpbin.org], and check the resolution failure and the policy row of that lookup
+      4. Compare whether user_id/user_name/src_ip (port excluded)/src_country_code of the DNS row equal those of the reference web row (FAIL if they differ or are empty)
+      5. Delete the policy
+    test_parameters: 'Subject: FQDN, value: [httpbin.org]'
+    test_data: httpbin.org
+    expected_results: The user, source IP and country of the DNS block row are recorded with the same values as the web security log row of the same endpoint.
 BAT-GEN-001:
   test_steps: |-
     1. ChatGPT 앱으로 GENAI_REQUEST_KEYWORD IN [password] LOGGING GenAI 정책 생성
@@ -469,6 +952,24 @@ BAT-GEN-001:
     rule id: 1
     policy_name: resource_name(case.case_id, run_context.run_id)로 실행 시마다 동적 생성(BAT-GEN-001-<run_id> 형태)
   expected_results: GenAI 키워드 정책이 요청한 동작·키워드·앱으로 저장되고, 삭제하면 목록에서 사라진다.
+  en:
+    scenario: When a GenAI keyword detection policy is created it is stored as requested, and when it is deleted it disappears.
+    test_steps: |-
+      1. Create a GENAI_REQUEST_KEYWORD IN [password] LOGGING GenAI policy for the ChatGPT app
+      2. Re-read the list and compare whether action_type (LOGGING), the keyword rule value ([password]) and the target app (gen_ai_app) equal the requested values
+      3. Delete the policy (re-read the list to confirm it is gone)
+    test_parameters: |-
+      subject: GENAI_REQUEST_KEYWORD
+      condition: IN
+      action_type: LOGGING
+      risk_level: Minor
+      blockpage_id: 0
+      gen_ai_app: [app id looked up dynamically with find_app("chatgpt")]
+    test_data: |-
+      value: ["password"]
+      rule id: 1
+      policy_name: generated dynamically on each run with resource_name(case.case_id, run_context.run_id) (form BAT-GEN-001-<run_id>)
+    expected_results: The GenAI keyword policy is stored with the requested action, keyword and app, and disappears from the list when deleted.
 BAT-SWG-001:
   test_steps: |-
     대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 아래를 반복한다.
@@ -486,6 +987,24 @@ BAT-SWG-001:
     risk_level: MAJOR
   test_data: 대상 호스트(ECHO_HOSTS)="httpbin.org, postman-echo.com, httpbingo.org", 방문 URL="https://<호스트>/get", 정책명은 resource_name(case_id, run_id, 호스트 이름)으로 실행마다 동적 생성
   expected_results: HTTP_HOST 조건으로 지정한 호스트를 BLOCK하면 실제 브라우저 접속이 차단 페이지로 이어지고, 보안 로그에 BLOCK 액션과 해당 호스트가 기록된 이벤트가 남아야 한다.
+  en:
+    scenario: A site blocked by the HTTP Host condition is actually blocked and recorded in the security log.
+    test_steps: |-
+      Repeat the following for each target host (httpbin.org, postman-echo.com, httpbingo.org).
+      1. Create a BLOCK web policy with an HTTP_HOST condition (IS, that host)
+      2. With a real browser, retry visiting https://<host>/get until it is blocked
+      3. Check that the response is a block page
+      4. Wait in the security log for an event whose policy name, action=BLOCK and target host match
+      5. Record the identifying information of the connecting user from the event
+      6. Delete the policy (end of the temporary context)
+      7. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+    test_parameters: |-
+      subject: HTTP_HOST
+      condition: IS
+      action_type: BLOCK
+      risk_level: MAJOR
+    test_data: target hosts (ECHO_HOSTS)="httpbin.org, postman-echo.com, httpbingo.org", visit URL="https://<host>/get", policy name generated dynamically on each run with resource_name(case_id, run_id, host name)
+    expected_results: When a host specified by the HTTP_HOST condition is set to BLOCK, a real browser connection must lead to a block page, and an event recording the BLOCK action and that host must remain in the security log.
 BAT-SWG-002:
   test_steps: |-
     1. HTTP_HOST 조건(IS, httpbin.org)으로 BLOCK 웹 정책을 생성한다
@@ -501,6 +1020,22 @@ BAT-SWG-002:
     action_type: BLOCK
   test_data: 정책 대상 BLOCK_TARGET_HOST="httpbin.org", 실제 방문 URL(UNRELATED_URLS)="https://www.iana.org/", "https://example.net/", "https://example.com/"
   expected_results: 정책이 적용 중(대상 호스트 차단·이벤트 확인)인 상태에서 조건에 매칭되지 않는 사이트는 정상적으로 로드되고, 그 요청들에 대해 이 정책의 보안 이벤트가 전혀 발생하지 않아야 한다.
+  en:
+    scenario: Sites that do not match the policy are reached normally and no security log is left.
+    test_steps: |-
+      1. Create a BLOCK web policy with an HTTP_HOST condition (IS, httpbin.org)
+      2. Positive control: check that a marked httpbin.org request is blocked and that the BLOCK event of that request itself (marker) remains with this policy id
+      3. Visit several sites unrelated to the policy (https://www.iana.org/, https://example.net/, https://example.com/) with a browser, each with its own marker, and check that all are reached normally
+      4. Marker request: send one more marked httpbin.org request and wait until its row appears in the log (UNVERIFIED if it does not appear)
+      5. Then check that none of the rows containing the markers of the unrelated site requests belong to this policy (absence verification)
+      6. Delete the policy
+      7. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+    test_parameters: |-
+      subject: HTTP_HOST
+      condition: IS
+      action_type: BLOCK
+    test_data: policy target BLOCK_TARGET_HOST="httpbin.org", actual visit URLs (UNRELATED_URLS)="https://www.iana.org/", "https://example.net/", "https://example.com/"
+    expected_results: While the policy is in effect (target host blocked, event confirmed), sites that do not match the condition must load normally, and no security event of this policy must occur for those requests.
 BAT-SWG-003:
   test_steps: |-
     1. 대상 호스트(ECHO_HOSTS)마다 LOGGING probe 정책으로 그 호스트의 카테고리를 알아냄(못 알아낸 호스트는 UNVERIFIED)
@@ -514,6 +1049,20 @@ BAT-SWG-003:
     2단계 본정책: subject HTTP_CATEGORY, condition IN, action_type LOGGING, risk_level MINOR
   test_data: 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 각 호스트 방문 시 실제로 매칭되는 카테고리 id는 probe 이벤트에서 동적으로 발견(하드코딩 아님)
   expected_results: 내장 카테고리 조건이 그 방문에 매칭되어 행이 남고, 행의 카테고리가 정책에 설정한 카테고리 id와 같다.
+  en:
+    scenario: The built-in HTTP category condition matches real traffic and is recorded in the event.
+    test_steps: |-
+      1. For each target host (ECHO_HOSTS), find that host's category with a LOGGING probe policy (a host whose category could not be found is UNVERIFIED)
+      2. Create an HTTP_CATEGORY LOGGING policy with that category id
+      3. Visit a marked URL with a browser and check that it renders
+      4. Check that the row of that visit itself (marker) remains with this policy and that the row's categories contain the configured category id
+      5. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+      6. Delete the policy
+    test_parameters: |-
+      Step 1 probe: subject HTTP_HOST, condition IS, action_type LOGGING, risk_level MINOR
+      Step 2 main policy: subject HTTP_CATEGORY, condition IN, action_type LOGGING, risk_level MINOR
+    test_data: target hosts (ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. The category id that actually matches each host visit is discovered dynamically from the probe event (not hard-coded)
+    expected_results: The built-in category condition matches that visit and a row remains, and the row's category equals the category id configured in the policy.
 BAT-SWG-004:
   test_steps: |-
     1. HTTP_HOST 조건(IS, httpbin.org)의 LOGGING probe 정책으로 커넥터가 로그인된 사용자(id/name)를 알아낸다
@@ -531,6 +1080,24 @@ BAT-SWG-004:
     user_groups: []
   test_data: BLOCK_TARGET_HOST="httpbin.org". 커넥터 사용자 id/이름과 bystander id는 probe 이벤트 및 /sia/v1/user/all 조회로 실행마다 동적으로 발견
   expected_results: 정책이 지정한 사용자가 아닐 때는 트래픽이 차단되지 않고, 커넥터 자신의 사용자로 스코프를 바꾸면 차단되며 보안 로그 이벤트의 user_id가 그 사용자와 일치해야 한다.
+  en:
+    scenario: A policy applies only to the users specified in it and does not apply to other users.
+    test_steps: |-
+      1. Find the user (id/name) the connector is logged in as, using a LOGGING probe policy with an HTTP_HOST condition (IS, httpbin.org)
+      2. From the /sia/v1/user/all list, find the id of another user (bystander) who is not the connector user
+      3. Create an HTTP_HOST BLOCK policy scoped only to the bystander id, visit BLOCK_TARGET_URL repeatedly throughout the propagation time and then 3 more times, and check that it is never blocked
+      4. Delete that policy, and this time create a BLOCK policy with the same condition scoped only to the connector user id
+      5. Visit the same URL again and check that it is blocked
+      6. Check that the user_id of the security log event equals the connector user id
+      7. Delete the policy
+    test_parameters: |-
+      subject: HTTP_HOST
+      condition: IS
+      action_type: BLOCK
+      users: [bystander_id] -> then [connector_user_id]
+      user_groups: []
+    test_data: BLOCK_TARGET_HOST="httpbin.org". The connector user id/name and the bystander id are discovered dynamically on each run from the probe event and the /sia/v1/user/all lookup
+    expected_results: When the user is not the one specified by the policy, traffic must not be blocked; when the scope is changed to the connector's own user it must be blocked, and the user_id of the security log event must equal that user.
 BAT-SWG-005:
   test_steps: |-
     대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 아래를 반복한다.
@@ -548,6 +1115,24 @@ BAT-SWG-005:
     action_type: BLOCK
   test_data: category_name/policy_name은 resource_name()으로 동적 생성, 카테고리에 등록한 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org, 방문 URL="https://<호스트>/get"
   expected_results: 직접 만든 카테고리에 대상 호스트를 등록하고 그 카테고리를 조건으로 건 정책이 실제 트래픽을 차단하고 보안 로그에 남아야 한다.
+  en:
+    scenario: When a URL is registered in a self-made category, it is blocked by the policy of that category.
+    test_steps: |-
+      Repeat the following for each target host (httpbin.org, postman-echo.com, httpbingo.org).
+      1. Create a custom category (CustomCategoryFactory)
+      2. Create a user rule that registers that host in that category (UserRuleFactory)
+      3. Create a BLOCK web policy with an HTTP_CATEGORY condition (IN, that category id)
+      4. With a browser, retry visiting https://<host>/get until it is blocked
+      5. Check that it is blocked
+      6. Check in the security log for an event whose policy name and target host match
+      7. Clean up in the order policy -> user rule -> category
+      8. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed without any deviation
+    test_parameters: |-
+      subject: HTTP_CATEGORY
+      condition: IN
+      action_type: BLOCK
+    test_data: category_name/policy_name are generated dynamically with resource_name(), hosts registered in the category (ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org, visit URL="https://<host>/get"
+    expected_results: A policy that registers the target host in a self-made category and uses that category as its condition must block real traffic and leave a record in the security log.
 BAT-SWG-008:
   test_steps: |-
     1. HTTP_HOST 조건(IS, httpbin.org)으로 LOGGING 정책을 생성한다
@@ -563,6 +1148,22 @@ BAT-SWG-008:
     risk_level: MINOR
   test_data: BLOCK_TARGET_HOST="httpbin.org", BLOCK_TARGET_URL="https://httpbin.org/get"
   expected_results: 커넥터가 연결된 상태에서는 허용된(차단되지 않은) 트래픽도 LOGGING 액션으로 보안 로그에 기록되고, 이벤트에 접속 사용자 이름이 채워져 있어야 한다.
+  en:
+    scenario: With the connector on, allowed traffic is also recorded in the log, and the user is identified.
+    test_steps: |-
+      1. Create a LOGGING policy with an HTTP_HOST condition (IS, httpbin.org)
+      2. Visit BLOCK_TARGET_URL with a browser
+      3. Check that it is allowed normally (page loads)
+      4. Wait in the security log for an event whose policy name, action=LOGGING and target host match
+      5. Check that the event's user_name is not empty
+      6. Delete the policy
+    test_parameters: |-
+      subject: HTTP_HOST
+      condition: IS
+      action_type: LOGGING
+      risk_level: MINOR
+    test_data: BLOCK_TARGET_HOST="httpbin.org", BLOCK_TARGET_URL="https://httpbin.org/get"
+    expected_results: While the connector is connected, allowed (not blocked) traffic is also recorded in the security log with the LOGGING action, and the connecting user name must be filled in on the event.
 BAT-SWG-009:
   test_steps: |-
     1. 테스트 사용자 생성 후 다시 읽어 login_id가 같은지 확인
@@ -574,6 +1175,18 @@ BAT-SWG-009:
     웹 정책 대상: users=[새 사용자 id], user_groups=[]
   test_data: POST /sia/v1/user {login_id, first_name:"BAT", last_name:"Tester", role:"USER"}
   expected_results: 새로 만든 사용자가 요청한 값 그대로 저장되고, 그 사용자만 대상으로 한 정책이 요청한 대상·동작으로 저장된다.
+  en:
+    scenario: A newly created user can be specified as a policy target, and deletion is also handled normally.
+    test_steps: |-
+      1. Create a test user, re-read it, and check that login_id is the same
+      2. Create an HTTP_HOST BLOCK web policy targeting only that user (user_groups empty)
+      3. Re-read the policy and compare that users is exactly that user, user_groups is empty and action_type is BLOCK (FAIL if different)
+      4. Delete the policy and the user
+    test_parameters: |-
+      new user login_id: bat-<case_id>-<run_id>@bat.local, role: USER
+      web policy target: users=[new user id], user_groups=[]
+    test_data: POST /sia/v1/user {login_id, first_name:"BAT", last_name:"Tester", role:"USER"}
+    expected_results: The newly created user is stored with exactly the requested values, and the policy targeting only that user is stored with the requested target and action.
 BAT-SWG-010:
   test_steps: |-
     1. 같은 호스트(httpbin.org)에 ALLOW와 BLOCK 웹 정책 생성
@@ -589,6 +1202,22 @@ BAT-SWG-010:
     priority 1차: BLOCK=1,ALLOW=2 / 2차: ALLOW=1,BLOCK=2
   test_data: BLOCK_TARGET_HOST="httpbin.org", BLOCK_TARGET_URL="https://httpbin.org/get" (curl 기반 트래픽, 브라우저 아님)
   expected_results: 우선순위가 높은 정책이 판정을 정하고, 순서를 바꾸면 결과가 바뀌어 그대로 유지된다.
+  en:
+    scenario: Priority decides the verdict of overlapping ALLOW/BLOCK, and changing the order changes the result.
+    test_steps: |-
+      1. Create ALLOW and BLOCK web policies for the same host (httpbin.org)
+      2. With BLOCK at priority 1: check that a marked curl request is blocked and that the BLOCK policy row of that request itself remains
+      3. Change ALLOW to priority 1 (priority cannot be re-read via REST, so confirm with traffic)
+      4. Check that passing starts within the propagation budget, and that it passes 3 times in a row after the budget has passed
+      5. Delete the policy
+    test_parameters: |-
+      subject: HTTP_HOST
+      condition: IS
+      action_type: ALLOW and BLOCK (same rule reused)
+      risk_level (BLOCK): MAJOR
+      priority 1st: BLOCK=1, ALLOW=2 / 2nd: ALLOW=1, BLOCK=2
+    test_data: BLOCK_TARGET_HOST="httpbin.org", BLOCK_TARGET_URL="https://httpbin.org/get" (curl-based traffic, not a browser)
+    expected_results: The higher-priority policy decides the verdict, and when the order is changed the result changes and stays that way.
 BAT-SWG-011:
   test_steps: |-
     1. LOGGING 정책(HTTP_HOST)으로 이 러너 트래픽을 발생시켜 보안로그에서 src_ip 식별
@@ -599,6 +1228,17 @@ BAT-SWG-011:
   test_parameters: 'Subject: SOURCE_IP, Condition: IS, Value: "<src_ip>/32" (discovery 단계에서 동적으로 결정)'
   test_data: discovery로 얻은 이 러너의 실제 출발지 IP (고정값 아님, 실행마다 다를 수 있음)
   expected_results: 조건이 실제 트래픽과 매칭되어 보안로그·감사로그에 LOGGING 이벤트로 남는다(차단 여부는 검증 안 함)
+  en:
+    scenario: Blocking this runner's source IP with SOURCE_IP actually blocks it, and the result is recorded in both the security log and the audit log.
+    test_steps: |-
+      1. Generate this runner's traffic with a LOGGING policy (HTTP_HOST) and identify src_ip in the security log
+      2. Create a SOURCE_IP LOGGING policy (identified src_ip/32) - not BLOCK, to avoid locking out the runner (5.39)
+      3. Revisit the target URL and confirm it loads normally (not blocked)
+      4. Confirm the event in both the security log and the audit log
+      5. Delete the policy
+    test_parameters: 'Subject: SOURCE_IP, Condition: IS, Value: "<src_ip>/32" (determined dynamically in the discovery step)'
+    test_data: The runner's actual source IP obtained by discovery (not a fixed value; may differ on each run)
+    expected_results: The condition matches the actual traffic and is recorded as a LOGGING event in the security log and the audit log (blocking is not verified)
 BAT-SWG-012:
   test_steps: |-
     1. LOGGING 정책(HTTP_HOST)으로 이 러너 트래픽을 발생시켜 보안로그에서 자기 트래픽의 src_country_code를 식별
@@ -609,6 +1249,17 @@ BAT-SWG-012:
   test_parameters: 'Subject: SOURCE_IP_GEO, Condition: IN(IS는 거부됨), Value: [<ISO 국가코드>]'
   test_data: discovery로 얻은 이 러너의 실제 접속 출발 국가코드 (고정값 아님)
   expected_results: 차단 확인 + 보안로그 이벤트 + 감사로그 이벤트 모두 성공
+  en:
+    scenario: Verify with SOURCE_IP_GEO that the country this runner actually connects from matches the condition.
+    test_steps: |-
+      1. Generate this runner's traffic with a LOGGING policy (HTTP_HOST) and identify the src_country_code of its own traffic in the security log
+      2. Create a SOURCE_IP_GEO BLOCK policy (identified country code)
+      3. Revisit the target URL and confirm it is blocked
+      4. Confirm the event in both the security log and the audit log
+      5. Delete the policy
+    test_parameters: 'Subject: SOURCE_IP_GEO, Condition: IN (IS is rejected), Value: [<ISO country code>]'
+    test_data: The country code this runner actually connects from, obtained by discovery (not a fixed value)
+    expected_results: Block confirmed + security log event + audit log event all succeed
 BAT-SWG-013:
   test_steps: |-
     1. LOGGING 정책(HTTP_HOST)으로 이 러너 트래픽을 발생시켜 보안로그에서 목적지 dst_country_code를 식별
@@ -619,6 +1270,17 @@ BAT-SWG-013:
   test_parameters: 'Subject: DESTINATION_IP_GEO, Condition: IN(IS는 거부됨), Value: [<ISO 국가코드>]'
   test_data: discovery로 얻은 목적지 사이트의 호스팅 국가코드 (고정값 아님)
   expected_results: LOGGING 조건(DESTINATION_IP_GEO IN country)이 실제 트래픽과 매칭되어 보안로그·감사로그에 남는다(2026-10-06부로 BLOCK에서 LOGGING으로 전환 — 국가 단위 차단은 넓은 조건으로 취급)
+  en:
+    scenario: Verify with DESTINATION_IP_GEO that the hosting country of the destination site matches the condition.
+    test_steps: |-
+      1. Generate this runner's traffic with a LOGGING policy (HTTP_HOST) and identify the destination dst_country_code in the security log
+      2. Create a DESTINATION_IP_GEO BLOCK policy (identified country code)
+      3. Revisit the target URL and confirm it is blocked
+      4. Confirm the event in both the security log and the audit log
+      5. Delete the policy
+    test_parameters: 'Subject: DESTINATION_IP_GEO, Condition: IN (IS is rejected), Value: [<ISO country code>]'
+    test_data: The hosting country code of the destination site, obtained by discovery (not a fixed value)
+    expected_results: The LOGGING condition (DESTINATION_IP_GEO IN country) matches the actual traffic and is recorded in the security log and the audit log (switched from BLOCK to LOGGING as of 2026-10-06 - country-level blocking is treated as a broad condition)
 BAT-SWG-014:
   test_steps: |-
     대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 아래를 반복한다.
@@ -637,6 +1299,25 @@ BAT-SWG-014:
     value: 스킴 포함 전체 URL
   test_data: 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 차단 대상 "https://<호스트>/get", 허용돼야 하는 같은 호스트의 다른 경로 "https://<호스트>/headers"
   expected_results: HTTP_URL 조건으로 정확한 URL 하나만 지정한 BLOCK 정책은 그 URL만 차단하고 같은 호스트의 다른 경로는 통과시켜야 하며, 보안 로그와 감사 로그 양쪽에 생성 기록이 남아야 한다.
+  en:
+    scenario: Blocking a single URL with HTTP_URL blocks only that URL; other paths on the same host pass.
+    test_steps: |-
+      Repeat the following for each target host (httpbin.org, postman-echo.com, httpbingo.org).
+      1. Create a BLOCK web policy with an HTTP_URL condition (IS, full URL https://<host>/get)
+      2. Visit that URL with a browser, retrying until it is blocked, and confirm it is blocked
+      3. Visit a different path on the same host (https://<host>/headers) and confirm it loads normally
+      4. Wait in the security log for an event whose policy name matches
+      5. Confirm in the audit_log a creation record that contains the policy name
+      6. Delete the policy
+      7. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed, with no deviations
+    test_parameters: |-
+      subject: HTTP_URL
+      condition: IS
+      action_type: BLOCK
+      risk_level: MAJOR
+      value: full URL including scheme
+    test_data: 'Target hosts (ECHO_HOSTS) = httpbin.org, postman-echo.com, httpbingo.org. URL to block: "https://<host>/get"; a different path on the same host that must be allowed: "https://<host>/headers"'
+    expected_results: A BLOCK policy that specifies exactly one URL with an HTTP_URL condition must block only that URL and let other paths on the same host pass, and creation records must remain in both the security log and the audit log.
 BAT-SWG-015:
   test_steps: |-
     1. HTTP_UPLOADFILE_EXTENSION IN [txt] BLOCK 웹 정책 생성
@@ -652,6 +1333,22 @@ BAT-SWG-015:
     value: ["txt"] (점 없이)
   test_data: POST_TARGET_URL="https://httpbin.org/post", 차단 대상 파일="<case_id>-<run_id>.txt", 허용 대상 파일="<case_id>-<run_id>.csv", 둘 다 내용은 "BAT upload-extension probe\n"
   expected_results: .txt 업로드만 막히고 그 요청의 행이 남으며, .csv 업로드는 통과한다.
+  en:
+    scenario: Blocking uploads of one specific extension with HTTP_UPLOADFILE_EXTENSION blocks only that extension.
+    test_steps: |-
+      1. Create an HTTP_UPLOADFILE_EXTENSION IN [txt] BLOCK web policy
+      2. Repeat the .txt file upload to a marked URL until it is blocked
+      3. Confirm that a .csv upload to a URL with a different marker passes
+      4. Check the log row of the blocked .txt upload request itself (marker) and the audit log
+      5. Delete the policy
+    test_parameters: |-
+      subject: HTTP_UPLOADFILE_EXTENSION
+      condition: IN
+      action_type: BLOCK
+      risk_level: MAJOR
+      value: ["txt"] (without the dot)
+    test_data: POST_TARGET_URL="https://httpbin.org/post", file to block="<case_id>-<run_id>.txt", file to allow="<case_id>-<run_id>.csv", both with the content "BAT upload-extension probe\n"
+    expected_results: Only the .txt upload is blocked and a row for that request is recorded; the .csv upload passes.
 BAT-SWG-016:
   test_steps: |-
     1. ANTI_VIRUS 시그니처 모듈 정책(BLOCK) 생성
@@ -666,6 +1363,21 @@ BAT-SWG-016:
   test_data: EICAR_STRING (업계 표준 68바이트 EICAR 테스트 문자열 — 실제 악성코드 아님)
   expected_results: EICAR 업로드가 ANTI_VIRUS 시그니처에 의해 차단된다(차단 없이 내용 그대로 전달되면 FAIL)
   actual_result: EICAR 파일이 내용 그대로 전달됐지만 ANTI_VIRUS가 차단하지 않음
+  en:
+    scenario: With the ANTI_VIRUS signature on, uploading an EICAR test file is blocked.
+    test_steps: |-
+      1. Create an ANTI_VIRUS signature module policy (BLOCK)
+      2. Write the EICAR test string byte for byte (no leading BOM, no trailing newline) to a temporary file on the endpoint, verify it is intact, then immediately upload it with curl and delete it. If the endpoint antivirus blocks or deletes the file so it cannot be uploaded, UNVERIFIED (environment)
+      3. Repeatedly check for up to 20 seconds whether the upload is blocked
+      4. If it is never blocked, check whether the httpbin echo of the last upload exactly equals the bytes sent (if delivered intact, FAIL because ANTI_VIRUS did not act; if there was no response or the transport path altered the content, UNVERIFIED)
+      5. Check the security log + audit log, delete the policy
+    test_parameters: |-
+      Signature module: ANTI_VIRUS
+      Upload filename: eicar.txt (eicar.com also measured separately)
+      Target: POST_TARGET_URL
+    test_data: EICAR_STRING (the industry-standard 68-byte EICAR test string - not real malware)
+    expected_results: The EICAR upload is blocked by the ANTI_VIRUS signature (FAIL if it is delivered intact without being blocked)
+    actual_result: The EICAR file was delivered intact but ANTI_VIRUS did not block it
 BAT-SWG-017:
   test_steps: |-
     1. www.example.org를 C&C deny 목록에 추가
@@ -680,6 +1392,21 @@ BAT-SWG-017:
     www.example.org (BAT 전용 등록 값, 케이스가 끝나면 제거)
     대조 호스트: httpbin.org
   expected_results: C&C 목록에 등록한 대상 접속이 차단되고 그 요청의 행이 남는다.
+  en:
+    scenario: With BLOCK_CNC_TRAFFIC on, connections to a target registered in the Signature Management C&C deny list are blocked.
+    test_steps: |-
+      1. Add www.example.org to the C&C deny list
+      2. Use a LOGGING copy of the module to confirm there are no matches outside the list
+      3. Create a BLOCK_CNC_TRAFFIC BLOCK policy
+      4. Confirm that a marked www.example.org request is blocked and that a policy row for that request itself is recorded
+      5. Delete the policy, remove the entry from the deny list
+    test_parameters: |-
+      Signature module: BLOCK_CNC_TRAFFIC
+      Signature pattern: C&C deny_list += www.example.org
+    test_data: |-
+      www.example.org (value registered only by BAT, removed when the case ends)
+      Control host: httpbin.org
+    expected_results: A connection to the target registered in the C&C list is blocked and a row for that request is recorded.
 BAT-SWG-018:
   test_steps: |-
     1. HTTP_PATH=/get BLOCK 정책 생성(경로 조건은 호스트를 가리지 않으므로 정책 하나)
@@ -690,6 +1417,17 @@ BAT-SWG-018:
   test_parameters: 'Subject: HTTP_PATH, Condition: IS, value: ["/get"]'
   test_data: 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. https://<호스트>/get (차단 대상), https://<호스트>/headers (같은 호스트, 다른 경로)
   expected_results: /get만 차단되고 같은 호스트의 다른 경로(/headers)는 영향받지 않는다
+  en:
+    scenario: Blocking a specific path with HTTP_PATH blocks only that path; other paths on the same host pass.
+    test_steps: |-
+      1. Create an HTTP_PATH=/get BLOCK policy (a path condition does not select a host, so one policy)
+      2. For each target host (httpbin.org, postman-echo.com, httpbingo.org), access https://<host>/get -> confirm it is blocked
+      3. Access https://<host>/headers (a different path) on the same host -> confirm it passes
+      4. For each host, check that host's security log event, check the audit log, delete the policy
+      5. PASS if every target's result is as expected, FAIL if any one deviates, UNVERIFIED if there are only targets that could not be confirmed, with no deviations
+    test_parameters: 'Subject: HTTP_PATH, Condition: IS, value: ["/get"]'
+    test_data: Target hosts (ECHO_HOSTS) = httpbin.org, postman-echo.com, httpbingo.org. https://<host>/get (to be blocked), https://<host>/headers (same host, different path)
+    expected_results: Only /get is blocked; other paths on the same host (/headers) are unaffected
 BAT-SWG-019:
   test_steps: |-
     1. HTTP_METHOD=POST LOGGING 정책 생성(BLOCK 아님: 러너 자신의 POST까지 막음)
@@ -700,6 +1438,17 @@ BAT-SWG-019:
   test_parameters: 'Subject: HTTP_METHOD, Condition: IN, value: ["POST"], action_type: LOGGING'
   test_data: POST https://httpbin.org/post (bat=probe)
   expected_results: 마커를 단 POST 요청이 조건과 매칭되어 그 요청의 LOGGING 이벤트가 남고 트래픽은 차단되지 않으며, 같은 호스트로 보낸 GET은 이 정책에 기록되지 않는다
+  en:
+    scenario: Verify that the HTTP_METHOD condition matches the method of actual traffic.
+    test_steps: |-
+      1. Create an HTTP_METHOD=POST LOGGING policy (not BLOCK: it would also block the runner's own POSTs)
+      2. Send a marked POST https://httpbin.org/post repeatedly during the propagation time until one of them is logged with this policy id (the runner's own API POST rows have no marker and are not accepted)
+      3. Confirm that the logged request was not blocked (passes because it is LOGGING) + confirm that request's own LOGGING event
+      4. Negative control: send a marked GET https://httpbin.org/get, and after the row of a POST sentinel sent afterward appears, confirm that the GET's row does not exist for this policy
+      5. Check the audit log, delete the policy
+    test_parameters: 'Subject: HTTP_METHOD, Condition: IN, value: ["POST"], action_type: LOGGING'
+    test_data: POST https://httpbin.org/post (bat=probe)
+    expected_results: The marked POST request matches the condition and a LOGGING event for that request is recorded while the traffic is not blocked, and a GET sent to the same host is not recorded under this policy
 BAT-SWG-020:
   test_steps: |-
     1. httpbin.org를 IP 하나로 해석하고 DESTINATION_IP IS [그 IP] BLOCK 웹 정책 생성
@@ -710,6 +1459,17 @@ BAT-SWG-020:
   test_parameters: 'Subject: DESTINATION_IP, Condition: IS, value: [해석된 IP 1개]'
   test_data: httpbin.org의 실제 IP (매 실행 시 nslookup으로 동적 확인), https://example.com/(비교 대상)
   expected_results: 지정한 IP로 가는 요청만 막히고 그 요청의 행이 남으며, 다른 IP는 통과한다.
+  en:
+    scenario: Blocking a single IP with DESTINATION_IP blocks only that IP; other destinations pass.
+    test_steps: |-
+      1. Resolve httpbin.org to one IP and create a DESTINATION_IP IS [that IP] BLOCK web policy
+      2. Confirm that a marked request pinned to that IP (pin_ip) is blocked
+      3. Confirm that example.com, which has a different IP, passes
+      4. Check the policy row of the blocked request itself (marker) and the audit log
+      5. Delete the policy
+    test_parameters: 'Subject: DESTINATION_IP, Condition: IS, value: [one resolved IP]'
+    test_data: The actual IP of httpbin.org (confirmed dynamically with nslookup on each run), https://example.com/ (comparison target)
+    expected_results: Only requests going to the specified IP are blocked and a row for that request is recorded; other IPs pass.
 BAT-SWG-021:
   test_steps: |-
     1. www.example.org를 Risky Website deny 목록에 추가
@@ -725,6 +1485,22 @@ BAT-SWG-021:
     대조 호스트: www.wikipedia.org
   expected_results: Risky Website 목록에 등록한 대상 접속이 차단되고 그 요청의 행이 남는다.
   actual_result: BLOCK_RISKY_WEBSITES가 목록에 없는 www.wikipedia.org까지 매칭해(LOGGING 확인), 러너 전체가 막힐 위험 때문에 BLOCK을 걸지 않음
+  en:
+    scenario: With BLOCK_RISKY_WEBSITES on, connections to a target registered in the Signature Management Risky Website deny list are blocked.
+    test_steps: |-
+      1. Add www.example.org to the Risky Website deny list
+      2. Use a LOGGING copy of the module to confirm there are no matches outside the list (www.wikipedia.org). If it matches, FAIL without BLOCK
+      3. Create a BLOCK_RISKY_WEBSITES BLOCK policy
+      4. Confirm that a marked www.example.org request is blocked and that a policy row for that request itself is recorded
+      5. Delete the policy, remove the entry from the deny list
+    test_parameters: |-
+      Signature module: BLOCK_RISKY_WEBSITES
+      Signature pattern: Risky Website deny_list += www.example.org
+    test_data: |-
+      www.example.org (value registered only by BAT, removed when the case ends)
+      Control host: www.wikipedia.org
+    expected_results: A connection to the target registered in the Risky Website list is blocked and a row for that request is recorded.
+    actual_result: BLOCK_RISKY_WEBSITES also matched www.wikipedia.org, which is not in the list (confirmed with LOGGING), so BLOCK was not applied because of the risk of blocking the entire runner
 BAT-SWG-022:
   test_steps: |-
     1. httpbin.org를 IP로 해석하고 HTTP_HOST IS [httpbin.org] BLOCK 웹 정책 생성
@@ -737,6 +1513,19 @@ BAT-SWG-022:
     https://httpbin.org/get
     https://<httpbin.org IP>/get
   expected_results: 호스트명 요청은 막히고(그 요청의 행이 남음), HTTP_HOST가 매칭하지 않는 IP 직접 요청은 통과한다.
+  en:
+    scenario: A hostname blocked with HTTP_HOST is blocked, and connecting directly to the same destination by IP passes.
+    test_steps: |-
+      1. Resolve httpbin.org to an IP and create an HTTP_HOST IS [httpbin.org] BLOCK web policy
+      2. Confirm that a marked hostname request is blocked and that a policy row for that request itself is recorded
+      3. Request the same destination directly by IP and confirm it passes (is delivered) (FAIL if blocked, UNVERIFIED if there is no response)
+      4. Leave only evidence of whether SSE sees the IP request, using a LOGGING DESTINATION_IP policy
+      5. Delete the policy
+    test_parameters: 'Subject: HTTP_HOST, condition: IS, value: [httpbin.org], action: BLOCK'
+    test_data: |-
+      https://httpbin.org/get
+      https://<httpbin.org IP>/get
+    expected_results: The hostname request is blocked (a row for that request is recorded), and the direct-IP request, which HTTP_HOST does not match, passes.
 BAT-SWG-023:
   test_steps: |-
     1. HTTP_HOST IS [httpbin.org](소문자) BLOCK 웹 정책 생성
@@ -748,6 +1537,18 @@ BAT-SWG-023:
   test_data: https://HTTPBIN.ORG/get
   expected_results: 대문자 Host로 보낸 요청도 차단되고 그 요청의 행이 남는다(curl이 응답을 받으면 FAIL. 단 curl만 통과하고 브라우저는 막히는 증상은 known_issue로 SKIP)
   actual_result: 대문자 Host(HTTPBIN.ORG)로 보낸 curl 요청은 통과했지만 브라우저 요청은 차단됨(호스트를 정규화하지 않는 클라이언트만 비켜 감)
+  en:
+    scenario: The HTTP_HOST condition matches regardless of case - clients that send the host in uppercase as is (such as curl) must also be blocked.
+    test_steps: |-
+      1. Create an HTTP_HOST IS [httpbin.org] (lowercase) BLOCK web policy
+      2. Request https://HTTPBIN.ORG/get?bat=...-curl with curl (sending the uppercase Host as is)
+      3. Visit the same address with a different marker using a browser and record the result (kept only as evidence)
+      4. If curl is blocked, PASS after also checking the policy row of that request itself; if curl gets a response, bypass confirmed (FAIL); if curl gets no response, UNVERIFIED
+      5. Delete the policy
+    test_parameters: 'Subject: HTTP_HOST, condition: IS, value: [httpbin.org], action: BLOCK'
+    test_data: https://HTTPBIN.ORG/get
+    expected_results: A request sent with an uppercase Host is also blocked and a row for that request is recorded (FAIL if curl gets a response; however, the symptom where only curl passes and the browser is blocked is SKIP via known_issue)
+    actual_result: The curl request sent with an uppercase Host (HTTPBIN.ORG) passed but the browser request was blocked (only clients that do not normalize the host get around it)
 BAT-X-001:
   test_steps: |-
     1. DLP 키워드 룰 정책 생성
@@ -762,6 +1563,21 @@ BAT-X-001:
     ALLOW rule: HTTP_HOST IS BLOCK_TARGET_HOST
   expected_results: 우선순위 높은 ALLOW가 있어도 DLP 탐지 차단은 유지된다(차단됨)
   actual_result: 우선순위 높은 ALLOW 정책 때문에 DLP 탐지 payload가 그대로 전달됨(HTTP 200)
+  en:
+    scenario: Even if there is an ALLOW with higher priority than the web policy triggered by DLP detection, the DLP block is maintained.
+    test_steps: |-
+      1. Create a DLP keyword rule policy
+      2. Create a web policy (BLOCK, risk MAJOR) that references that DLP
+      3. Send a payload containing the token and first confirm that DLP alone blocks it (precondition)
+      4. Additionally create an ALLOW web policy targeting the same host, with priority set higher than the BLOCK
+      5. Send the same token payload again
+      6. Check the security log, delete everything
+    test_parameters: 'Priority: ALLOW=1, DLP-linked BLOCK=2 (lower number is evaluated first)'
+    test_data: |-
+      DLP keyword rule token
+      ALLOW rule: HTTP_HOST IS BLOCK_TARGET_HOST
+    expected_results: The DLP detection block is maintained even with a higher-priority ALLOW (blocked)
+    actual_result: Because of the higher-priority ALLOW policy, the DLP-detected payload was delivered as is (HTTP 200)
 BAT-X-002:
   test_steps: |-
     1. 정책 전에 example.com이 해석되고 웹 요청이 응답하는지 확인(기준선)
@@ -775,6 +1591,20 @@ BAT-X-002:
     dns_firewall: action_type=BLOCK, rule.subject=FQDN, rule.condition=IS, rule.value=[example.com]
   test_data: SECOND_HOST=example.com, 정책 이름은 resource_name(case_id, run_id, 'allow'/'dns')으로 실행마다 동적 생성
   expected_results: 같은 호스트를 허용하는 웹 ALLOW가 있어도 실제 웹 요청이 DNS 계층에서 막힌다.
+  en:
+    scenario: Even if a web policy allowing the same host exists, the DNS Firewall block is maintained.
+    test_steps: |-
+      1. Before the policies, confirm that example.com resolves and that a web request gets a response (baseline)
+      2. Put an example.com HTTP_HOST ALLOW web policy at priority 1, and create an example.com FQDN BLOCK DNS Firewall policy
+      3. Confirm the DNS policy is enforced by the nslookup resolution failure and the DNS policy row of that lookup
+      4. Flush the endpoint DNS cache and send a marked web request
+      5. PASS if that request is a resolution failure (no connection) or a DNS block page, FAIL if it is delivered, UNVERIFIED for any other response
+      6. Delete the policies
+    test_parameters: |-
+      web_policy: action_type=ALLOW, subject=HTTP_HOST, condition=IS, value=[example.com], priority=1
+      dns_firewall: action_type=BLOCK, rule.subject=FQDN, rule.condition=IS, rule.value=[example.com]
+    test_data: SECOND_HOST=example.com, policy names are generated dynamically on each run with resource_name(case_id, run_id, 'allow'/'dns')
+    expected_results: Even with a web ALLOW that allows the same host, the actual web request is blocked at the DNS layer.
 BAT-X-003:
   test_steps: |-
     1. 정책 전에 example.com이 해석되는지, 그 IP로 붙인 요청이 응답하는지 확인(기준선)
@@ -786,6 +1616,18 @@ BAT-X-003:
     application_firewall: action_type=BLOCK, subject.source.ip_address=[0.0.0.0/0], subject.destination.ip_address=[resolve_ip(example.com)]
   test_data: SECOND_HOST=example.com, SECOND_URL=https://example.com/, destination_ip은 resolve_ip()로 실행 시점에 동적 확인, 정책 이름은 resource_name()으로 동적 생성
   expected_results: 웹 ALLOW가 있어도 목적지 IP로의 연결이 끊기고 방화벽 정책의 행이 남는다.
+  en:
+    scenario: Even if a web policy allowing the same host exists, the Application Firewall block is maintained.
+    test_steps: |-
+      1. Before the policies, confirm that example.com resolves and that a request pinned to that IP gets a response (baseline)
+      2. Put an example.com HTTP_HOST ALLOW web policy at priority 1, and create a BLOCK Application Firewall policy for that IP
+      3. Confirm the connection drop of the request pinned to that IP and the firewall policy row whose dst_ip is that IP
+      4. Delete the policies
+    test_parameters: |-
+      web_policy: action_type=ALLOW, subject=HTTP_HOST, condition=IS, value=[example.com], priority=1
+      application_firewall: action_type=BLOCK, subject.source.ip_address=[0.0.0.0/0], subject.destination.ip_address=[resolve_ip(example.com)]
+    test_data: SECOND_HOST=example.com, SECOND_URL=https://example.com/, destination_ip is determined dynamically at run time with resolve_ip(), policy names are generated dynamically with resource_name()
+    expected_results: Even with a web ALLOW, the connection to the destination IP is dropped and a row for the firewall policy is recorded.
 BAT-X-005:
   test_steps: |-
     1. 정책 전에 example.com이 해석되는지, 그 IP로 붙인 요청이 응답하는지 확인(기준선)
@@ -799,6 +1641,20 @@ BAT-X-005:
     dns_firewall: action_type=BLOCK, rule.subject=FQDN, rule.value=[example.com]
   test_data: SECOND_HOST=example.com, SECOND_URL=https://example.com/, destination_ip은 resolve_ip()로 동적 확인, 정책 이름은 resource_name()으로 동적 생성
   expected_results: DNS 정책을 지우면 이름은 다시 해석되지만 방화벽 정책의 차단은 그대로 유지되고 그 행이 남는다.
+  en:
+    scenario: When two layers are blocking together, deleting one still leaves the other's block intact.
+    test_steps: |-
+      1. Before the policies, confirm that example.com resolves and that a request pinned to that IP gets a response (baseline)
+      2. Create together a BLOCK Application Firewall policy for that IP and an example.com FQDN BLOCK DNS Firewall policy
+      3. Confirm that one of the layers blocks, and check the DNS policy's resolution failure and the DNS row of that lookup
+      4. Delete the DNS policy (confirm it has disappeared from the list), then confirm the name resolves again (deletion applied; FAIL if still blocked)
+      5. Confirm that a request pinned to that IP is still dropped and that a new firewall policy row (dst_ip) is recorded
+      6. Delete the firewall policy
+    test_parameters: |-
+      application_firewall: action_type=BLOCK, subject.source.ip_address=[0.0.0.0/0], subject.destination.ip_address=[resolve_ip(example.com)]
+      dns_firewall: action_type=BLOCK, rule.subject=FQDN, rule.value=[example.com]
+    test_data: SECOND_HOST=example.com, SECOND_URL=https://example.com/, destination_ip is determined dynamically with resolve_ip(), policy names are generated dynamically with resource_name()
+    expected_results: After the DNS policy is deleted the name resolves again, but the firewall policy's block remains in effect and its row is recorded.
 BAT-X-006:
   test_steps: |-
     1. CASB SaaS Access BLOCK 정책(application=[CASB_SAAS_APP_ID], risk_level=Major)을 생성해 Notion 앱을 차단한다.
@@ -812,6 +1668,20 @@ BAT-X-006:
     web_policy: action_type=ALLOW, subject=HTTP_HOST, condition=IS, value=[www.notion.so], priority=1
   test_data: CASB_SAAS_APP_ID=3(Notion), CASB_SAAS_APP_NAME='Notion', CASB_SAAS_HOST='www.notion.so', CASB_SAAS_URL='https://www.notion.so/', 정책 이름은 resource_name()으로 동적 생성
   expected_results: 같은 호스트를 허용하는 우선순위 1의 웹 ALLOW 정책이 있어도 casb_security_log에 기록된 이벤트의 action은 BLOCK이어야 한다(화면 차단 여부는 판정에 쓰지 않음).
+  en:
+    scenario: The CASB app block is maintained even if a higher-priority web policy allowing the same host exists.
+    test_steps: |-
+      1. Create a CASB SaaS Access BLOCK policy (application=[CASB_SAAS_APP_ID], risk_level=Major) to block the Notion app.
+      2. Alongside it, create an HTTP_HOST ALLOW web policy that allows the same CASB_SAAS_HOST (www.notion.so) and set its priority to 1 (highest).
+      3. Visit CASB_SAAS_URL with a real browser (Playwright) and record whether a block page appears (the screen result is only recorded, not asserted - because CASB blocking is intermittent).
+      4. Poll casb_log (casb_security_log) for an event by the CASB policy name and confirm that in_app_service is CASB_SAAS_APP_NAME (Notion).
+      5. Confirm that the action field of the event is 'BLOCK' (the key assertion is that the higher-priority web ALLOW did not nullify the CASB verdict).
+      6. Clean up (delete) the two policies.
+    test_parameters: |-
+      saas_access: action_type=BLOCK, risk_level=Major, application=[CASB_SAAS_APP_ID]
+      web_policy: action_type=ALLOW, subject=HTTP_HOST, condition=IS, value=[www.notion.so], priority=1
+    test_data: CASB_SAAS_APP_ID=3 (Notion), CASB_SAAS_APP_NAME='Notion', CASB_SAAS_HOST='www.notion.so', CASB_SAAS_URL='https://www.notion.so/', policy names are generated dynamically with resource_name()
+    expected_results: Even with a priority-1 web ALLOW policy that allows the same host, the action of the event recorded in casb_security_log must be BLOCK (whether the screen is blocked is not used for the verdict).
 BAT-X-007:
   test_steps: |-
     1. 정책 전에 example.com이 해석되는지 확인(기준선)
@@ -823,6 +1693,18 @@ BAT-X-007:
   test_parameters: 'dns_firewall: action_type=BLOCK, rule.subject=FQDN, rule.condition=IS, rule.value=[example.com]'
   test_data: SECOND_HOST=example.com, 정책 이름은 resource_name(case_id, run_id)로 동적 생성
   expected_results: DNS로 막힌 요청은 DNS 보안로그에만 남고 웹 보안로그에는 어떤 행도 남지 않는다.
+  en:
+    scenario: A request blocked by the DNS Firewall is recorded only in the DNS security log and not in the web security log.
+    test_steps: |-
+      1. Before the policies, confirm that example.com resolves (baseline)
+      2. Apply a LOGGING web policy (control) to example.com and confirm that a marked request is logged in the web log under that policy (positive control; UNVERIFIED if it is not logged)
+      3. Create an example.com FQDN BLOCK DNS Firewall policy, and check the resolution failure and the DNS row of that lookup
+      4. Flush the endpoint DNS cache and send a marked request (record the result as evidence)
+      5. After the row of a sentinel request pinned to the real IP appears under the control policy, confirm that the web log row of the DNS-blocked request does not exist under any policy
+      6. Delete the policies
+    test_parameters: 'dns_firewall: action_type=BLOCK, rule.subject=FQDN, rule.condition=IS, rule.value=[example.com]'
+    test_data: SECOND_HOST=example.com, policy names are generated dynamically with resource_name(case_id, run_id)
+    expected_results: A request blocked by DNS is recorded only in the DNS security log and no row is left in the web security log.
 BAT-X-008:
   test_steps: |-
     1. SECOND_HOST가 정상 해석될 때까지 대기한다.
@@ -842,6 +1724,26 @@ BAT-X-008:
     traffic: method=POST, data=keyword_payload(token)
   test_data: SECOND_HOST=example.com, SECOND_URL=https://example.com/, token=marker(case_id, run_id)로 동적 생성된 'BATSENSITIVE...' 문자열, payload='note=quarterly review&secret=<token>&owner=bat-suite'
   expected_results: DLP 연결 웹 정책과 DNS Firewall 정책이 동시에 걸려 있을 때 토큰이 포함된 요청은 통과하지 않고, 그 요청은 DNS Firewall 행을 새로 남기며 DLP 웹정책 행은 남기지 않는다(DNS 계층에서 먼저 막힘).
+  en:
+    scenario: When the DNS Firewall blocks, the request never even reaches the DLP inspection stage.
+    test_steps: |-
+      1. Wait until SECOND_HOST resolves normally.
+      2. Create a DLP policy with a 'bat-token' keyword rule (containing a DLP-unique token).
+      3. Create a web BLOCK policy (risk_level=MAJOR) with a DLP_POLICY rule that references that DLP policy.
+      4. Send a curl request to SECOND_URL with a POST payload containing the token and first confirm that DLP alone produces a 403 block page (prerequisite check).
+      5. Additionally create a DNS Firewall BLOCK policy that blocks the same SECOND_HOST (state where the DLP and DNS layers are applied at the same time).
+      6. Confirm with nslookup that the SECOND_HOST lookup is blocked and that an event for that DNS policy is recorded.
+      7. After flushing the endpoint DNS cache (ipconfig /flushdns), send a POST containing the token to a marked SECOND_URL and confirm that it does not pass.
+      8. Confirm that a new row for the DNS Firewall policy appeared after that request (FAIL if not: it was not blocked at the DNS layer).
+      9. Sentinel request: send a POST containing the token to a marked httpbin.org/post, and after its DLP row appears, confirm that there is no DLP web policy row containing the marker of the request in step 7 (FAIL if there is: it reached DLP inspection).
+      10. Clean up (delete) the two policies (DLP-linked web policy, DNS Firewall policy) and the DLP policy.
+    test_parameters: |-
+      dlp_policy: rule=keyword_rule('bat-token', [token])
+      web_policy: action_type=BLOCK, risk_level=MAJOR, rule=DLP_POLICY rule(dlp_policy_id)
+      dns_firewall: action_type=BLOCK, rule.subject=FQDN, rule.value=[example.com]
+      traffic: method=POST, data=keyword_payload(token)
+    test_data: SECOND_HOST=example.com, SECOND_URL=https://example.com/, token = a 'BATSENSITIVE...' string generated dynamically with marker(case_id, run_id), payload='note=quarterly review&secret=<token>&owner=bat-suite'
+    expected_results: When the DLP-linked web policy and the DNS Firewall policy are applied at the same time, a request containing the token does not pass, and that request leaves a new DNS Firewall row and no DLP web policy row (blocked first at the DNS layer).
 BAT-X-009:
   test_steps: |-
     1. HTTP_HOST가 chatgpt.com인 BLOCK 웹정책을 생성한다.
@@ -852,6 +1754,17 @@ BAT-X-009:
   test_parameters: 'web_policy: action_type=BLOCK, subject=HTTP_HOST, condition=IS, value=[chatgpt.com]'
   test_data: host='chatgpt.com', 정책 이름은 resource_name(case_id, run_id)로 동적 생성
   expected_results: GenAI 프롬프트/페이지 차단이 이 환경에서 동작하지 않더라도, chatgpt.com을 막는 웹정책만으로 실제 페이지 로딩이 차단 페이지로 끝나고 웹 보안 로그에 해당 호스트를 대상으로 한 이벤트가 남아야 한다.
+  en:
+    scenario: An AI service that the GenAI policy cannot block is still blocked by a web policy host block.
+    test_steps: |-
+      1. Create a BLOCK web policy with HTTP_HOST chatgpt.com.
+      2. Visit https://chatgpt.com/ with a real browser, retrying until the block page appears.
+      3. Confirm the block page is displayed (the key point is that it was blocked by the web-layer host block, not by a GenAI-specific policy).
+      4. Poll web_log for an event by policy name and target (chatgpt.com, target_in_search=True) and confirm it.
+      5. Clean up (delete) the policy.
+    test_parameters: 'web_policy: action_type=BLOCK, subject=HTTP_HOST, condition=IS, value=[chatgpt.com]'
+    test_data: host='chatgpt.com', the policy name is generated dynamically with resource_name(case_id, run_id)
+    expected_results: Even if GenAI prompt/page blocking does not work in this environment, a web policy that blocks chatgpt.com alone must end the real page load in a block page and leave an event targeting that host in the web security log.
 BAT-X-010:
   test_steps: |-
     1. GenAI 대상 앱(chatgpt)이 카탈로그에 있는지 확인한다(없으면 ERROR).
@@ -870,6 +1783,25 @@ BAT-X-010:
     genai: action_type=BLOCK, application=[genai_app.id](chatgpt)
   test_data: token=marker(case_id, run_id)로 동적 생성, payload='note=quarterly review&secret=<token>&owner=bat-suite', CASB_SAAS_APP_ID=3(Notion), GENAI_TARGET_APP='chatgpt', 정책 이름들은 resource_name()으로 동적 생성
   expected_results: 같은 세션 안에서 순서대로 걸은 평범한 방문→DLP→CASB→GenAI 네 단계가 서로 방해하지 않고, 평범한 방문은 통과하고 DLP는 차단+이벤트 기록, CASB는 이벤트 기록(Notion), GenAI 정책은 생성 후 목록에 정상 조회되어야 한다.
+  en:
+    scenario: While browsing normally, uploading sensitive data, visiting a risky SaaS app and using GenAI are each caught in turn.
+    test_steps: |-
+      1. Confirm the GenAI target app (chatgpt) is in the catalog (ERROR if not).
+      2. (Ordinary day) Visit ALLOW_TARGET_URL (https://www.iana.org/) with the browser and confirm nothing is blocked.
+      3. (Sensitive data upload) Create a DLP policy with a 'bat-token' keyword rule and a DLP_POLICY web BLOCK policy that references it (risk_level=MAJOR).
+      4. Send a curl request to POST_TARGET_URL (https://httpbin.org/post) with a POST payload containing the token and confirm it is blocked.
+      5. Poll web_log for an event of the DLP-linked web policy name and confirm it.
+      6. (Risky SaaS access) Create a CASB SaaS Access BLOCK policy (application=[CASB_SAAS_APP_ID]) and visit CASB_SAAS_URL (Notion) with the browser (the screen result is only recorded).
+      7. Poll casb_log for the CASB policy name and a Notion event and confirm it.
+      8. (GenAI use) Create a GenAI BLOCK policy with the reference app id, re-read the list, and compare that the action (BLOCK), topic (all) and target app equal the requested values (prompt blocking itself cannot be verified because it requires login).
+      9. Clean up (delete) the policy of every step (DLP, DLP-linked web policy, CASB, GenAI).
+    test_parameters: |-
+      baseline: ALLOW_TARGET_URL=https://www.iana.org/
+      dlp: rule=keyword_rule('bat-token', [token]) + web BLOCK(risk_level=MAJOR, DLP_POLICY rule), traffic=POST to POST_TARGET_URL
+      casb: saas_access BLOCK, application=[CASB_SAAS_APP_ID], risk_level=Major, visited URL=CASB_SAAS_URL
+      genai: action_type=BLOCK, application=[genai_app.id](chatgpt)
+    test_data: token is generated dynamically with marker(case_id, run_id), payload='note=quarterly review&secret=<token>&owner=bat-suite', CASB_SAAS_APP_ID=3(Notion), GENAI_TARGET_APP='chatgpt', policy names are generated dynamically with resource_name()
+    expected_results: 'The four steps walked in order within the same session (ordinary visit, DLP, CASB, GenAI) must not interfere with each other: the ordinary visit passes, DLP blocks and records an event, CASB records an event (Notion), and the GenAI policy is created and read back normally from the list.'
 BAT-X-011:
   test_steps: |-
     1. DLP 키워드 룰을 연결한 웹 BLOCK 정책과 Notion SaaS Access BLOCK 정책을 함께 생성
@@ -884,6 +1816,21 @@ BAT-X-011:
     검증: dlp_event.policy_name != casb_name AND casb_event.rule_name != dlp_block_name
   test_data: token=marker(case_id, run_id)로 동적 생성, payload='note=quarterly review&secret=<token>&owner=bat-suite', CASB_SAAS_APP_ID=3(Notion), 정책 이름은 resource_name()으로 동적 생성
   expected_results: 두 차단 채널이 동시에 켜져 있어도 각자 자기 요청만 막고 기록하며, 상대 채널의 요청은 자기 로그에 남기지 않는다.
+  en:
+    scenario: Even when DLP and CASB blocks are set at the same time after suspicious activity, each blocks only its own traffic accurately.
+    test_steps: |-
+      1. Create together a web BLOCK policy linked to a DLP keyword rule and a Notion SaaS Access BLOCK policy
+      2. Channel A: confirm the DLP keyword POST carrying a marker is blocked and that request's own DLP policy row is left
+      3. Channel B: judge the Notion visit the same way as BAT-CASB-004 (propagation budget, then 5 blocks, each request's own BLOCK row)
+      4. Cross negative control 1: confirm that, by the time the rows of the later CASB requests have arrived, the row of the DLP upload request is not in the CASB log
+      5. Cross negative control 2: confirm that, after the row of the DLP marker request appears, the rows of the CASB visit requests are not attributed to the DLP web policy
+      6. Delete the policies
+    test_parameters: |-
+      dlp: rule=keyword_rule('bat-token', [token]) + web BLOCK(risk_level=MAJOR, DLP_POLICY rule), traffic=POST to POST_TARGET_URL
+      casb: saas_access BLOCK, application=[CASB_SAAS_APP_ID], risk_level=Major, visited URL=CASB_SAAS_URL
+      verification: dlp_event.policy_name != casb_name AND casb_event.rule_name != dlp_block_name
+    test_data: token is generated dynamically with marker(case_id, run_id), payload='note=quarterly review&secret=<token>&owner=bat-suite', CASB_SAAS_APP_ID=3(Notion), policy names are generated dynamically with resource_name()
+    expected_results: Even with both block channels on at the same time, each blocks and records only its own requests, and does not leave the other channel's requests in its own log.
 BAT-ZTNA-001:
   test_steps: |-
     1. 커넥터 프로세스가 실행 중인지 확인
@@ -896,6 +1843,19 @@ BAT-ZTNA-001:
     identity fields: user, device, src_ip, result, os
   test_data: CONNECTOR_PROCESS 상수 "AIConnector for Client", AUTH_LOOKBACK_DAYS=(1, 7, 30), identity 값은 auth_log에서 실시간으로 조회되는 최신 인증 이벤트(고정 리터럴 아님)
   expected_results: 커넥터가 실행 중이고, 이 단말의 가장 최근 인증 기록이 연결 해제가 아니며 로그인·터널 연결 행이 남아 있다.
+  en:
+    scenario: The connector is connected, and its authentication is recorded in the audit log.
+    test_steps: |-
+      1. Confirm the connector process is running
+      2. Query the auth log by this endpoint's device_id (the configured value or the hardware UUID). Widen the range 1 day -> 7 days -> 30 days until a row of this endpoint appears (if the server rejects the widened query, stop there and record it as evidence)
+      3. FAIL if this endpoint's most recent row is a disconnect (AUTH_DISCONNECT_*)
+      4. PASS if there is a login or tunnel connect row (UNVERIFIED if there is none even after widening the whole range). Record as evidence how many days ago that row is and whether it is before this run
+    test_parameters: |-
+      process_name: AIConnector for Client
+      lookback: in the order 1 day, 7 days, 30 days (if there are more rows than one page, the last page is also read)
+      identity fields: user, device, src_ip, result, os
+    test_data: CONNECTOR_PROCESS constant "AIConnector for Client", AUTH_LOOKBACK_DAYS=(1, 7, 30), identity values are the latest authentication event looked up live from auth_log (not fixed literals)
+    expected_results: The connector is running, this endpoint's most recent authentication record is not a disconnect, and login or tunnel connect rows remain.
 BAT-ZTNA-002:
   test_steps: |-
     1. country AQ rule로 BLOCK 접근 정책 생성, 다시 읽어 action_type과 국가(AQ)가 요청값과 같은지 비교
@@ -907,6 +1867,18 @@ BAT-ZTNA-002:
     검증 대상: 생성 직후 list() 포함 여부, 삭제 후 list() 미포함 여부
   test_data: 'policy_name은 resource_name("BAT-ZTNA-005", run_id)으로 동적 생성, rule={"country": ["AQ"]}'
   expected_results: BLOCK·ALLOW 접근 정책이 각각 요청한 동작·국가로 저장되고, 삭제하면 사라진다.
+  en:
+    scenario: When a ZTNA access policy is created as BLOCK and as ALLOW, each is stored as requested, and it disappears when deleted.
+    test_steps: |-
+      1. Create a BLOCK access policy with a country AQ rule, re-read it, and compare that action_type and country (AQ) equal the requested values
+      2. After deletion, confirm it has disappeared from the list
+      3. Repeat the same procedure with ALLOW
+    test_parameters: |-
+      action_type: BLOCK
+      rule: {country: ["AQ"]}
+      verification target: inclusion in list() right after creation, exclusion from list() after deletion
+    test_data: 'policy_name is generated dynamically with resource_name("BAT-ZTNA-005", run_id), rule={"country": ["AQ"]}'
+    expected_results: The BLOCK and ALLOW access policies are each stored with the requested action and country, and disappear when deleted.
 BAT-ZTNA-003:
   test_steps: |-
     1. 인증 로그에서 디렉터리 실사용자 id를 찾음
@@ -919,6 +1891,19 @@ BAT-ZTNA-003:
     검증 대상: list() 결과에 정책명 포함 여부
   test_data: user_id는 auth_log 최신 인증 이벤트(또는 사용자 디렉터리 역질의)에서 동적으로 얻은 실제 값, country=["AQ"] 고정, policy_name은 resource_name("BAT-ZTNA-006", run_id)으로 동적 생성
   expected_results: 실사용자를 대상으로 한 접근 정책이 요청한 사용자·국가·동작으로 저장된다.
+  en:
+    scenario: An access policy targeting a real connector user is created normally.
+    test_steps: |-
+      1. Find a real directory user id in the auth log
+      2. Create a BLOCK access policy with that user id and a country AQ rule
+      3. Re-read it and compare that action_type (BLOCK), the user id in the rule, and the country (AQ) equal the requested values
+      4. Delete the policy
+    test_parameters: |-
+      action_type: BLOCK
+      rule: {user_id: [user_id obtained from the real auth_log], country: ["AQ"]}
+      verification target: whether the policy name is included in the list() result
+    test_data: user_id is the real value obtained dynamically from the latest auth_log authentication event (or a reverse lookup of the user directory), country=["AQ"] fixed, policy_name is generated dynamically with resource_name("BAT-ZTNA-006", run_id)
+    expected_results: The access policy targeting a real user is stored with the requested user, country and action.
 BAT-ZTNA-004:
   test_steps: |-
     1. SIA.ztna tunnel/gateway 목록 조회
@@ -928,6 +1913,16 @@ BAT-ZTNA-004:
     검증 대상: 두 결과가 모두 list 타입인지 여부
   test_data: 별도 입력 데이터 없음(조회 전용 쿼리), 이 테넌트에서 실측된 응답은 tunnel.list=[], gateway.list=[] (둘 다 빈 배열)
   expected_results: 보호 대상 리소스 목록 조회가 오류 없이 응답한다(환경 점검).
+  en:
+    scenario: The list of ZTNA protected resources (tunnel/gateway) can be queried (environment check).
+    test_steps: |-
+      1. Query the SIA.ztna tunnel/gateway lists
+      2. Pass if the query answers (environment check, diagnostic). An empty list also passes
+    test_parameters: |-
+      query fields: tunnel.list{id,name,description}, gateway.list{id,name,description}
+      verification target: whether both results are of list type
+    test_data: No separate input data (query only); the responses measured in this tenant are tunnel.list=[], gateway.list=[] (both empty arrays)
+    expected_results: The protected resource list query responds without error (environment check).
 BAT-ZTNA-005:
   test_steps: |-
     1. 인증 로그에서 디렉터리 실사용자 id를 찾음
@@ -940,6 +1935,19 @@ BAT-ZTNA-005:
     비교 대상: connector service state(Running), auth_log 이벤트 수(사전/사후)
   test_data: 인증 로그에서 동적으로 얻은 실사용자 id (고정값 아님)
   expected_results: 실사용자 id로 만든 정책이 요청한 값으로 저장되고, 지운 뒤에도 이 단말의 트래픽이 SSE를 정상 경유한다.
+  en:
+    scenario: After finding a real user in the auth log, applying a policy and deleting it, the connector session is still intact.
+    test_steps: |-
+      1. Find a real directory user id in the auth log
+      2. Create a BLOCK access policy with that user id and a country AQ rule, re-read it, and compare action, user id and country
+      3. Delete the policy (confirm it disappeared from the list)
+      4. Confirm the connector is still running, and that a marker request from this endpoint appears in the security log through a LOGGING web policy placed on the ALLOW_TARGET host (traffic still passes through SSE)
+      5. Delete the LOGGING policy
+    test_parameters: |-
+      Rule: user_ids=[real user id], countries=[AQ]
+      comparison targets: connector service state (Running), number of auth_log events (before/after)
+    test_data: Real user id obtained dynamically from the auth log (not a fixed value)
+    expected_results: The policy made with the real user id is stored with the requested values, and even after it is deleted this endpoint's traffic still passes through SSE normally.
 BAT-ZTNA-006:
   test_steps: |-
     1. SIA.ztna.accessControl 세부 필드 조회
@@ -947,6 +1955,14 @@ BAT-ZTNA-006:
   test_parameters: 없음(조회 전용)
   test_data: 'lguplus(qa2): Access Test Web Server(HTTPS), DNS(TCP), FTP(TCP) 3개 리소스'
   expected_results: 접근제어 목록과 세부 필드를 조회할 수 있다(환경 점검).
+  en:
+    scenario: All detail fields of accessControl (an individual protected resource) can be read (environment check).
+    test_steps: |-
+      1. Query the detail fields of SIA.ztna.accessControl
+      2. Pass if the query answers; if there are items, confirm the first item has id/name/enable/type/application (environment check, diagnostic)
+    test_parameters: None (query only)
+    test_data: 'lguplus(qa2): 3 resources: Access Test Web Server(HTTPS), DNS(TCP), FTP(TCP)'
+    expected_results: The access control list and its detail fields can be queried (environment check).
 BAT-ZTNA-008:
   test_steps: |-
     1. dynamic_connector 필드를 여러 선택 형태로 시도
@@ -954,6 +1970,14 @@ BAT-ZTNA-008:
   test_parameters: 없음
   test_data: 없음
   expected_results: 어떤 형태로든 조회가 된다
+  en:
+    scenario: '`SIA.ztna.dynamic_connector` can be queried in the same way as tunnel/gateway.'
+    test_steps: |-
+      1. Try the dynamic_connector field with several selection shapes
+      2. Confirm it can be queried
+    test_parameters: None
+    test_data: None
+    expected_results: The query works in some shape
 BAT-ZTNA-009:
   test_steps: |-
     1. 게이트웨이 서버 목록(id 순)에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna 설정에 적힌 값 우선, 못 찾으면 ERROR). 도메인이 없으면 ERROR
@@ -968,6 +1992,21 @@ BAT-ZTNA-009:
   test_data: 'lguplus: web.qa2.internal:80 → 192.168.3.106 (Retro Computing Archive)'
   expected_results: 페이지가 열리고(page_text 포함), ZTNA 로그에 BAT 접근제어·접근정책 이름, 목적지 <server_ip>:<port>, 이 단말 device_id의 AP_LOGGING 행이 남는다
   actual_result: 내부 서버 페이지가 열리지 않았거나, ZTNA 로그에 BAT 규칙 이름의 접속 기록이 없음
+  en:
+    scenario: With an access control registered by domain, the internal server page opens from the connector, and that access is recorded in the ZTNA log under the BAT rule name.
+    test_steps: |-
+      1. From the gateway server list (in id order), find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna setting takes priority; ERROR if not found). ERROR if there is no domain
+      2. Create an all-users LOGGING access policy
+      3. Create an access control with the found domain and port, attach that policy to it, and raise the priority to 0
+      4. Request <scheme>://<domain>:<port>/ from the connector endpoint
+      5. In the ZTNA log (service_security_log), confirm an AP_LOGGING row with the BAT access control name
+      6. Delete the access control and the access policy
+    test_parameters: |-
+      access control: type HTTP, application [{domain, port, target_type: gateway, target_id: gateway server id}], user/user_group [0], priority 0
+      access policy: action LOGGING, rules [{user_id: [0]}]
+    test_data: 'lguplus: web.qa2.internal:80 -> 192.168.3.106 (Retro Computing Archive)'
+    expected_results: The page opens (including page_text), and the ZTNA log leaves an AP_LOGGING row with the BAT access control and access policy names, destination <server_ip>:<port>, and this endpoint's device_id
+    actual_result: The internal server page did not open, or the ZTNA log has no access record under the BAT rule name
 BAT-ZTNA-010:
   test_steps: |-
     1. 게이트웨이 서버 목록(id 순)에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna 설정에 적힌 값 우선, 못 찾으면 ERROR). 도메인이 없으면 ERROR
@@ -984,6 +2023,23 @@ BAT-ZTNA-010:
   test_data: 'lguplus: web.qa2.internal / 192.168.3.106:80 차단 대상, 192.168.3.227:80 범위 확인'
   expected_results: 그 서버만 도메인·IP 모두 차단 페이지가 뜨고 다른 내부 서버는 열리며, AP_BLOCK 행이 남고, 삭제하면 다시 열린다
   actual_result: 도메인 접근제어의 BLOCK이 그 서버를 막지 않았거나, 다른 서버까지 막았거나, 삭제 후 다시 열리지 않음
+  en:
+    scenario: When a BLOCK access policy is attached to a domain access control, only that server is blocked, by both domain and IP, and it opens again once removed.
+    test_steps: |-
+      1. From the gateway server list (in id order), find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna setting takes priority; ERROR if not found). ERROR if there is no domain
+      1-1. Confirm <scheme>://<domain>:<port>/ opens without a rule (ERROR if it does not open)
+      2. Create an all-users BLOCK access policy
+      3. Create a domain access control, attach that policy to it, and raise the priority to 0
+      4. Request by domain and by server IP respectively and confirm the "blocked by <access control name>" block page
+      5. Confirm the other internal server on the same port (the found or configured other_ip) opens
+      6. In the ZTNA log, confirm an AP_BLOCK row with the BAT access control name
+      7. After deleting the access control and the access policy, confirm the page opens again
+    test_parameters: |-
+      access control: type HTTP, application [{domain, port, target_type: gateway, target_id}], priority 0
+      access policy: action BLOCK, rules [{user_id: [0]}]
+    test_data: 'lguplus: web.qa2.internal / 192.168.3.106:80 is the block target, 192.168.3.227:80 is checked for scope'
+    expected_results: The block page appears for that server only, by both domain and IP, the other internal server opens, an AP_BLOCK row is left, and it opens again after deletion
+    actual_result: The BLOCK of the domain access control did not block that server, or blocked other servers too, or it did not open again after deletion
 BAT-ZTNA-011:
   test_steps: |-
     1. 게이트웨이 서버 목록(id 순)에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna 설정에 적힌 값 우선, 못 찾으면 ERROR)
@@ -998,6 +2054,21 @@ BAT-ZTNA-011:
   test_data: 'lguplus: 192.168.3.106:80'
   expected_results: 페이지가 열리고, ZTNA 로그에 BAT 접근제어 이름, 목적지 <server_ip>:<port>, 이 단말 device_id의 AP_LOGGING 행이 남는다
   actual_result: 내부 서버 IP가 열리지 않았거나, ZTNA 로그에 BAT 규칙 이름의 접속 기록이 없음
+  en:
+    scenario: With an access control registered by IP, the internal server IP is reached from the connector, and that access is recorded in the ZTNA log under the BAT rule name.
+    test_steps: |-
+      1. From the gateway server list (in id order), find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna setting takes priority; ERROR if not found)
+      1-1. Create an all-users LOGGING access policy
+      2. Create an access control by IP (server_ip:port), attach that policy to it, and raise the priority to 0
+      3. Request <scheme>://<server_ip>:<port>/ from the connector endpoint
+      4. In the ZTNA log, confirm an AP_LOGGING row with the BAT access control name
+      5. Delete the access control and the access policy
+    test_parameters: |-
+      access control: type HTTP, application [{ip, port, target_type: gateway, target_id}], priority 0
+      access policy: action LOGGING, rules [{user_id: [0]}]
+    test_data: 'lguplus: 192.168.3.106:80'
+    expected_results: The page opens, and the ZTNA log leaves an AP_LOGGING row with the BAT access control name, destination <server_ip>:<port>, and this endpoint's device_id
+    actual_result: The internal server IP did not open, or the ZTNA log has no access record under the BAT rule name
 BAT-ZTNA-012:
   test_steps: |-
     1. 게이트웨이 서버 목록(id 순)에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna 설정에 적힌 값 우선, 못 찾으면 ERROR). 다른 서버가 없으면 ERROR
@@ -1013,6 +2084,22 @@ BAT-ZTNA-012:
   test_data: 'lguplus: 192.168.3.106:80 차단 대상, 192.168.3.227:80 범위 확인'
   expected_results: 규칙에 적은 IP만 차단되고, 같은 포트의 다른 내부 서버는 열린다
   actual_result: IP만 넣은 접근제어가 IP를 보지 않고 포트만으로 매칭돼, 같은 포트의 다른 내부 서버(192.168.3.227:80)까지 그 규칙 이름으로 차단됨
+  en:
+    scenario: When BLOCK is attached to an access control registered by IP only, only that IP is blocked, and another internal server on the same port opens.
+    test_steps: |-
+      1. From the gateway server list (in id order), find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna setting takes priority; ERROR if not found). ERROR if there is no other server
+      1-1. Confirm that other server (other_ip) opens without a rule (ERROR if it does not open)
+      2. Create an all-users BLOCK access policy
+      3. Create an access control with only the IP (server_ip:port), without a domain, attach it, and raise the priority to 0
+      4. Confirm server_ip is blocked with "blocked by <access control name>"
+      5. Confirm other_ip keeps opening
+      6. Delete the access control and the access policy
+    test_parameters: |-
+      access control: type HTTP, application [{ip, port, target_type: gateway, target_id}] (no domain), priority 0
+      access policy: action BLOCK, rules [{user_id: [0]}]
+    test_data: 'lguplus: 192.168.3.106:80 is the block target, 192.168.3.227:80 is checked for scope'
+    expected_results: Only the IP written in the rule is blocked, and another internal server on the same port opens
+    actual_result: The access control with only an IP does not look at the IP and matches by port alone, so another internal server on the same port (192.168.3.227:80) was also blocked under that rule name
 BAT-ZTNA-013:
   test_steps: |-
     1. 게이트웨이 서버 목록(id 순)에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna 설정에 적힌 값 우선, 못 찾으면 ERROR)
@@ -1029,6 +2116,23 @@ BAT-ZTNA-013:
     접근정책: action LOGGING, rules [{user_id: [0]}]
   test_data: 'lguplus: 게이트웨이 Openstack Test Env 서버 4 (192.168.3.106, 도메인 test.com), 페이지 문구 Retro Computing Archive'
   expected_results: 콘솔에 등록한 도메인이 커넥터에서 그 서버 IP로 풀리고, 브라우저와 curl 모두 내부 서버 페이지가 열리며, ZTNA 로그에 BAT 규칙 이름으로 접속이 남는다
+  en:
+    scenario: The domain registered on a gateway server resolves to that server's IP on the connector so the page opens in the browser and with curl, and an access control made with that domain records the access.
+    test_steps: |-
+      1. From the gateway server list (in id order), find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna setting takes priority; ERROR if not found)
+      1-1. Read, from the gateway server list, the domain the console registered for that server (ERROR if none)
+      2. Look up that domain on the endpoint and confirm the connector answers with server_ip
+      3. Create an all-users LOGGING access policy
+      4. Create an access control with that domain, attach it, and raise the priority to 0
+      5. Open <scheme>://<domain>:<port>/ with curl and the browser and confirm the internal server page opens
+      6. Confirm the ZTNA log leaves a row with the BAT access control name, AP_LOGGING, server_ip:port, and this endpoint's device_id
+      7. Delete the access control and the access policy
+    test_parameters: |-
+      gateway server: SIA.ztna.gateway.list.servers {id, ip, domain}
+      access control: type HTTP, application [{domain, port, target_type: gateway, target_id}], priority 0
+      access policy: action LOGGING, rules [{user_id: [0]}]
+    test_data: 'lguplus: gateway Openstack Test Env server 4 (192.168.3.106, domain test.com), page text Retro Computing Archive'
+    expected_results: The domain registered in the console resolves to that server's IP on the connector, the internal server page opens in both the browser and curl, and the access is left in the ZTNA log under the BAT rule name
 BAT-ZTNA-014:
   test_steps: |-
     1. 이번 실행 전용 도메인(bat-<run_id>.tunnel.internal)이 단말에서 안 풀리는지 확인(풀리면 ERROR)
@@ -1042,6 +2146,20 @@ BAT-ZTNA-014:
     인증 파일: tunnel.authFile(id).file_content (base64 JSON: workspace, access_id, client_type, vpn_type, pqc), 값은 기록하지 않음
   test_data: 'lguplus: 192.0.2.10(문서용 대역), bat-<run_id>.tunnel.internal'
   expected_results: 등록한 터널의 도메인이 바로 커넥터에 내려가 단말에서 터널 주소로 풀리지만 연결 안 된 터널로는 접속되지 않고, 터널을 지우면 그 이름이 사라진다
+  en:
+    scenario: When a tunnel without an installed connector is registered, its domain resolves to the tunnel address on the endpoint but the connection does not succeed, and the name disappears once it is deleted.
+    test_steps: |-
+      1. Confirm the domain dedicated to this run (bat-<run_id>.tunnel.internal) does not resolve on the endpoint (ERROR if it resolves)
+      2. Register a tunnel with that domain and 192.0.2.10 (no connector installed)
+      3. Confirm the tunnel shows as not connected (connect_status false), and that the auth file is for this workspace and has an access_id
+      4. Confirm that domain resolves to 192.0.2.10 on the endpoint (connector settings applied)
+      5. Confirm the connection to 192.0.2.10 does not succeed
+      6. After deleting the tunnel, confirm that domain no longer resolves
+    test_parameters: |-
+      tunnel: create(name, description, interface [{ip: 192.0.2.10, domain}]), delete(id: [id])
+      auth file: tunnel.authFile(id).file_content (base64 JSON: workspace, access_id, client_type, vpn_type, pqc), the value is not recorded
+    test_data: 'lguplus: 192.0.2.10 (documentation range), bat-<run_id>.tunnel.internal'
+    expected_results: The domain of the registered tunnel is pushed to the connector immediately and resolves to the tunnel address on the endpoint, but the unconnected tunnel cannot be reached, and when the tunnel is deleted that name disappears
 BAT-ZTNA-015:
   test_steps: |-
     1. 연결된 터널(콘솔 초록불, BAT가 만든 것 제외)을 고르고, 규칙 없이 그 interface의 웹 포트(80/8080/8000/443/8443/3000/5000)를 열어 처음 열리는 페이지와 그 <title>을 기준으로 삼는다(ztna_tunnel에 이름·포트·문구가 있으면 그 값 우선, 못 찾으면 ERROR)
@@ -1055,6 +2173,20 @@ BAT-ZTNA-015:
     접근정책: action LOGGING, rules [{user_id: [0]}]
   test_data: 'lguplus: 아직 터널 없음(설치하면 설정 없이 찾아서 씀)'
   expected_results: 터널 뒤 서버 페이지가 열리고, ZTNA 로그에 BAT 규칙 이름으로 접속이 남는다
+  en:
+    scenario: With an access control made for a really connected tunnel, the server page behind the tunnel opens from the connector, and that access is recorded in the ZTNA log under the BAT rule name.
+    test_steps: |-
+      1. Pick a connected tunnel (green light in the console, excluding ones BAT made), open the web ports (80/8080/8000/443/8443/3000/5000) of its interface without a rule, and use the first page that opens and its <title> as the baseline (a name, port and text in ztna_tunnel take priority; ERROR if not found)
+      2. Create an all-users LOGGING access policy
+      3. Create a tunnel-type access control with that tunnel interface (domain, or IP if none), attach it, and raise the priority to 0
+      4. Connect to that address from the endpoint and confirm the same page (including the baseline text) opens
+      5. Confirm the ZTNA log leaves a row with the BAT access control name, AP_LOGGING, and this endpoint's device_id
+      6. Delete the access control and the access policy
+    test_parameters: |-
+      access control: type HTTP, application [{domain or ip, port, target_type: tunnel, target_id: interface id}], priority 0
+      access policy: action LOGGING, rules [{user_id: [0]}]
+    test_data: 'lguplus: no tunnel yet (once installed, it is found and used without configuration)'
+    expected_results: The server page behind the tunnel opens, and the access is left in the ZTNA log under the BAT rule name
 BAT-ZTNA-016:
   test_steps: |-
     1. BAT-ZTNA-015와 같은 방식으로 연결된 터널과 규칙 없이 열리는 페이지를 찾는다(못 찾으면 ERROR)
@@ -1068,3 +2200,17 @@ BAT-ZTNA-016:
     접근정책: action BLOCK, rules [{user_id: [0]}]
   test_data: 'lguplus: 아직 터널 없음'
   expected_results: 터널 뒤 서버가 BAT 규칙 이름의 차단 페이지로 막히고 AP_BLOCK이 기록되며, 규칙을 지우면 다시 열린다
+  en:
+    scenario: When a BLOCK access policy is attached to an access control made for a really connected tunnel, the server behind the tunnel is blocked, and it opens again once removed.
+    test_steps: |-
+      1. Find a connected tunnel and a page that opens without a rule in the same way as BAT-ZTNA-015 (ERROR if not found)
+      2. Create an all-users BLOCK access policy
+      3. Create a tunnel-type access control with that tunnel interface, attach it, and raise the priority to 0
+      4. Confirm that address is blocked with "blocked by <access control name>"
+      5. Confirm the ZTNA log leaves an AP_BLOCK row
+      6. After deleting the access control and the access policy, confirm the page opens again
+    test_parameters: |-
+      access control: type HTTP, application [{domain or ip, port, target_type: tunnel, target_id: interface id}], priority 0
+      access policy: action BLOCK, rules [{user_id: [0]}]
+    test_data: 'lguplus: no tunnel yet'
+    expected_results: The server behind the tunnel is stopped by a block page with the BAT rule name and AP_BLOCK is recorded, and it opens again when the rule is deleted

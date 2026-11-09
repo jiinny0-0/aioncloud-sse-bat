@@ -2963,6 +2963,122 @@ def test_every_case_has_a_description():
     assert not missing, f"add these to tests/case_descriptions.yaml: {missing}"
 
 
+def test_every_case_has_an_english_description():
+    """case_descriptions.yaml의 모든 항목에 en: 블록이 있고, 한국어 키마다 영어 값과 scenario가 있다.
+
+    결과 CSV가 쓰는 카탈로그 케이스는 scenario까지 빠짐없어야 한다. 영어판에 한글이 남으면 안 된다.
+    """
+    import re
+
+    from bat.report import result_book, status_book
+
+    missing = result_book.untranslated("en")
+    missing.update(result_book.untranslated("en", [c["case_id"] for c in status_book.catalog()]))
+    assert not missing, f"add English text under en: in tests/case_descriptions.yaml: {missing}"
+    korean = [case_id for case_id, d in result_book.load_descriptions(lang="en").items()
+              if any(re.search("[가-힣]", d.get(k, "")) for k in result_book.TRANSLATED_FIELDS)]
+    assert not korean, f"Korean left in the English text: {korean}"
+
+
+def _result_book_sample():
+    statuses = {"BAT-SWG-001": "PASS", "BAT-SWG-002": "FAIL", "BAT-SWG-003": "FAIL",
+                "BAT-SWG-004": "UNVERIFIED", "BAT-SWG-005": "SKIP", "BAT-SWG-007": "ERROR",
+                "BAT-SWG-009": "PASS"}
+    cases = [{"case_id": f"BAT-SWG-00{i}", "product": "swg", "scenario": f"한국어 시나리오 {i}"}
+             for i in range(1, 10)]
+    return statuses, cases
+
+
+def test_result_book_language_defaults_to_korean(monkeypatch):
+    from bat.report import result_book
+
+    for value in (None, "", "ko", "KO", "fr", " en-US "):
+        if value is None:
+            monkeypatch.delenv("BAT_REPORT_LANG", raising=False)
+        else:
+            monkeypatch.setenv("BAT_REPORT_LANG", value)
+        assert result_book.report_lang() == "ko", value
+    monkeypatch.setenv("BAT_REPORT_LANG", " EN ")
+    assert result_book.report_lang() == "en"
+    assert result_book.report_lang("ko") == "ko", "an explicit value wins over the environment"
+
+
+def test_result_book_korean_output_is_unchanged(tmp_path):
+    """ko(기본)는 en: 블록이 있어도 예전과 같다: 한국어 설명·docstring 시나리오·한국어 기본 문구."""
+    from bat.report import result_book
+
+    yaml_path = tmp_path / "case_descriptions.yaml"
+    yaml_path.write_text(
+        "BAT-SWG-001:\n  test_steps: 1. 요청\n  expected_results: 차단된다\n"
+        "  en:\n    scenario: English scenario\n    test_steps: 1. Request\n    expected_results: Blocked\n",
+        encoding="utf-8",
+    )
+    statuses, cases = _result_book_sample()
+    descriptions = result_book.load_descriptions(yaml_path)
+    assert descriptions["BAT-SWG-001"] == {"test_steps": "1. 요청", "expected_results": "차단된다"}
+    rows = result_book.build_rows(statuses, cases, descriptions)
+    assert rows == result_book.build_rows(statuses, cases, descriptions, "ko")
+    assert rows[0]["scenario"] == "한국어 시나리오 1" and rows[0]["actual_result"] == "차단된다"
+    assert [r["actual_result"] for r in rows[1:]] == [
+        "기대 결과와 다르게 동작함", "기대 결과와 다르게 동작함", "확인할 수단이 없어 판정하지 못함",
+        "대상 기능이 탐지하지 않아 판정에서 제외함", "미실행", "실행 환경 오류로 판정하지 못함", "미실행",
+        "기대 결과대로 동작함",
+    ]
+    assert result_book.untranslated("ko", path=yaml_path) == {}
+
+
+def test_result_book_in_english_keeps_status_values(tmp_path, monkeypatch, capsys):
+    """en: 설명·시나리오·기본 문구는 영어, Status 값(미실행 포함)과 열 이름은 그대로, 빠진 번역은 한국어+경고."""
+    import csv
+
+    from bat.report import result_book, status_book
+
+    yaml_path = tmp_path / "case_descriptions.yaml"
+    yaml_path.write_text(
+        "BAT-SWG-001:\n  test_steps: 1. 요청\n  expected_results: 차단된다\n"
+        "  en:\n    scenario: English scenario\n    test_steps: 1. Request\n    expected_results: Blocked\n"
+        "BAT-SWG-002:\n  test_steps: 1. 요청\n  expected_results: 차단된다\n  actual_result: 차단되지 않음\n"
+        "  en:\n    scenario: Second\n    test_steps: 1. Request\n    expected_results: Blocked\n",
+        encoding="utf-8",
+    )
+    statuses, cases = _result_book_sample()
+    rows = result_book.build_rows(statuses, cases, result_book.load_descriptions(yaml_path, "en"), "en")
+    assert [r["status"] for r in rows] == [
+        "PASS", "FAIL", "FAIL", "UNVERIFIED", "SKIP", status_book.NOT_RUN, "ERROR", status_book.NOT_RUN, "PASS",
+    ]
+    assert status_book.NOT_RUN == "미실행"
+    assert rows[0]["scenario"] == "English scenario" and rows[0]["actual_result"] == "Blocked"
+    assert rows[0]["test_steps"] == "1. Request"
+    # 번역이 없는 actual_result는 한국어로 대체된다.
+    assert rows[1]["actual_result"] == "차단되지 않음"
+    assert [r["actual_result"] for r in rows[2:]] == [
+        "Behaved differently from the expected result",
+        "Not judged: there was no means to verify the result",
+        "Excluded from the verdict: the target feature did not detect it",
+        "Not run", "Not judged because of an execution environment error", "Not run", "Behaved as expected",
+    ]
+    assert rows[2]["scenario"] == "한국어 시나리오 3", "no translation: the docstring scenario"
+    assert result_book.untranslated("en", ["BAT-SWG-001", "BAT-SWG-002", "BAT-SWG-003"], yaml_path) == {
+        "BAT-SWG-002": ["actual_result"], "BAT-SWG-003": ["scenario"],
+    }
+
+    # write_for_run: BAT_REPORT_LANG=en으로 쓰고, 대체된 칸은 실패 없이 경고만 남긴다.
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    yaml_path.rename(tests_dir / "case_descriptions.yaml")
+    monkeypatch.setattr(status_book, "catalog", lambda _dir: cases[:3])
+    monkeypatch.setattr(result_book, "run_statuses", lambda run_id, directory: statuses)
+    monkeypatch.setenv("BAT_REPORT_LANG", "en")
+    path = result_book.write_for_run("qa", "20261109-101500-abcdef", tmp_path / "reports", tests_dir)
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        table = list(csv.reader(f))
+    assert table[0][2] == "Status" and [row[2] for row in table[1:]] == ["PASS", "FAIL", "FAIL"]
+    assert table[1][3] == "English scenario" and table[3][8] == "Behaved differently from the expected result"
+    warning = capsys.readouterr().err
+    assert "no en text for 2 case(s), used Korean" in warning
+    assert "BAT-SWG-002 (actual_result)" in warning and "BAT-SWG-003 (scenario" in warning
+
+
 def test_result_book_takes_only_this_runs_cases(tmp_path):
     """결과 CSV의 상태는 그 실행의 케이스 결과뿐이다. 다른 실행의 결과는 섞이지 않는다."""
     from bat.report import result_book
