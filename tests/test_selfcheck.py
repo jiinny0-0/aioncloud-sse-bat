@@ -3487,3 +3487,107 @@ def test_a_2xx_html_page_from_the_management_api_counts_as_intercepted():
     assert not _html_answer({"id": 3})
     assert not _html_answer({"_raw": "plain text"})
     assert not _html_answer(None)
+
+
+# --- ZTNA 게이트웨이 대상 탐색(설정 없이) ---
+
+class _WebEndpoint:
+    """URL 앞부분 → (본문, 코드). 없는 URL은 응답 없음(000)."""
+
+    def __init__(self, pages: dict[str, tuple[str, int]]):
+        self.pages = pages
+        self.urls: list[str] = []
+
+    def run(self, command, timeout_sec=None):
+        url = command.rsplit('"', 2)[-2]
+        self.urls.append(url)
+        body, code = self.pages.get(url, ("", 0))
+        return SimpleNamespace(stdout=f"{body}\n{code:03d}", stderr="", returncode=0)
+
+
+class _Gateways:
+    def __init__(self, servers):
+        self.servers = servers
+
+    def gateway_servers(self):
+        return sorted(self.servers, key=lambda s: int(s["id"]))
+
+
+_RETRO = ("<html><title> Retro Computing Archive </title></html>", 200)
+
+
+def test_gateway_target_is_found_without_config():
+    from bat.settings import ZtnaTarget
+    from tests.ztna.test_ztna_traffic import _gateway_target
+
+    endpoint = _WebEndpoint({
+        "http://192.168.3.106/": _RETRO,
+        "http://192.168.3.227/": ("<title>FTP Server</title>", 200),
+    })
+    servers = [
+        {"id": 4, "ip": "192.168.3.227", "domain": ""},
+        {"id": 2, "ip": "192.168.3.106", "domain": "test.com"},
+    ]
+    target = _gateway_target(endpoint, _Gateways(servers), ZtnaTarget())
+    assert isinstance(target, ZtnaTarget), target
+    assert (target.server_ip, target.port, target.scheme) == ("192.168.3.106", 80, "http")
+    assert target.page_text == "Retro Computing Archive"
+    assert target.domain == "test.com"
+    assert target.other_ip == "192.168.3.227"
+    assert "discovered" in target.how and "from <title>" in target.how
+
+
+def test_gateway_target_prefers_configured_values():
+    from bat.settings import ZtnaTarget
+    from tests.ztna.test_ztna_traffic import _gateway_target
+
+    endpoint = _WebEndpoint({
+        "http://192.168.3.106/": _RETRO,
+        "http://192.168.3.227:8080/": ("<title>Other</title>", 200),
+        "http://192.168.3.106:8080/": ("<title>Admin</title>", 200),
+    })
+    servers = [
+        {"id": 2, "ip": "192.168.3.106", "domain": "test.com"},
+        {"id": 4, "ip": "192.168.3.227", "domain": ""},
+    ]
+    configured = ZtnaTarget(server_ip="192.168.3.106", port=8080, domain="web.qa2.internal")
+    target = _gateway_target(endpoint, _Gateways(servers), configured)
+    assert (target.server_ip, target.port, target.domain) == ("192.168.3.106", 8080, "web.qa2.internal")
+    assert target.page_text == "Admin"
+    assert target.other_ip == "192.168.3.227"
+    assert "http://192.168.3.106/" not in endpoint.urls, "a configured port must not be swapped for another"
+
+
+def test_gateway_target_skips_a_page_without_the_configured_text():
+    from bat.settings import ZtnaTarget
+    from tests.ztna.test_ztna_traffic import _gateway_target
+
+    endpoint = _WebEndpoint({"http://10.0.0.1/": ("<title>Other</title>", 200), "http://10.0.0.2/": _RETRO})
+    servers = [{"id": 1, "ip": "10.0.0.1", "domain": ""}, {"id": 2, "ip": "10.0.0.2", "domain": ""}]
+    target = _gateway_target(endpoint, _Gateways(servers), ZtnaTarget(page_text="Retro Computing"))
+    assert target.server_ip == "10.0.0.2"
+    assert target.domain == ""
+    assert target.other_ip == "10.0.0.1", "a server whose page differs still serves as the other server on that port"
+
+
+@pytest.mark.parametrize("servers, configured, wanted", [
+    ([], None, "No ZTNA gateway server"),
+    ([{"id": 1, "ip": "10.0.0.1", "domain": ""}], None, "No web page opens"),
+    ([{"id": 1, "ip": "10.0.0.1", "domain": ""}], "10.9.9.9", "10.9.9.9"),
+])
+def test_gateway_target_reports_why_nothing_was_found(servers, configured, wanted):
+    from bat.settings import ZtnaTarget
+    from tests.ztna.test_ztna_traffic import _gateway_target
+
+    result = _gateway_target(_WebEndpoint({}), _Gateways(servers), ZtnaTarget(server_ip=configured or ""))
+    assert isinstance(result, str) and wanted in result
+
+
+def test_ztna_config_block_is_optional_and_partial():
+    from bat.settings import _build_ztna_target
+
+    assert _build_ztna_target({}) is None
+    partial = _build_ztna_target({"ztna": {"port": 8080}})
+    assert (partial.server_ip, partial.domain, partial.port) == ("", "", 8080)
+    full = _build_ztna_target({"ztna": {"server_ip": "192.168.3.106", "domain": "d"}})
+    assert full.port == 0, "no port in config means discover one"

@@ -682,18 +682,27 @@ class AccessControlFactory:
         rows = ((data.get("SIA") or {}).get("ztna") or {}).get("accessControl") or []
         return [row for row in rows if isinstance(row, dict)]
 
-    def gateway_server(self, ip: str) -> dict | None:
-        """그 IP를 서버 목록에 가진 게이트웨이 서버({id, ip, domain}). 없으면 None.
+    def gateway_servers(self) -> list[dict]:
+        """모든 게이트웨이의 서버({id, ip, domain})를 서버 id 순으로. id나 ip가 없는 항목은 뺀다.
 
         domain은 콘솔에서 그 서버에 붙인 이름이다. 커넥터가 이 이름을 받아 그 서버 IP로
         직접 답한다(공용 DNS에 없는 이름이어도 된다).
         """
         data = self.gql.execute(LIST_ZTNA_GATEWAYS)
         gateways = (((data.get("SIA") or {}).get("ztna") or {}).get("gateway") or {}).get("list") or []
-        for gateway in gateways:
-            for server in (gateway or {}).get("servers") or []:
-                if str(server.get("ip") or "") == ip and server.get("id") is not None:
-                    return server
+        servers = [
+            server
+            for gateway in gateways
+            for server in (gateway or {}).get("servers") or []
+            if isinstance(server, dict) and server.get("id") is not None and server.get("ip")
+        ]
+        return sorted(servers, key=lambda server: int(server["id"]))
+
+    def gateway_server(self, ip: str) -> dict | None:
+        """그 IP를 서버 목록에 가진 게이트웨이 서버({id, ip, domain}). 없으면 None."""
+        for server in self.gateway_servers():
+            if str(server.get("ip") or "") == ip:
+                return server
         return None
 
     def gateway_server_id(self, ip: str) -> int | None:

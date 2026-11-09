@@ -1,9 +1,10 @@
 """ZTNA 트래픽 케이스: 접근제어로 내부 서버가 실제로 열리고 막히는지 본다.
 
-대상 서버는 스테이지 블록의 `ztna:`(server_ip, domain, port, page_text, other_ip)에
-둔다. 없으면 실행 조건 미비(ERROR)다. server_ip는 그 스테이지 ZTNA 게이트웨이의 서버
-목록에 있어야 한다. 콘솔이 그 서버에 붙인 도메인(커넥터가 직접 답하는 이름)은 설정에
-적지 않고 게이트웨이 서버 목록에서 읽는다(BAT-ZTNA-013).
+대상 서버는 설정 없이 찾는다(`_gateway_target`): 게이트웨이 서버 목록(id 순)에서 흔한 웹
+포트 중 규칙 없이 처음 열리는 서버와 포트, 그 페이지의 <title>, 콘솔이 그 서버에 붙인
+도메인(커넥터가 직접 답하는 이름), 같은 포트로 열리는 다른 서버. 스테이지 블록의 `ztna:`
+(server_ip, domain, port, page_text, other_ip)에 적힌 값이 있으면 그 값이 우선이다. 열리는
+서버가 없으면 실행 조건 미비(ERROR)다.
 
 BAT가 만드는 접근제어는 우선순위 0으로 올려 콘솔에서 만든 항목보다 먼저 매칭되게 한다.
 같은 서버를 콘솔 항목이 이미 열어 두었을 수 있어서, 접속이 된다는 것만으로는 BAT 규칙이
@@ -51,19 +52,32 @@ pytestmark = [
 
 EVERYONE = [AccessPolicyFactory.rule(user_ids=[0])]
 
+# 설정에 포트가 없을 때 게이트웨이 서버·터널 뒤 서버에서 웹 페이지를 찾아볼 (scheme, port).
+WEB_PORTS = (
+    ("http", 80), ("http", 8080), ("http", 8000), ("https", 443), ("https", 8443),
+    ("http", 3000), ("http", 5000),
+)
+_TITLE_RE = re.compile(r"<title[^>]*>\s*([^<]+?)\s*</title>", re.IGNORECASE)
+
 # 가짜 터널의 interface 주소. 문서용 대역(TEST-NET-1)이라 어떤 서버와도 겹치지 않는다.
 FAKE_TUNNEL_IP = "192.0.2.10"
 
 
+# 실행 안에서 워크스페이스마다 한 번만 찾는다. 찾은 대상 또는 못 찾은 이유(문자열).
+_GATEWAY_TARGETS: dict[tuple[str, str], ZtnaTarget | str] = {}
+
+
 @pytest.fixture
-def ztna_target(run_context) -> ZtnaTarget:
-    target = run_context.profile.ztna
-    if target is None:
-        environment_error(
-            f"No ztna target in the {run_context.profile.name} block of "
-            f"config/environments.yaml (server_ip, domain, port, page_text, other_ip)"
-        )
-    return target
+def ztna_target(case, run_context, lane, executor, access_controls) -> ZtnaTarget:
+    key = (run_context.profile.name, str(getattr(lane.workspace, "name", lane.workspace)))
+    found = _GATEWAY_TARGETS.get(key)
+    if found is None:
+        found = _gateway_target(executor, access_controls, run_context.profile.ztna or ZtnaTarget())
+        _GATEWAY_TARGETS[key] = found
+    if isinstance(found, str):
+        environment_error(found)
+    case.record(Step.SETUP, ok=True, kind=Kind.EVIDENCE, detail=found.how)
+    return found
 
 
 @pytest.fixture
@@ -135,6 +149,88 @@ def _fetch_until(executor, url: str, want, timeout_sec: int) -> tuple[TrafficRes
         return poll_until(probe, timeout_sec=timeout_sec, description=f"{url}", initial_interval=2.0)
     except PollTimeout:
         return last["value"]
+
+
+def _page_marker(body: str) -> str:
+    """페이지를 알아볼 문구: <title>. 없으면 빈 문자열(그때는 응답 코드로만 판정)."""
+    match = _TITLE_RE.search(body or "")
+    return match.group(1).strip() if match else ""
+
+
+def _scheme_of(port: int) -> str:
+    return "https" if port in (443, 8443) else "http"
+
+
+def _gateway_target(executor, access_controls: AccessControlFactory, configured: ZtnaTarget) -> ZtnaTarget | str:
+    """게이트웨이 뒤에서 규칙 없이 열리는 웹 페이지를 찾는다. 못 찾으면 그 이유(문자열).
+
+    설정에 적힌 값(server_ip, port, page_text, domain, other_ip)이 우선이다. 서버는 게이트웨이
+    서버 목록에서 id 순으로, 포트는 WEB_PORTS를 차례로 서버 IP로 열어 처음 응답한 곳을 쓴다.
+    페이지 문구가 없으면 그 페이지의 <title>, 도메인이 없으면 콘솔이 그 서버에 붙인 도메인을
+    쓴다. other_ip가 없으면 같은 scheme·포트로 열리는 다른 서버를 찾는다(없으면 빈 값).
+    규칙을 만들기 전에 하므로 이 확인이 곧 기준선이다.
+    """
+    servers = access_controls.gateway_servers()
+    if configured.server_ip:
+        servers = [s for s in servers if str(s.get("ip")) == configured.server_ip]
+        if not servers:
+            return f"No ZTNA gateway in this tenant lists {configured.server_ip} (ztna.server_ip) as a server"
+    if not servers:
+        return "No ZTNA gateway server in this workspace, so there is no internal server to open"
+    ports = [(_scheme_of(configured.port), configured.port)] if configured.port else list(WEB_PORTS)
+
+    tried: list[str] = []
+    for server in servers:
+        ip = str(server["ip"])
+        for scheme, port in ports:
+            url = _url(ip, port, scheme)
+            traffic, body = _fetch(executor, url, timeout_sec=6)
+            if not traffic.delivered:
+                tried.append(f"{url} {describe(traffic)}")
+                continue
+            if configured.page_text and configured.page_text not in body:
+                tried.append(f"{url} HTTP {traffic.status_code} without {configured.page_text!r}")
+                continue
+            page_text = configured.page_text or _page_marker(body)
+            domain = configured.domain or str(server.get("domain") or "").strip()
+            other_ip, other_how = configured.other_ip, "from config"
+            if not other_ip:
+                other_ip, other_how = "", "none answers on that port"
+                for candidate in access_controls.gateway_servers():
+                    candidate_ip = str(candidate["ip"])
+                    if candidate_ip == ip:
+                        continue
+                    other, _ = _fetch(executor, _url(candidate_ip, port, scheme), timeout_sec=6)
+                    if other.delivered:
+                        other_ip, other_how = candidate_ip, "discovered"
+                        break
+
+            def origin(value: str) -> str:
+                return "from config" if value else "discovered"
+
+            how = (
+                f"gateway server id={server['id']} {ip} ({origin(configured.server_ip)}), "
+                f"page {url} (HTTP {traffic.status_code}, port {origin(str(configured.port or ''))}), "
+                f"page text {page_text!r}"
+                f"{' from config' if configured.page_text else ' from <title>' if page_text else ' (none)'}, "
+                f"domain {domain or '(none)'}"
+                f"{' from config' if configured.domain else ' from the gateway server' if domain else ''}, "
+                f"other server {other_ip or '(none)'} ({other_how})"
+            )
+            return ZtnaTarget(
+                server_ip=ip, domain=domain, port=port, page_text=page_text,
+                other_ip=other_ip, scheme=scheme, how=how,
+            )
+    return f"No web page opens on any ZTNA gateway server without a BAT rule: {tried[:8]}"
+
+
+def _need_domain(target: ZtnaTarget) -> str:
+    if not target.domain:
+        environment_error(
+            f"Gateway server {target.server_ip} has no domain registered in the console "
+            f"(and ztna.domain is not set), so there is no name to build a domain access control on"
+        )
+    return target.domain
 
 
 def _blocked_by(control_name: str):
@@ -233,9 +329,10 @@ def test_domain_access_control_opens_the_internal_server(
 ):
     """도메인으로 등록한 접근제어로 커넥터에서 내부 서버 페이지가 열리고, 그 접속이 BAT 규칙 이름으로 ZTNA 로그에 남는다."""
     target = ztna_target
+    _need_domain(target)
     server_id = _server_id(access_controls, target.server_ip)
     device = _device(lane, executor)
-    url = _url(target.domain, target.port)
+    url = _url(target.domain, target.port, target.scheme)
     policy_name = resource_name(case.case_id, run_context.run_id, "ap")
     control_name = resource_name(case.case_id, run_context.run_id)
     entry = AccessControlFactory.via_gateway(server_id, target.port, domain=target.domain)
@@ -274,10 +371,11 @@ def test_blocked_domain_access_control_stops_only_that_server(
 ):
     """도메인 접근제어에 BLOCK 접근정책을 연결하면 그 서버만 도메인·IP 모두 차단되고, 지우면 다시 열린다."""
     target = ztna_target
+    _need_domain(target)
     server_id = _server_id(access_controls, target.server_ip)
     device = _device(lane, executor)
-    by_name = _url(target.domain, target.port)
-    by_ip = _url(target.server_ip, target.port)
+    by_name = _url(target.domain, target.port, target.scheme)
+    by_ip = _url(target.server_ip, target.port, target.scheme)
     policy_name = resource_name(case.case_id, run_context.run_id, "ap")
     control_name = resource_name(case.case_id, run_context.run_id)
     entry = AccessControlFactory.via_gateway(server_id, target.port, domain=target.domain)
@@ -304,7 +402,7 @@ def test_blocked_domain_access_control_stops_only_that_server(
                     _expect_block_page(case, traffic, body, control_name, url)
 
                 if target.other_ip:
-                    other = _url(target.other_ip, target.port)
+                    other = _url(target.other_ip, target.port, target.scheme)
                     traffic, _ = _fetch(executor, other)
                     expect_delivered(
                         case, traffic, expected="another internal server still opens",
@@ -339,7 +437,7 @@ def test_ip_access_control_opens_the_internal_server(
     target = ztna_target
     server_id = _server_id(access_controls, target.server_ip)
     device = _device(lane, executor)
-    url = _url(target.server_ip, target.port)
+    url = _url(target.server_ip, target.port, target.scheme)
     policy_name = resource_name(case.case_id, run_context.run_id, "ap")
     control_name = resource_name(case.case_id, run_context.run_id)
     entry = AccessControlFactory.via_gateway(server_id, target.port, ip=target.server_ip)
@@ -377,10 +475,13 @@ def test_ip_access_control_block_stays_on_its_ip(
     """IP로만 등록한 접근제어에 BLOCK을 연결하면 그 IP만 막히고, 같은 포트의 다른 내부 서버는 열린다."""
     target = ztna_target
     if not target.other_ip:
-        environment_error("ztna.other_ip is not set, so there is no second server to check the scope on")
+        environment_error(
+            f"No other gateway server answers on port {target.port} without a BAT rule (and ztna.other_ip "
+            f"is not set), so there is no second server to check the scope on"
+        )
     server_id = _server_id(access_controls, target.server_ip)
-    mine = _url(target.server_ip, target.port)
-    other = _url(target.other_ip, target.port)
+    mine = _url(target.server_ip, target.port, target.scheme)
+    other = _url(target.other_ip, target.port, target.scheme)
     policy_name = resource_name(case.case_id, run_context.run_id, "ap")
     control_name = resource_name(case.case_id, run_context.run_id)
     entry = AccessControlFactory.via_gateway(server_id, target.port, ip=target.server_ip)
@@ -445,7 +546,7 @@ def test_gateway_server_domain_opens_through_the_connector(
         )
     server_id = int(server["id"])
     device = _device(lane, executor)
-    url = _url(domain, target.port)
+    url = _url(domain, target.port, target.scheme)
     case.record(
         Step.SETUP, ok=True, kind=Kind.EVIDENCE,
         detail=f"gateway server id={server_id} {target.server_ip} has domain {domain}",
@@ -601,20 +702,6 @@ def test_registered_tunnel_reaches_the_connector_and_leaves_on_delete(case, run_
     pass_case(case)
 
 
-# 설정에 포트가 없을 때 터널 뒤 서버에서 웹 페이지를 찾아볼 (scheme, port).
-TUNNEL_WEB_PORTS = (
-    ("http", 80), ("http", 8080), ("http", 8000), ("https", 443), ("https", 8443),
-    ("http", 3000), ("http", 5000),
-)
-_TITLE_RE = re.compile(r"<title[^>]*>\s*([^<]+?)\s*</title>", re.IGNORECASE)
-
-
-def _page_marker(body: str) -> str:
-    """페이지를 알아볼 문구: <title>. 없으면 빈 문자열(그때는 응답 코드로만 판정)."""
-    match = _TITLE_RE.search(body or "")
-    return match.group(1).strip() if match else ""
-
-
 @dataclass(frozen=True)
 class TunnelService:
     """BAT 규칙 없이 터널 너머로 열리는 웹 페이지."""
@@ -632,7 +719,7 @@ def _tunnel_service(case, executor, tunnels: TunnelFactory, target: ZtnaTunnelTa
     """연결된 터널과 그 너머의 웹 페이지를 찾는다. 설정에 적힌 값(이름, 포트, 문구)이 우선이다.
 
     이름이 없으면 연결된(콘솔의 초록불) 터널 중 BAT가 만든 것을 빼고 id 순으로 고른다.
-    포트가 없으면 TUNNEL_WEB_PORTS를 차례로 열어 처음 응답한 곳을 쓴다. 문구가 없으면
+    포트가 없으면 WEB_PORTS를 차례로 열어 처음 응답한 곳을 쓴다. 문구가 없으면
     그 페이지의 <title>을 쓴다. 규칙을 만들기 전에 하므로 이 확인이 곧 기준선이다.
     못 찾으면 실행 조건 미비다.
     """
@@ -654,7 +741,7 @@ def _tunnel_service(case, executor, tunnels: TunnelFactory, target: ZtnaTunnelTa
     if target.port:
         ports = [("https" if target.port in (443, 8443) else "http", target.port)]
     else:
-        ports = list(TUNNEL_WEB_PORTS)
+        ports = list(WEB_PORTS)
     tried: list[str] = []
     for tunnel in connected:
         for interface in tunnel.get("interface") or []:

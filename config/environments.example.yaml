@@ -17,9 +17,11 @@ environments:
     # 거기 없는 값은 공용 .env에서 읽습니다.
     env_file: .env.stage-example
 
-    # ZTNA 트래픽 케이스(BAT-ZTNA-009~012)의 대상. 생략하면 그 케이스들은 ERROR.
-    # server_ip는 ZTNA 게이트웨이의 서버 목록에 있어야 하고, domain은 단말에서 그 IP로
-    # 풀리는 내부 이름. other_ip는 같은 포트로 열리는 다른 내부 서버(규칙 범위 확인용).
+    # ZTNA 게이트웨이 케이스(BAT-ZTNA-009~013)의 대상. 생략해도 된다: 게이트웨이 서버 목록에서
+    # 흔한 웹 포트 중 규칙 없이 처음 열리는 서버와 포트, 그 페이지 <title>, 콘솔이 그 서버에 붙인
+    # 도메인, 같은 포트로 열리는 다른 서버를 찾아서 쓴다. 특정 서버·포트·문구를 쓰고 싶을 때만
+    # 적는다(적은 값만 우선). server_ip는 게이트웨이 서버 목록에 있어야 하고, domain은 단말에서
+    # 그 IP로 풀리는 이름, other_ip는 같은 포트로 열리는 다른 내부 서버(규칙 범위 확인용).
     # ztna:
     #   server_ip: 192.168.3.106
     #   domain: web.internal.example
