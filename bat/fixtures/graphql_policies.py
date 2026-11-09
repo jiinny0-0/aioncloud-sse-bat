@@ -78,6 +78,71 @@ LIST_ACCESS_POLICY = """
 query BatListAccessPolicy { SIA { ztna { accessPolicy { id name ctime mtime } } } }
 """
 
+# 접근제어(보호 대상 서버). create/delete는 쓸 만한 필드를 돌려주지 않아서
+# (CreateObject/StatusCode) id는 이름으로 다시 찾고 삭제는 목록으로 확인한다.
+CREATE_ACCESS_CONTROL = """
+mutation BatCreateAccessControl(
+  $name: String!, $type: AccessControlProtocolType!,
+  $application: [AccessControlApplicationInputType], $policy: Int
+) {
+  SIA { ztna { accessControl { create(
+    name: $name, type: $type, event_logging: true, risk_level: Minor, enable: true,
+    application: $application, user: [0], user_group: [0], policy: $policy
+  ) { __typename } } } }
+}
+"""
+
+DELETE_ACCESS_CONTROL = """
+mutation BatDeleteAccessControl($id: [Int]) {
+  SIA { ztna { accessControl { delete(id: $id) { __typename } } } }
+}
+"""
+
+LIST_ACCESS_CONTROL = """
+query BatListAccessControl { SIA { ztna { accessControl {
+  id name priority enable type policy { id name }
+  application { ip domain port target_id target_type }
+} } } }
+"""
+
+# datas에 넣은 항목의 우선순위만 바꾼다(다른 항목은 그대로).
+PRIORITIZE_ACCESS_CONTROL = """
+mutation BatPrioritizeAccessControl($datas: [PriorityInputType]) {
+  SIA { ztna { accessControl { priority(datas: $datas) { __typename } } } }
+}
+"""
+
+LIST_ZTNA_GATEWAYS = """
+query BatZtnaGateways { SIA { ztna { gateway { list { id name servers { id ip domain } } } } } }
+"""
+
+# 터널(서버에 설치하는 커넥터). create는 CreateObject, delete는 StatusCode라 접근제어처럼
+# 이름으로 다시 찾고 목록으로 삭제를 확인한다. server_ip는 터널이 연결되면 받는 주소이고
+# 연결 전에는 0.0.0.0이다.
+CREATE_TUNNEL = """
+mutation BatCreateTunnel($name: String!, $description: String, $interface: [TunnelInterfaceInputType]!) {
+  SIA { ztna { tunnel { create(name: $name, description: $description, interface: $interface) {
+    __typename
+  } } } }
+}
+"""
+
+DELETE_TUNNEL = """
+mutation BatDeleteTunnel($id: [Int]) { SIA { ztna { tunnel { delete(id: $id) { __typename } } } } }
+"""
+
+LIST_TUNNELS = """
+query BatListTunnels { SIA { ztna { tunnel { list {
+  id name description server_ip connect_status interface { id ip domain }
+} } } } }
+"""
+
+# 터널 설치에 쓰는 인증 파일(auth.json). file_content는 base64로 인코딩한 JSON이고
+# access_id가 그 터널의 자격증명이라 리포트나 로그에 값을 남기지 않는다.
+TUNNEL_AUTH_FILE = """
+query BatTunnelAuthFile($id: Int!) { SIA { ztna { tunnel { authFile(id: $id) { file_content } } } } }
+"""
+
 # --- FWaaS ---------------------------------------------------------------
 #
 # GenAI/ZTNA와 달리 이 create mutation들은 새 id를 바로 돌려준다.
@@ -594,6 +659,178 @@ class AccessPolicyFactory:
         handle = self.create(*args, **kwargs)
         with _cleanup_guard(self.delete, handle, "ztna access policy"):
             yield handle
+
+
+class AccessControlFactory:
+    """ZTNA 접근제어: 게이트웨이 뒤의 내부 서버를 누구에게 열지 정한다.
+
+    application 항목은 {ip 또는 domain, port, target_type, target_id}다. 게이트웨이
+    방식이면 target_id는 게이트웨이 서버 목록의 id다. domain을 주면 서버가 그
+    게이트웨이 서버의 IP를 채워 저장한다. 연결된 접근정책(policy)이 동작
+    (LOGGING/BLOCK)을 정하고, 정책이 없으면 허용된다.
+
+    도메인 없이 IP만 넣은 항목은 IP를 보지 않고 포트만으로 매칭된다(같은 포트의
+    다른 서버에도 걸린다). 그래서 BAT 케이스는 기본적으로 도메인으로 만든다.
+    """
+
+    def __init__(self, gql: GraphQLClient) -> None:
+        self.gql = gql
+
+    def list(self) -> list[dict]:
+        data = self.gql.execute(LIST_ACCESS_CONTROL)
+        rows = ((data.get("SIA") or {}).get("ztna") or {}).get("accessControl") or []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def gateway_server(self, ip: str) -> dict | None:
+        """그 IP를 서버 목록에 가진 게이트웨이 서버({id, ip, domain}). 없으면 None.
+
+        domain은 콘솔에서 그 서버에 붙인 이름이다. 커넥터가 이 이름을 받아 그 서버 IP로
+        직접 답한다(공용 DNS에 없는 이름이어도 된다).
+        """
+        data = self.gql.execute(LIST_ZTNA_GATEWAYS)
+        gateways = (((data.get("SIA") or {}).get("ztna") or {}).get("gateway") or {}).get("list") or []
+        for gateway in gateways:
+            for server in (gateway or {}).get("servers") or []:
+                if str(server.get("ip") or "") == ip and server.get("id") is not None:
+                    return server
+        return None
+
+    def gateway_server_id(self, ip: str) -> int | None:
+        """그 IP를 서버 목록에 가진 게이트웨이 서버의 id. 없으면 None."""
+        server = self.gateway_server(ip)
+        return int(server["id"]) if server else None
+
+    @staticmethod
+    def via_gateway(server_id: int, port: int, *, ip: str = "", domain: str = "") -> dict:
+        if not ip and not domain:
+            raise ValueError("An access control entry needs an ip or a domain")
+        entry: dict[str, Any] = {
+            "port": str(port), "target_type": "gateway", "target_id": server_id,
+        }
+        if ip:
+            entry["ip"] = ip
+        if domain:
+            entry["domain"] = domain
+        return entry
+
+    def create(
+        self,
+        name: str,
+        application: list[dict],
+        *,
+        protocol: str = "HTTP",
+        policy_id: str | int | None = None,
+        first: bool = True,
+    ) -> PolicyHandle:
+        """만들고 나서 first면 우선순위를 0으로 올린다. 콘솔에서 만든 항목은 1부터라
+        BAT 항목이 그보다 먼저 매칭된다."""
+        variables = {
+            "name": name,
+            "type": protocol,
+            "application": application,
+            "policy": int(policy_id) if policy_id not in (None, "") else None,
+        }
+        self.gql.execute(CREATE_ACCESS_CONTROL, variables)
+
+        row = next((r for r in self.list() if r.get("name") == name), None)
+        if not row or row.get("id") is None:
+            raise ApiError(
+                f"Created access control {name} but could not find it in the list query. "
+                f"Delete it by hand in the console if it exists."
+            )
+        handle = PolicyHandle(str(row["id"]), name, "ztna", "graphql", variables)
+        if first:
+            try:
+                self.gql.execute(
+                    PRIORITIZE_ACCESS_CONTROL, {"datas": [{"id": int(row["id"]), "priority": 0}]}
+                )
+            except Exception:
+                self.delete(handle)
+                raise
+        log.info("Created ZTNA access control %s (id=%s)", name, row["id"])
+        return handle
+
+    def delete(self, handle: PolicyHandle) -> None:
+        self.gql.execute(DELETE_ACCESS_CONTROL, {"id": [int(handle.policy_id)]})
+        if any(str(row.get("id")) == handle.policy_id for row in self.list()):
+            raise ApiError(f"access control {handle.name} is still listed after delete")
+
+    @contextmanager
+    def temporary(self, *args: Any, **kwargs: Any) -> Iterator[PolicyHandle]:
+        handle = self.create(*args, **kwargs)
+        with _cleanup_guard(self.delete, handle, "ztna access control"):
+            yield handle
+
+    @staticmethod
+    def via_tunnel(interface_id: int, port: int, *, ip: str = "", domain: str = "") -> dict:
+        """터널 방식 항목. target_id는 터널 목록의 interface id다."""
+        entry = AccessControlFactory.via_gateway(interface_id, port, ip=ip, domain=domain)
+        entry["target_type"] = "tunnel"
+        return entry
+
+
+class TunnelFactory:
+    """ZTNA 터널.
+
+    등록하면 커넥터 설정(sa_domains)에 interface의 domain -> ip가 바로 내려가고, 지우면
+    빠진다. 커넥터를 설치하지 않은 터널은 connect_status가 false로 남는다.
+    """
+
+    def __init__(self, gql: GraphQLClient) -> None:
+        self.gql = gql
+
+    def list(self) -> list[dict]:
+        data = self.gql.execute(LIST_TUNNELS)
+        rows = (((data.get("SIA") or {}).get("ztna") or {}).get("tunnel") or {}).get("list") or []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def find(self, name: str) -> dict | None:
+        return next((row for row in self.list() if row.get("name") == name), None)
+
+    def create(self, name: str, interfaces: list[dict], *, description: str = "") -> PolicyHandle:
+        """interfaces는 [{ip, domain}]."""
+        variables = {
+            "name": name,
+            "description": description or f"BAT generated tunnel {name}",
+            "interface": interfaces,
+        }
+        self.gql.execute(CREATE_TUNNEL, variables)
+        row = self.find(name)
+        if not row or row.get("id") is None:
+            raise ApiError(
+                f"Created tunnel {name} but could not find it in the list query. "
+                f"Delete it by hand in the console if it exists."
+            )
+        log.info("Created ZTNA tunnel %s (id=%s)", name, row["id"])
+        return PolicyHandle(str(row["id"]), name, "ztna", "graphql", variables)
+
+    def delete(self, handle: PolicyHandle) -> None:
+        self.gql.execute(DELETE_TUNNEL, {"id": [int(handle.policy_id)]})
+        if any(str(row.get("id")) == handle.policy_id for row in self.list()):
+            raise ApiError(f"tunnel {handle.name} is still listed after delete")
+
+    @contextmanager
+    def temporary(self, *args: Any, **kwargs: Any) -> Iterator[PolicyHandle]:
+        handle = self.create(*args, **kwargs)
+        with _cleanup_guard(self.delete, handle, "ztna tunnel"):
+            yield handle
+
+    def auth_file(self, tunnel_id: int | str) -> dict:
+        """설치용 인증 파일을 디코딩한 JSON. access_id는 자격증명이니 출력하지 않는다."""
+        import base64
+        import json
+
+        data = self.gql.execute(TUNNEL_AUTH_FILE, {"id": int(tunnel_id)})
+        content = ((((data.get("SIA") or {}).get("ztna") or {}).get("tunnel") or {}).get("authFile") or {}).get(
+            "file_content"
+        ) or ""
+        try:
+            decoded = json.loads(base64.b64decode(content))
+        except ValueError as exc:
+            raise ApiError(f"tunnel {tunnel_id} auth file is not base64 JSON ({len(content)} chars)") from exc
+        if not isinstance(decoded, dict):
+            raise ApiError(f"tunnel {tunnel_id} auth file is not a JSON object")
+        return decoded
 
 
 class DnsFirewallFactory:

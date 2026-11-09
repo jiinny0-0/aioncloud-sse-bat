@@ -47,7 +47,9 @@ ESTIMATED_SECONDS = {
     "BAT-CASB-001": 5, "BAT-CASB-002": 5, "BAT-CASB-003": 10, "BAT-CASB-004": 55, "BAT-CASB-005": 5,
     "BAT-GEN-001": 5,
     "BAT-ZTNA-001": 5, "BAT-ZTNA-002": 5, "BAT-ZTNA-003": 5, "BAT-ZTNA-004": 5, "BAT-ZTNA-005": 5,
-    "BAT-ZTNA-006": 5, "BAT-ZTNA-007": 5, "BAT-ZTNA-008": 5,
+    "BAT-ZTNA-006": 5, "BAT-ZTNA-007": 5, "BAT-ZTNA-008": 5, "BAT-ZTNA-009": 30,
+    "BAT-ZTNA-010": 40, "BAT-ZTNA-011": 30, "BAT-ZTNA-012": 25, "BAT-ZTNA-013": 40,
+    "BAT-ZTNA-014": 60, "BAT-ZTNA-015": 35, "BAT-ZTNA-016": 45,
     "BAT-X-001": 25, "BAT-X-002": 20, "BAT-X-003": 25, "BAT-X-004": 25, "BAT-X-005": 20,
     "BAT-X-006": 50, "BAT-X-007": 20, "BAT-X-008": 15, "BAT-X-009": 15, "BAT-X-010": 70,
     "BAT-X-011": 50,
@@ -377,6 +379,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     total += _sweep_casb(context, build_lanes(context)[0].workspace, delete=args.delete)
     total += _sweep_rbi(context, build_lanes(context)[0].workspace, delete=args.delete)
     total += _sweep_signatures(context, build_lanes(context)[0].workspace, delete=args.delete)
+    total += _sweep_ztna(context, build_lanes(context)[0].workspace, delete=args.delete)
 
     if total and not args.delete:
         print(f"\n{total} leftover resource(s). Re-run with --delete to remove them.")
@@ -460,6 +463,56 @@ def _sweep_rbi(context, workspace, *, delete: bool) -> int:
             return len(leftovers)
     except Exception as exc:
         print(f"{workspace.name} (rbi): SKIPPED - {str(exc)[:160]}")
+        return 0
+
+
+def _sweep_ztna(context, workspace, *, delete: bool) -> int:
+    """ZTNA 접근제어, 터널, 접근정책. 접근제어가 터널과 정책을 참조하므로 접근제어를 먼저 지운다."""
+    from bat.fixtures.graphql_policies import (
+        DELETE_ACCESS_CONTROL,
+        DELETE_ACCESS_POLICY,
+        DELETE_TUNNEL,
+        AccessControlFactory,
+        AccessPolicyFactory,
+        TunnelFactory,
+    )
+    from bat.fixtures.naming import is_bat_resource
+
+    try:
+        with _console_for(context, workspace) as gql:
+            kinds = (
+                (DELETE_ACCESS_CONTROL, AccessControlFactory(gql), "access control(s)"),
+                (DELETE_TUNNEL, TunnelFactory(gql), "tunnel(s)"),
+                (DELETE_ACCESS_POLICY, AccessPolicyFactory(gql), "access policy/policies"),
+            )
+            found = [
+                (query, factory, label, [r for r in factory.list() if is_bat_resource(f"{r.get('name') or ''}")])
+                for query, factory, label in kinds
+            ]
+            total = sum(len(rows) for *_, rows in found)
+            if not total:
+                print(f"{workspace.name} (ztna): clean")
+                return 0
+
+            print(f"{workspace.name} (ztna): " + ", ".join(f"{len(rows)} {label}" for _, _, label, rows in found))
+            for *_, rows in found:
+                for row in rows:
+                    print(f"  id={row.get('id')}  {row.get('name')}")
+
+            if delete:
+                for query, _, _, rows in found:
+                    ids = [int(row["id"]) for row in rows if row.get("id") is not None]
+                    if ids:
+                        gql.execute(query, {"id": ids})
+                remaining = []
+                for _, factory, _, rows in found:
+                    left = {str(r.get("id")) for r in factory.list()}
+                    remaining += [r for r in rows if str(r.get("id")) in left]
+                print(f"  deleted {total - len(remaining)}"
+                      + (f", still there: {[r.get('name') for r in remaining]}" if remaining else ""))
+            return total
+    except Exception as exc:
+        print(f"{workspace.name} (ztna): SKIPPED - {str(exc)[:160]}")
         return 0
 
 

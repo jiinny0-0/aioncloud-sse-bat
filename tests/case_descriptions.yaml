@@ -1041,3 +1041,113 @@ BAT-ZTNA-008:
   test_parameters: 없음
   test_data: 없음
   expected_results: 어떤 형태로든 조회가 된다
+BAT-ZTNA-009:
+  test_steps: |-
+    1. 스테이지 ztna 설정의 server_ip를 서버 목록에 가진 게이트웨이 서버를 찾는다
+    2. 전체 사용자 LOGGING 접근정책을 만든다
+    3. 도메인(ztna.domain:port)으로 접근제어를 만들어 그 정책을 연결하고 우선순위를 0으로 올린다
+    4. 커넥터 단말에서 http://<domain>/ 요청
+    5. ZTNA 로그(service_security_log)에서 BAT 접근제어 이름의 AP_LOGGING 행 확인
+    6. 접근제어, 접근정책 삭제
+  test_parameters: |-
+    접근제어: type HTTP, application [{domain, port, target_type: gateway, target_id: 게이트웨이 서버 id}], user/user_group [0], priority 0
+    접근정책: action LOGGING, rules [{user_id: [0]}]
+  test_data: 'lguplus: web.qa2.internal:80 → 192.168.3.106 (Retro Computing Archive)'
+  expected_results: 페이지가 열리고(page_text 포함), ZTNA 로그에 BAT 접근제어·접근정책 이름, 목적지 <server_ip>:<port>, 이 단말 device_id의 AP_LOGGING 행이 남는다
+  actual_result: 내부 서버 페이지가 열리지 않았거나, ZTNA 로그에 BAT 규칙 이름의 접속 기록이 없음
+BAT-ZTNA-010:
+  test_steps: |-
+    1. 규칙 없이 http://<domain>/ 이 열리는지 확인(안 열리면 ERROR)
+    2. 전체 사용자 BLOCK 접근정책을 만든다
+    3. 도메인 접근제어를 만들어 그 정책을 연결하고 우선순위를 0으로 올린다
+    4. 도메인과 서버 IP로 각각 요청해 "blocked by <접근제어 이름>" 차단 페이지 확인
+    5. 같은 포트의 다른 내부 서버(ztna.other_ip)는 열리는지 확인
+    6. ZTNA 로그에서 BAT 접근제어 이름의 AP_BLOCK 행 확인
+    7. 접근제어, 접근정책 삭제 후 페이지가 다시 열리는지 확인
+  test_parameters: |-
+    접근제어: type HTTP, application [{domain, port, target_type: gateway, target_id}], priority 0
+    접근정책: action BLOCK, rules [{user_id: [0]}]
+  test_data: 'lguplus: web.qa2.internal / 192.168.3.106:80 차단 대상, 192.168.3.227:80 범위 확인'
+  expected_results: 그 서버만 도메인·IP 모두 차단 페이지가 뜨고 다른 내부 서버는 열리며, AP_BLOCK 행이 남고, 삭제하면 다시 열린다
+  actual_result: 도메인 접근제어의 BLOCK이 그 서버를 막지 않았거나, 다른 서버까지 막았거나, 삭제 후 다시 열리지 않음
+BAT-ZTNA-011:
+  test_steps: |-
+    1. 전체 사용자 LOGGING 접근정책을 만든다
+    2. IP(ztna.server_ip:port)로 접근제어를 만들어 그 정책을 연결하고 우선순위를 0으로 올린다
+    3. 커넥터 단말에서 http://<server_ip>/ 요청
+    4. ZTNA 로그에서 BAT 접근제어 이름의 AP_LOGGING 행 확인
+    5. 접근제어, 접근정책 삭제
+  test_parameters: |-
+    접근제어: type HTTP, application [{ip, port, target_type: gateway, target_id}], priority 0
+    접근정책: action LOGGING, rules [{user_id: [0]}]
+  test_data: 'lguplus: 192.168.3.106:80'
+  expected_results: 페이지가 열리고, ZTNA 로그에 BAT 접근제어 이름, 목적지 <server_ip>:<port>, 이 단말 device_id의 AP_LOGGING 행이 남는다
+  actual_result: 내부 서버 IP가 열리지 않았거나, ZTNA 로그에 BAT 규칙 이름의 접속 기록이 없음
+BAT-ZTNA-012:
+  test_steps: |-
+    1. 규칙 없이 같은 포트의 다른 내부 서버(ztna.other_ip)가 열리는지 확인(안 열리면 ERROR)
+    2. 전체 사용자 BLOCK 접근정책을 만든다
+    3. 도메인 없이 IP(ztna.server_ip:port)만으로 접근제어를 만들어 연결하고 우선순위를 0으로 올린다
+    4. server_ip가 "blocked by <접근제어 이름>"으로 차단되는지 확인
+    5. other_ip는 계속 열리는지 확인
+    6. 접근제어, 접근정책 삭제
+  test_parameters: |-
+    접근제어: type HTTP, application [{ip, port, target_type: gateway, target_id}] (domain 없음), priority 0
+    접근정책: action BLOCK, rules [{user_id: [0]}]
+  test_data: 'lguplus: 192.168.3.106:80 차단 대상, 192.168.3.227:80 범위 확인'
+  expected_results: 규칙에 적은 IP만 차단되고, 같은 포트의 다른 내부 서버는 열린다
+  actual_result: IP만 넣은 접근제어가 IP를 보지 않고 포트만으로 매칭돼, 같은 포트의 다른 내부 서버(192.168.3.227:80)까지 그 규칙 이름으로 차단됨
+BAT-ZTNA-013:
+  test_steps: |-
+    1. 게이트웨이 서버 목록에서 ztna.server_ip 서버에 콘솔이 등록한 도메인을 읽는다(없으면 ERROR)
+    2. 단말에서 그 도메인을 조회해 커넥터가 server_ip로 답하는지 확인
+    3. 전체 사용자 LOGGING 접근정책을 만든다
+    4. 그 도메인으로 접근제어를 만들어 연결하고 우선순위를 0으로 올린다
+    5. curl과 브라우저로 http://<도메인>/ 을 열어 내부 서버 페이지가 열리는지 확인
+    6. ZTNA 로그에 BAT 접근제어 이름, AP_LOGGING, server_ip:port, 이 단말 device_id 행이 남는지 확인
+    7. 접근제어, 접근정책 삭제
+  test_parameters: |-
+    게이트웨이 서버: SIA.ztna.gateway.list.servers {id, ip, domain}
+    접근제어: type HTTP, application [{domain, port, target_type: gateway, target_id}], priority 0
+    접근정책: action LOGGING, rules [{user_id: [0]}]
+  test_data: 'lguplus: 게이트웨이 Openstack Test Env 서버 4 (192.168.3.106, 도메인 test.com), 페이지 문구 Retro Computing Archive'
+  expected_results: 콘솔에 등록한 도메인이 커넥터에서 그 서버 IP로 풀리고, 브라우저와 curl 모두 내부 서버 페이지가 열리며, ZTNA 로그에 BAT 규칙 이름으로 접속이 남는다
+BAT-ZTNA-014:
+  test_steps: |-
+    1. 이번 실행 전용 도메인(bat-<run_id>.tunnel.internal)이 단말에서 안 풀리는지 확인(풀리면 ERROR)
+    2. 그 도메인과 192.0.2.10으로 터널을 등록한다(커넥터 설치 안 함)
+    3. 터널이 연결 안 됨(connect_status false)으로 보이고, 인증 파일이 이 워크스페이스용이며 access_id가 있는지 확인
+    4. 단말에서 그 도메인이 192.0.2.10으로 풀리는지 확인(커넥터 설정 반영)
+    5. 192.0.2.10으로 접속되지 않는지 확인
+    6. 터널 삭제 후 그 도메인이 더 이상 풀리지 않는지 확인
+  test_parameters: |-
+    터널: create(name, description, interface [{ip: 192.0.2.10, domain}]), delete(id: [id])
+    인증 파일: tunnel.authFile(id).file_content (base64 JSON: workspace, access_id, client_type, vpn_type, pqc), 값은 기록하지 않음
+  test_data: 'lguplus: 192.0.2.10(문서용 대역), bat-<run_id>.tunnel.internal'
+  expected_results: 등록한 터널의 도메인이 바로 커넥터에 내려가 단말에서 터널 주소로 풀리지만 연결 안 된 터널로는 접속되지 않고, 터널을 지우면 그 이름이 사라진다
+BAT-ZTNA-015:
+  test_steps: |-
+    1. 연결된 터널(콘솔 초록불, BAT가 만든 것 제외)을 고르고, 규칙 없이 그 interface의 웹 포트(80/8080/8000/443/8443/3000/5000)를 열어 처음 열리는 페이지와 그 <title>을 기준으로 삼는다(ztna_tunnel에 이름·포트·문구가 있으면 그 값 우선, 못 찾으면 ERROR)
+    2. 전체 사용자 LOGGING 접근정책을 만든다
+    3. 그 터널 interface(도메인, 없으면 IP)로 터널 방식 접근제어를 만들어 연결하고 우선순위를 0으로 올린다
+    4. 단말에서 그 주소로 접속해 같은 페이지(기준 문구 포함)가 열리는지 확인
+    5. ZTNA 로그에 BAT 접근제어 이름, AP_LOGGING, 이 단말 device_id 행이 남는지 확인
+    6. 접근제어, 접근정책 삭제
+  test_parameters: |-
+    접근제어: type HTTP, application [{domain 또는 ip, port, target_type: tunnel, target_id: interface id}], priority 0
+    접근정책: action LOGGING, rules [{user_id: [0]}]
+  test_data: 'lguplus: 아직 터널 없음(설치하면 설정 없이 찾아서 씀)'
+  expected_results: 터널 뒤 서버 페이지가 열리고, ZTNA 로그에 BAT 규칙 이름으로 접속이 남는다
+BAT-ZTNA-016:
+  test_steps: |-
+    1. BAT-ZTNA-015와 같은 방식으로 연결된 터널과 규칙 없이 열리는 페이지를 찾는다(못 찾으면 ERROR)
+    2. 전체 사용자 BLOCK 접근정책을 만든다
+    3. 그 터널 interface로 터널 방식 접근제어를 만들어 연결하고 우선순위를 0으로 올린다
+    4. 그 주소가 "blocked by <접근제어 이름>"으로 차단되는지 확인
+    5. ZTNA 로그에 AP_BLOCK 행이 남는지 확인
+    6. 접근제어, 접근정책을 지운 뒤 페이지가 다시 열리는지 확인
+  test_parameters: |-
+    접근제어: type HTTP, application [{domain 또는 ip, port, target_type: tunnel, target_id: interface id}], priority 0
+    접근정책: action BLOCK, rules [{user_id: [0]}]
+  test_data: 'lguplus: 아직 터널 없음'
+  expected_results: 터널 뒤 서버가 BAT 규칙 이름의 차단 페이지로 막히고 AP_BLOCK이 기록되며, 규칙을 지우면 다시 열린다

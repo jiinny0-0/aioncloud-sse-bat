@@ -17,6 +17,24 @@ environments:
     # 거기 없는 값은 공용 .env에서 읽습니다.
     env_file: .env.stage-example
 
+    # ZTNA 트래픽 케이스(BAT-ZTNA-009~012)의 대상. 생략하면 그 케이스들은 ERROR.
+    # server_ip는 ZTNA 게이트웨이의 서버 목록에 있어야 하고, domain은 단말에서 그 IP로
+    # 풀리는 내부 이름. other_ip는 같은 포트로 열리는 다른 내부 서버(규칙 범위 확인용).
+    # ztna:
+    #   server_ip: 192.168.3.106
+    #   domain: web.internal.example
+    #   port: 80
+    #   page_text: "내부 서버 페이지에 있는 문구"
+    #   other_ip: 192.168.3.227
+
+    # 실제 터널 케이스(BAT-ZTNA-015/016)의 대상. 생략해도 된다: 연결된(초록불) 터널을 고르고,
+    # 그 interface의 흔한 웹 포트 중 처음 열리는 곳과 그 페이지 <title>을 쓴다. 터널이
+    # 여럿이거나 특정 포트·문구를 쓰고 싶을 때만 적는다. 서버 IP와 도메인은 터널 목록에서 읽는다.
+    # ztna_tunnel:
+    #   name: bat-tunnel
+    #   port: 8080
+    #   page_text: "터널 뒤 서버 페이지에 있는 문구"
+
     # --- 레인마다 쓸 워크스페이스 ---
     # api 레인은 단말이 필요 없고, 나머지 레인은 단말 한 대에 고정됩니다
     # (단말 한 대에 커넥터 하나).

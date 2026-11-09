@@ -75,6 +75,35 @@ def require_env(name: str) -> str:
 
 
 @dataclass(frozen=True)
+class ZtnaTarget:
+    """ZTNA 게이트웨이 뒤에 있는 내부 웹 서버. 스테이지마다 다르다.
+
+    server_ip는 그 게이트웨이의 서버 목록에 있어야 하고, domain은 단말에서 그 IP로
+    풀리는 내부 이름이다. other_ip는 같은 포트로 열리는 다른 내부 서버로, 규칙이
+    대상 밖까지 걸리는지 볼 때 쓴다.
+    """
+
+    server_ip: str
+    domain: str
+    port: int = 80
+    page_text: str = ""
+    other_ip: str = ""
+
+
+@dataclass(frozen=True)
+class ZtnaTunnelTarget:
+    """커넥터를 설치해 둔 실제 ZTNA 터널과 그 너머의 웹 페이지. 모두 선택 값이다.
+
+    비어 있으면 케이스가 찾는다: 연결된 터널(BAT가 만든 것 제외), 흔한 웹 포트 중 처음
+    열리는 곳, 그 페이지의 <title>. 서버 IP와 도메인은 언제나 터널 목록에서 읽는다.
+    """
+
+    name: str = ""
+    port: int = 0
+    page_text: str = ""
+
+
+@dataclass(frozen=True)
 class Profile:
     """같은 제품의 네트워크 스테이지 하나(qa/test/real = 사내망,
     lguplus = 통신사망)."""
@@ -87,6 +116,10 @@ class Profile:
     verify_tls: bool = False
     # 이 스테이지 단말에서 도는 커넥터 프로세스 이름(lguplus 계열은 U+SASE).
     connector_process: str = "AIConnector for Client"
+    # ZTNA 트래픽 케이스의 대상. 없으면 그 케이스들은 실행 조건 미비(ERROR)다.
+    ztna: ZtnaTarget | None = None
+    # 실제 터널 케이스의 대상(선택). 없으면 연결된 터널을 찾아서 쓴다.
+    ztna_tunnel: ZtnaTunnelTarget | None = None
 
     @property
     def console_origin(self) -> str:
@@ -194,6 +227,30 @@ def _load_environments() -> dict[str, dict]:
     return environments
 
 
+def _build_ztna_target(item: dict) -> ZtnaTarget | None:
+    block = item.get("ztna") or {}
+    if not block.get("server_ip") or not block.get("domain"):
+        return None
+    return ZtnaTarget(
+        server_ip=str(block["server_ip"]),
+        domain=str(block["domain"]),
+        port=int(block.get("port") or 80),
+        page_text=str(block.get("page_text") or ""),
+        other_ip=str(block.get("other_ip") or ""),
+    )
+
+
+def _build_ztna_tunnel(item: dict) -> ZtnaTunnelTarget | None:
+    block = item.get("ztna_tunnel") or {}
+    if not block:
+        return None
+    return ZtnaTunnelTarget(
+        name=str(block.get("name") or ""),
+        port=int(block.get("port") or 0),
+        page_text=str(block.get("page_text") or ""),
+    )
+
+
 def _build_profile(name: str, item: dict) -> Profile:
     return Profile(
         name=name,
@@ -203,6 +260,8 @@ def _build_profile(name: str, item: dict) -> Profile:
         block_page_marker=item.get("block_page_marker", "Your request / response has"),
         verify_tls=bool(item.get("verify_tls", False)),
         connector_process=str(item.get("connector_process") or "AIConnector for Client"),
+        ztna=_build_ztna_target(item),
+        ztna_tunnel=_build_ztna_tunnel(item),
     )
 
 
