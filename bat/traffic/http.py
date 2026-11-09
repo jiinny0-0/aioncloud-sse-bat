@@ -41,13 +41,18 @@ def curl_status(
     headers: dict[str, str] | None = None,
     timeout_sec: int = 30,
     pin_ip: str = "",
+    block_text: str = "",
 ) -> TrafficResult:
-    """단말에서 URL을 요청하고 HTTP 상태 코드만 보고한다.
+    """단말에서 URL을 요청하고 HTTP 상태 코드를 보고한다.
 
-    본문은 버린다. `pin_ip`는 연결을 그 주소로 강제해서, A 레코드가 여러 개인 호스트도
-    IP로 좁힌 정책이 대상으로 삼은 그 IP로 접속하게 한다.
+    `block_text`가 없으면 본문은 버리고 403/451을 차단으로 본다. 있으면 본문을 받아,
+    403/451이면서 본문에 그 문구(대소문자 무시)가 있어야 차단이다. 문구 없는 403/451은
+    원 서버나 중간 프록시의 거부일 수 있어 차단도 전달도 아니다. `pin_ip`는 연결을 그
+    주소로 강제해서, A 레코드가 여러 개인 호스트도 IP로 좁힌 정책이 대상으로 삼은 그 IP로
+    접속하게 한다.
     """
-    parts = ["curl", "-k", "-s", "-o", "NUL", "-w", '"%{http_code}"', "-X", method]
+    output = ["-w", '"\\n%{http_code}"'] if block_text else ["-o", "NUL", "-w", '"%{http_code}"']
+    parts = ["curl", "-k", "-s", *output, "-X", method]
     if proxy:
         parts += ["-x", proxy]
     if pin_ip:
@@ -61,17 +66,32 @@ def curl_status(
     parts += ["--max-time", str(timeout_sec), f'"{url}"']
 
     result = executor.run(" ".join(parts), timeout_sec=timeout_sec + 10)
-    match = _STATUS_RE.search(result.stdout.strip().strip('"'))
+    stdout = result.stdout.strip()
+    body, _, code = stdout.rpartition("\n") if block_text else ("", "", stdout)
+    match = _STATUS_RE.search(code.strip().strip('"'))
     status_code = int(match.group(1)) if match else None
-    blocked = status_code in BLOCK_STATUS_CODES if status_code else False
+    return _curl_result(url, method, status_code, body, block_text, result.stderr)
 
+
+def _curl_result(
+    url: str, method: str, status_code: int | None, body: str, block_text: str, stderr: str
+) -> TrafficResult:
+    """curl_status의 판정. 차단 페이지 문구를 요구하면 문구 없는 403/451은 판단 불가다."""
+    refused = status_code in BLOCK_STATUS_CODES if status_code else False
+    page = block_text.lower() in body.lower() if block_text else None
+    blocked = refused and page is not False
+    detail = stderr.strip()[:200]
+    if refused and page is False:
+        detail = f"HTTP {status_code} without the block page text {block_text!r}: {' '.join(body.split())[:150]}"
+    elif blocked and page:
+        detail = f"HTTP {status_code} block page ({block_text!r})"
     log.info("curl %s %s -> %s (blocked=%s)", method, url, status_code, blocked)
     return TrafficResult(
         url=url,
         status_code=status_code,
         blocked=blocked,
         via="curl",
-        detail=result.stderr.strip()[:200],
+        detail=detail,
         delivered=is_delivered_status(status_code),
     )
 

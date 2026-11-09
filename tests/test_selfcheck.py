@@ -474,6 +474,7 @@ def test_a_probe_named_after_the_case_is_not_the_case_policy():
 
 
 RUN_CONTEXT = SimpleNamespace(run_id=RUN_ID, policy_propagation_timeout_sec=1, event_poll_timeout_sec=1,
+                              started_at=datetime(2026, 9, 15, 10, 15),
                               profile=SimpleNamespace(connector_process="AIConnector for Client"))
 
 
@@ -516,22 +517,57 @@ def _run_case_body(module: str, function: str, case_id: str, **fixtures):
     return status, reason, case
 
 
-def test_the_leftover_check_ignores_policies_of_its_own_run():
-    """다른 실행의 정책만 잔여물이다. 이번 실행의 정책은 다른 워커가 아직 쓰고 있을 수 있다."""
+def _leftover_readers(monkeypatch, **kinds):
+    """bat.leftovers.readers를 종류별 행(또는 읽기 실패)으로 바꾼다."""
+    import bat.leftovers as leftovers
+
+    def reader(rows):
+        if isinstance(rows, Exception):
+            def fail():
+                raise rows
+            return fail
+        return lambda: ([{"id": n, **row} for n, row in enumerate(rows)], True)
+
+    monkeypatch.setattr(leftovers, "readers", lambda rest, gql: [(kind, reader(rows)) for kind, rows in kinds.items()])
+
+
+def test_the_leftover_check_ignores_policies_of_its_own_run(monkeypatch):
+    """다른 실행의 리소스만 잔여물이다. 이번 실행의 리소스는 다른 워커가 아직 쓰고 있을 수 있다.
+    웹 정책뿐 아니라 모든 정책 종류를 보고, GenAI처럼 description에 이름을 담는 정책도 센다."""
     from tests.basic.test_basic import test_no_leftovers_from_previous_runs as body
+    from tests.support import VerificationUnavailable
 
-    def listing(*names):
-        rows = [{"id": n, "name": name} for n, name in enumerate(names)]
-        return SimpleNamespace(get=lambda path, params=None: {"policies": rows})
+    def run(**kinds):
+        _leftover_readers(monkeypatch, **kinds)
+        case = CaseResult(case_id="BAT-BASIC-005", product="basic", scenario="leftovers")
+        body(case=case, rest=None, console=None, run_context=RUN_CONTEXT)
+        return case
 
-    case = CaseResult(case_id="BAT-BASIC-005", product="basic", scenario="leftovers")
-    body(case=case, rest=listing(f"BAT-DLP-003-{RUN_ID}", "tt"), run_context=RUN_CONTEXT)
+    case = run(web=[{"name": f"BAT-DLP-003-{RUN_ID}"}, {"name": "tt"}], dns=[{"name": "user rule"}])
     assert case.steps[0].ok
 
-    case = CaseResult(case_id="BAT-BASIC-005", product="basic", scenario="leftovers")
     with pytest.raises(AssertionError, match="BAT-DLP-006-20261012-163648-87bb50"):
-        body(case=case, rest=listing(f"BAT-DLP-003-{RUN_ID}", "BAT-DLP-006-20261012-163648-87bb50-dlp"),
-             run_context=RUN_CONTEXT)
+        run(web=[{"name": f"BAT-DLP-003-{RUN_ID}"}], dns=[{"name": "BAT-DLP-006-20261012-163648-87bb50-dlp"}])
+    with pytest.raises(AssertionError, match="BAT-GEN-001-20261012-163648-87bb50"):
+        run(genai=[{"name": "", "description": "BAT generated GenAI policy BAT-GEN-001-20261012-163648-87bb50"}])
+    # 남은 것은 없지만 못 읽은 목록이 있으면 확인하지 못한 것이다.
+    with pytest.raises(VerificationUnavailable, match="not confirmed"):
+        run(web=[], ztna=RuntimeError("Duplicate login"))
+
+
+def test_the_run_end_check_counts_only_this_runs_resources(monkeypatch):
+    """실행 종료 검사는 이번 실행(run_id)의 리소스만 세고, 읽지 못한 목록은 따로 알린다."""
+    import bat.leftovers as leftovers
+
+    _leftover_readers(
+        monkeypatch,
+        web=[{"name": f"BAT-SWG-001-{RUN_ID}"}, {"name": "BAT-SWG-001-20261012-163648-87bb50"}, {"name": "tt"}],
+        genai=[{"name": "", "description": f"BAT generated GenAI policy BAT-GEN-001-{RUN_ID}"}],
+        rbi=RuntimeError("Unauthorized Roles"),
+    )
+    found, unread = leftovers.scan(None, None, lambda name: leftovers.belongs_to_run(name, RUN_ID))
+    assert found == [f"web id=0 BAT-SWG-001-{RUN_ID}", f"genai id=0 BAT-GEN-001-{RUN_ID}"]
+    assert unread and unread[0].startswith("rbi: RuntimeError")
 
 
 def _first(rows, match, description, timeout_sec):
@@ -1013,12 +1049,17 @@ class _FakeHostCaseTenant:
         self.curl_answers = curl_answers
         self.browser_blocks = browser_blocks
         self.hosts: list[str] = []
+        self.name = ""
+        self.events: list[SecurityEvent] = []
 
     @contextlib.contextmanager
     def temporary(self, name, rules, **_):
-        self.hosts = [v for rule in rules for v in rule["value"]]
+        self.hosts, self.name = [v for rule in rules for v in rule["value"]], name
         yield SimpleNamespace(policy_id="900", name=name)
         self.hosts = []
+
+    def wait_for_security_event(self, match, *, timeout_sec=30.0, description="", **_):
+        return _first(self.events, match, description, timeout_sec)
 
     def _blocks(self, host):
         return host in self.hosts if self.case_sensitive else host.lower() in [h.lower() for h in self.hosts]
@@ -1027,7 +1068,9 @@ class _FakeHostCaseTenant:
         from urllib.parse import urlparse
 
         url = command.rsplit(" ", 1)[-1].strip('"')
-        if self._blocks(urlparse(url).netloc):
+        if self._blocks(urlparse(url).hostname if not self.case_sensitive else urlparse(url).netloc):
+            self.events.insert(0, _event(id=len(self.events) + 1, policy_name=self.name, policy_id=900,
+                                         action="BLOCK", full_uri=url))
             return SimpleNamespace(stdout="403", stderr="")
         return SimpleNamespace(stdout="200" if self.curl_answers else "000", stderr="")
 
@@ -1068,7 +1111,7 @@ def test_swg_023_counts_a_bypass_only_when_curl_was_delivered(instant_polling, t
     tenant = _FakeHostCaseTenant(**tenant_args)
     status, reason, case = _run_case_body(
         "tests.swg.test_swg_http_host", "test_host_block_is_case_insensitive", "BAT-SWG-023",
-        web_policies=tenant, executor=tenant, browser_session=tenant,
+        web_policies=tenant, executor=tenant, browser_session=tenant, web_log=tenant,
     )
     assert status is body_status, reason
     browser = [s for s in case.steps if s.detail.startswith("browser ")]
@@ -1201,6 +1244,9 @@ class _FakeDnsTenant:
 
     def wait_for_dns_event(self, match, *, timeout_sec=30.0, description="", **_):
         return _first(self.events, match, description, timeout_sec)
+
+    def dns_events(self, lookback_min=10):
+        return list(self.events)
 
 
 def _run_fw_010(tenant):
@@ -1356,12 +1402,16 @@ class _FakeJourneyTenant:
 
     def run(self, command, timeout_sec=None):  # 단말의 curl
         web = self._active("web") if self.post_url in command else []
+        url = re.search(r'"(https?://[^"]+)"\s*$', command).group(1)
         for handle in web:
             self.web_events.insert(0, _event(
                 id=len(self.web_events) + 1, policy_name=handle.name,
-                policy_id=int(handle.policy_id), action="BLOCK", full_uri=self.post_url,
+                policy_id=int(handle.policy_id), action="BLOCK", full_uri=url,
             ))
         return SimpleNamespace(stdout='"403"' if web else '"200"', stderr="")
+
+    def security_events(self, lookback_min=10):  # web_log
+        return list(self.web_events)
 
     def visit(self, url, case_id=""):
         casb = self._active("casb") if url.startswith(self.casb_url) else []
@@ -1435,11 +1485,18 @@ def _journey_fixtures(tenant, monkeypatch):
             return self.tenant.create("dlp", name)
 
     monkeypatch.setattr(journey, "DlpPolicyFactory", FakeDlpFactory)
+    from bat.fixtures.testdata import GENAI_TOPIC_ALL_RULES
+
     genai = SimpleNamespace(
         reference=lambda: {"id": 1},
         find_app=lambda name: {"id": 1},
         temporary=lambda name, apps, **kwargs: tenant.create("genai", name),
         find_id_by_name=lambda name: "41" if name in tenant.active else None,
+        list=lambda: [
+            {"id": 41, "name": name, "action_type": "BLOCK", "rules": GENAI_TOPIC_ALL_RULES,
+             "gen_ai_app": [{"id": 1, "name": "ChatGPT"}]}
+            for name, (kind, _) in tenant.active.items() if kind == "genai"
+        ],
     )
     return dict(
         rest=tenant, web_policies=tenant.factory("web"), saas_access=tenant.factory("casb"),
@@ -2066,9 +2123,9 @@ CONFIGURED_DEVICE = "9F8E7D6C-5B4A-3333-4444-555566667777"
 OTHER_DEVICE = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"  # 서버 터널의 id에는 대시가 없다
 
 
-def _auth_row(row_id, result, device_id=None):
+def _auth_row(row_id, result, device_id=None, time="2026-10-13T06:17:04Z"):
     return _event(id=row_id, auth_result=result, device_id=device_id, login_id="someone",
-                  user_name="someone", src_ip="10.0.8.1", time="2026-10-13T06:17:04Z")
+                  user_name="someone", src_ip="10.0.8.1", time=time)
 
 
 # 이 단말의 것이 아닌 auth_log 행: 몇 분마다 다시 연결하는 서버 터널, 그리고
@@ -2129,11 +2186,27 @@ def test_ztna_001_passes_on_this_endpoints_own_sign_in():
     assert case.event_ids == ["201"]
 
 
-def test_ztna_001_a_disconnect_alone_does_not_show_a_session():
-    own = _auth_row(202, "AUTH_DISCONNECT_VPN", THIS_DEVICE)
-    status, reason, case = _run_ztna_001(_FakeConnectorEndpoint([*UNRELATED_AUTH_ROWS, own]))
-    assert status is Status.UNVERIFIED, reason
+def test_ztna_001_fails_when_this_endpoints_newest_row_is_a_disconnect():
+    """세션이 맺어졌던 기록이 있어도 가장 최근 행이 연결 해제면 지금 연결돼 있다는 근거가 아니다."""
+    rows = [
+        *UNRELATED_AUTH_ROWS,
+        _auth_row(206, "AUTH_CONNECT_VPN", THIS_DEVICE, time="2026-10-13T06:00:00Z"),
+        _auth_row(202, "AUTH_DISCONNECT_VPN", THIS_DEVICE, time="2026-10-13T07:00:00Z"),
+    ]
+    status, reason, case = _run_ztna_001(_FakeConnectorEndpoint(rows))
+    assert status is Status.FAIL, reason
     assert "AUTH_DISCONNECT_VPN" in reason
+
+
+def test_ztna_001_a_reconnect_after_a_disconnect_passes():
+    rows = [
+        *UNRELATED_AUTH_ROWS,
+        _auth_row(202, "AUTH_DISCONNECT_VPN", THIS_DEVICE, time="2026-10-13T06:00:00Z"),
+        _auth_row(207, "AUTH_CONNECT_VPN", THIS_DEVICE, time="2026-10-13T07:00:00Z"),
+    ]
+    status, reason, case = _run_ztna_001(_FakeConnectorEndpoint(rows))
+    assert status is Status.PASS, reason
+    assert case.event_ids == ["207"]
 
 
 @pytest.mark.parametrize("uuid", ["", "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF", "To be filled by O.E.M."])
@@ -2251,16 +2324,25 @@ def _reach_records(case):
 
 
 @pytest.mark.parametrize(
-    "options",
-    [{}, {"maps_ip_to_host": True}, {"ip_answers": False}],
+    "options, expected",
+    [({}, Status.PASS), ({"maps_ip_to_host": True}, Status.FAIL), ({"ip_answers": False}, Status.UNVERIFIED)],
     ids=["raw-ip-gets-through", "raw-ip-blocked", "raw-ip-no-answer"],
 )
-def test_swg_022_the_raw_ip_outcome_is_recorded_not_judged(options, instant_polling):
-    """HTTP_HOST가 IP 직접 접속에 매칭되지 않는 건 예상된 동작이므로, IP 직접 접속 결과는 판정이 아니라 근거다."""
+def test_swg_022_the_raw_ip_request_has_to_go_through(options, expected, instant_polling):
+    """HTTP_HOST는 호스트명 조건이라 IP 직접 접속은 통과해야 한다(판정 기준). 막히면 FAIL, 응답이 없으면 UNVERIFIED."""
     status, reason, case = _run_swg_022(_FakeRawIpTenant(**options))
-    assert status is Status.PASS, reason
-    raw = [s for s in case.steps if s.step is Step.USER_RESULT and "by raw IP" in s.detail]
-    assert [s.kind for s in raw] == [Kind.EVIDENCE]
+    assert status is expected, reason
+    raw = [s for s in case.steps if s.step is Step.USER_RESULT and "raw-IP request" in str(s.expected)]
+    assert raw and all(s.kind in (Kind.ASSERTION, Kind.UNAVAILABLE) for s in raw)
+
+
+def test_swg_022_the_hostname_block_needs_its_own_row(instant_polling):
+    """호스트명 차단(403)은 그 요청 자신의 정책 행(마커)이 있어야 정책 차단이다."""
+    tenant = _FakeRawIpTenant()
+    tenant._log = lambda handle, url: None  # 아무 행도 남기지 않는 제품
+    status, reason, case = _run_swg_022(tenant)
+    assert status is Status.FAIL, reason
+    assert "no security event appeared" in reason
 
 
 def test_swg_022_records_that_sse_saw_the_raw_ip_request(instant_polling):
@@ -3148,3 +3230,260 @@ def test_request_until_logged_names_the_request_that_was_logged(instant_polling)
         _FakeWebLog([]), lambda url: _answer("delivered"), match=matches_policy("P", 9),
         url_for=lambda n: f"https://h/?bat={n}", budget_sec=6, event_timeout_sec=6,
     ) is None
+
+
+# -- 3단계: 정책 차단으로 인정하기, 기준선, 삭제·변경 재확인, 저장값 비교, 실행 종료 잔여 검사
+
+class _CurlEndpoint:
+    """curl 명령을 받아 정해진 출력을 차례로 돌려주는 단말(마지막 출력을 반복). 받은 명령을 남긴다."""
+
+    def __init__(self, *outputs):
+        self.outputs, self.commands = list(outputs), []
+
+    def run(self, command, timeout_sec=None):
+        self.commands.append(command)
+        return SimpleNamespace(stdout=self.outputs.pop(0) if len(self.outputs) > 1 else self.outputs[0], stderr="")
+
+
+def test_a_curl_block_can_require_the_block_page_text():
+    """block_text를 주면 403/451이면서 본문에 그 문구가 있어야 차단이다. 문구 없는 403은
+    원 서버나 프록시의 거부일 수 있어 차단도 전달도 아니다(판단 불가). 주지 않으면 예전대로다."""
+    from bat.traffic.http import curl_status
+
+    marker = "Your request / response has"
+    page = _CurlEndpoint(f"<html><title>Browsing blocked by P</title>{marker} been blocked</html>\n403")
+    blocked = curl_status(page, "http://h/get", block_text=marker)
+    assert blocked.blocked and not blocked.delivered
+    assert "-o NUL" not in page.commands[0], "the body has to be read to find the block page text"
+
+    proxy = curl_status(_CurlEndpoint("<html>Forbidden by proxy</html>\n403"), "http://h/get", block_text=marker)
+    assert not proxy.blocked and not proxy.delivered and "without the block page text" in proxy.detail
+
+    ok = curl_status(_CurlEndpoint('{"args": {}}\n200'), "http://h/get", block_text=marker)
+    assert ok.delivered and not ok.blocked
+    assert curl_status(_CurlEndpoint('"403"'), "http://h/get").blocked  # 문구를 요구하지 않으면 예전대로
+
+
+def test_restored_connectivity_needs_a_delivered_answer(instant_polling):
+    """curl_until_reachable은 아무 응답(403·5xx)이 아니라 전달에서 멈춘다."""
+    from tests.support import curl_until_reachable
+
+    endpoint = _CurlEndpoint('"000"', '"403"', '"502"', '"200"')
+    assert curl_until_reachable(endpoint, "https://h/", 60).status_code == 200
+    assert len(endpoint.commands) == 4
+    assert not curl_until_reachable(_CurlEndpoint('"403"'), "https://h/", 5).delivered
+
+
+def test_a_failed_baseline_is_unverified_not_a_block():
+    """정책 전에 대상이 해석·도달되지 않으면 정책 뒤의 실패를 차단으로 셀 수 없다."""
+    from tests.support import VerificationUnavailable, require_baseline
+
+    case = CaseResult(case_id="BAT-FW-001", product="fwaas", scenario="s")
+    require_baseline(case, _answer("delivered"), what="h resolves")
+    assert case.steps[-1].kind is Kind.EVIDENCE
+    for kind in ("blocked", "none"):
+        with pytest.raises(VerificationUnavailable, match="baseline"):
+            require_baseline(case, _answer(kind), what="h resolves")
+
+
+class _FakeNetworkLog:
+    """DNS·방화벽 로그. rows_after번 조회한 뒤에야 later 행이 보인다(로그 지연)."""
+
+    def __init__(self, rows=(), later=(), rows_after=1):
+        self.rows, self.later, self.rows_after, self.reads = list(rows), list(later), rows_after, 0
+
+    def _read(self):
+        self.reads += 1
+        return [*self.rows, *(self.later if self.reads > self.rows_after else [])]
+
+    def dns_events(self, lookback_min=10):
+        return self._read()
+
+    def firewall_events(self, lookback_min=10):
+        return self._read()
+
+
+def test_a_network_row_is_the_new_row_of_that_request(instant_polling):
+    """요청 전에 있던 행(after)과 조건(where)에 맞지 않는 행은 그 요청의 행이 아니다."""
+    from tests.support import await_network_row, ip_of, not_aaaa
+
+    old = _event(id=1, policy_name="P", action="BLOCK", record_type="A")
+    aaaa = _event(id=2, policy_name="P", action="BLOCK", record_type="AAAA")
+    other_policy = _event(id=3, policy_name="P-probe", action="BLOCK", record_type="A")
+    mine = _event(id=4, policy_name="P", action="BLOCK", record_type="A")
+    case = CaseResult(case_id="BAT-FW-001", product="fwaas", scenario="s")
+    log = _FakeNetworkLog([old, aaaa, other_policy], later=[mine])
+    row = await_network_row(case, log, "P", kind="dns", after={"1"}, where={"record_type": not_aaaa},
+                            timeout_sec=10, what="the lookup")
+    assert row.event_id == "4" and case.event_ids == ["4"] and case.steps[-1].ok
+
+    case = CaseResult(case_id="BAT-FW-001", product="fwaas", scenario="s")
+    with pytest.raises(AssertionError, match="not attributable"):
+        await_network_row(case, _FakeNetworkLog([old, aaaa]), "P", kind="dns", after={"1"},
+                          where={"record_type": not_aaaa}, timeout_sec=5, what="the lookup")
+    assert case.steps[-1].step is Step.EVENT and not case.steps[-1].ok
+
+    # 방화벽 행: dst_ip가 그 IP여야 한다("<ip>:<port>"도 같은 IP)
+    elsewhere = _event(id=5, policy_name="F", action="BLOCK", dst_ip="198.51.100.9")
+    there = _event(id=6, policy_name="F", action="LOGGING", dst_ip="198.51.100.7:443")
+    case = CaseResult(case_id="BAT-FW-003", product="fwaas", scenario="s")
+    with pytest.raises(AssertionError, match="records action 'LOGGING'"):
+        await_network_row(case, _FakeNetworkLog([elsewhere, there]), "F", kind="firewall",
+                          where={"dst_ip": lambda v: ip_of(v) == "198.51.100.7"}, timeout_sec=5, what="c")
+    assert ip_of("198.51.100.7:443") == ip_of("198.51.100.7") == "198.51.100.7"
+    assert ip_of("2001:db8::1") == "2001:db8::1"
+
+
+class _BlockingResolver:
+    """정책이 있으면 nslookup이 거부되고, logs면 그때마다 그 정책의 A 행을 남기는 단말."""
+
+    def __init__(self, log, *, logs=True):
+        self.log, self.logs, self.policy = log, logs, ""
+
+    def run(self, command, timeout_sec=None):
+        if self.policy and command.startswith("nslookup"):
+            if self.logs:
+                self.log.rows.append(_event(id=100 + len(self.log.rows), policy_name=self.policy,
+                                            action="BLOCK", record_type="A"))
+            return SimpleNamespace(stdout=NSLOOKUP_REFUSED, stderr="")
+        return SimpleNamespace(stdout=NSLOOKUP_RESOLVED, stderr="")
+
+
+@pytest.mark.parametrize("logs", [True, False], ids=["row-left", "no-row"])
+def test_a_failed_lookup_counts_as_the_policys_block_only_with_its_row(instant_polling, logs):
+    """이름 해석 실패는 그 조회 뒤 그 정책의 새 A 행이 있어야 정책 차단이다. 행이 없으면 FAIL."""
+    from tests.support import expect_dns_block
+
+    log = _FakeNetworkLog()
+    endpoint = _BlockingResolver(log, logs=logs)
+    endpoint.policy = "P"
+    case = CaseResult(case_id="BAT-FW-001", product="fwaas", scenario="s")
+    if logs:
+        row = expect_dns_block(case, endpoint, log, "P", "example.com", budget_sec=5, event_timeout_sec=5, failure="f")
+        assert row.get("record_type") == "A"
+        assert {s.step for s in case.steps if s.kind is Kind.ASSERTION and s.ok} == {Step.USER_RESULT, Step.EVENT}
+    else:
+        with pytest.raises(AssertionError, match="not attributable"):
+            expect_dns_block(case, endpoint, log, "P", "example.com", budget_sec=5, event_timeout_sec=5, failure="f")
+        assert [s.step for s in case.steps if not s.ok] == [Step.EVENT]
+
+
+def test_values_read_back_are_compared_not_just_found():
+    """저장값은 요청값과 비교한다. 객체는 id로, 리스트는 순서 없이. 다르면 FAIL, 못 읽으면 UNVERIFIED."""
+    from tests.support import MISSING, VerificationUnavailable, as_list, expect_values, rule_values, stored
+
+    case = CaseResult(case_id="BAT-ZTNA-003", product="ztna", scenario="s")
+    expect_values(case, "policy", {
+        "user": ([7], [{"id": 7, "name": "root"}]),
+        "country": (["AQ", "KR"], ["KR", "AQ"]),
+        "action_type": ("BLOCK", "BLOCK"),
+    })
+    assert case.steps[-1].ok and case.steps[-1].kind is Kind.ASSERTION
+    with pytest.raises(AssertionError, match="country"):
+        expect_values(case, "policy", {"country": (["AQ"], None), "action_type": ("BLOCK", "BLOCK")})
+    with pytest.raises(VerificationUnavailable, match="could not read"):
+        expect_values(case, "policy", {"action_type": ("BLOCK", MISSING)})
+    assert stored(None, "x") is MISSING and stored({"x": 0}, "x") == 0
+    assert as_list("AQ") == ["AQ"] and as_list(None) == [] and as_list(MISSING) is MISSING
+    rules = [[{"id": 1, "subject": "GENAI_REQUEST_KEYWORD", "condition": "IN", "value": ["password"]}]]
+    assert rule_values(rules, "GENAI_REQUEST_KEYWORD") == ["password"]
+    assert rule_values(rules, "GENAI_REQUEST_TOPIC") == [] and rule_values(MISSING, "X") is MISSING
+
+
+class _FakeRest:
+    """웹 정책 REST. 삭제를 무시하는 제품(ignore_delete)과 활성화 변경을 무시하는 제품을 흉내 낸다."""
+
+    def __init__(self, *, ignore_delete=False, ignore_enable=False):
+        self.web = {7: {"id": 7, "name": "BAT-SWG-001-x", "enable": True}}
+        self.ignore_delete, self.ignore_enable = ignore_delete, ignore_enable
+
+    def get(self, path, params=None):
+        if path.endswith("/list"):
+            rows = list(self.web.values())
+            return {"total": len(rows), "policies": rows}
+        return dict(self.web[int(path.rsplit("/", 1)[-1])])
+
+    def delete(self, path, json=None):
+        if not self.ignore_delete:
+            for policy_id in json["ids"]:
+                self.web.pop(policy_id, None)
+        return {}
+
+    def patch(self, path, json=None):
+        if not self.ignore_enable:
+            self.web[int(path.split("/")[-2])]["enable"] = json["enable"]
+        return {}
+
+
+def test_deletes_and_enable_changes_are_read_back():
+    """삭제·활성화 변경은 성공 응답만 믿지 않고 다시 읽어 반영됐는지 본다."""
+    from bat.clients.errors import ApiError
+    from bat.fixtures.policies import PolicyHandle, WebPolicyFactory, confirm_gone
+
+    handle = PolicyHandle("7", "BAT-SWG-001-x", "swg", "rest")
+    WebPolicyFactory(_FakeRest()).delete(handle)
+    with pytest.raises(ApiError, match="still listed after delete"):
+        WebPolicyFactory(_FakeRest(ignore_delete=True)).delete(handle)
+    WebPolicyFactory(_FakeRest()).set_enabled(handle, False)
+    with pytest.raises(ApiError, match="reads back as True"):
+        WebPolicyFactory(_FakeRest(ignore_enable=True)).set_enabled(handle, False)
+    # 목록이 일부뿐이면 없다고 확정할 수 없어 경고만 남긴다(실행 종료 검사가 다시 본다)
+    confirm_gone("web policy", handle, [], complete=False)
+    with pytest.raises(ApiError):
+        confirm_gone("dns firewall policy", PolicyHandle("9", "N", "fwaas", "graphql"), [{"id": 9, "name": "N"}])
+
+
+def test_a_pass_whose_cleanup_failed_says_so():
+    """검사는 통과했지만 정리가 실패한 케이스는 판정은 그대로 두고 사유에 남긴다."""
+    from tests.conftest import _with_cleanup_note
+
+    assert _with_cleanup_note(Status.PASS, "all passed", []) == "all passed"
+    note = _with_cleanup_note(Status.PASS, "all passed", ["web policy P: HTTP 500"])
+    assert note.startswith("all passed; cleanup failed after the checks passed: web policy P")
+    assert _with_cleanup_note(Status.FAIL, "r", ["w"]) == "r"
+
+
+def test_resources_left_by_this_run_fail_the_run(monkeypatch):
+    """실행이 끝났을 때 이번 실행의 리소스가 남았으면 종료 코드가 실패가 된다. 읽지 못한 목록은
+    알리기만 한다. BAT 케이스가 하나도 판정되지 않은 세션(selfcheck)은 환경에 접속하지 않는다."""
+    import bat.leftovers as leftovers
+    import tests.conftest as conftest
+
+    lines: list[str] = []
+    reporter = SimpleNamespace(
+        stats={"passed": [SimpleNamespace(user_properties=[("bat_status", "PASS")])]},
+        write_line=lambda line, **_: lines.append(line),
+        section=lambda title, **_: lines.append(title),
+    )
+    config = SimpleNamespace(pluginmanager=SimpleNamespace(get_plugin=lambda name: reporter))
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    monkeypatch.setattr(conftest, "build_run_context", lambda **_: SimpleNamespace(run_id=RUN_ID))
+
+    session = SimpleNamespace(config=config, exitstatus=0)
+    monkeypatch.setattr(leftovers, "find_run_leftovers", lambda context, run_id: ([], ["rbi: denied"]))
+    conftest.pytest_sessionfinish(session, 0)
+    assert session.exitstatus == 0 and any("not confirmed" in line for line in lines)
+
+    monkeypatch.setattr(leftovers, "find_run_leftovers",
+                        lambda context, run_id: ([f"web policy id=1 BAT-SWG-001-{RUN_ID}"], []))
+    conftest.pytest_sessionfinish(session, 0)
+    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+
+    quiet = SimpleNamespace(config=config, exitstatus=0)
+    reporter.stats = {"passed": [SimpleNamespace(user_properties=[])]}
+
+    def must_not_connect(*args):
+        pytest.fail("selfcheck-only sessions must not connect")
+
+    monkeypatch.setattr(leftovers, "find_run_leftovers", must_not_connect)
+    conftest.pytest_sessionfinish(quiet, 0)
+    assert quiet.exitstatus == 0
+
+
+def test_a_2xx_html_page_from_the_management_api_counts_as_intercepted():
+    from tests.basic.test_basic import _html_answer
+
+    assert _html_answer({"_raw": "<!DOCTYPE html><html><body>Your request / response has been blocked"})
+    assert not _html_answer({"id": 3})
+    assert not _html_answer({"_raw": "plain text"})
+    assert not _html_answer(None)

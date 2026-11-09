@@ -156,6 +156,7 @@ class TrafficResult:
     artifact: str = ""
     isolated: bool = False
     delivered: bool = False
+    final_url: str = ""  # 브라우저가 도착한 URL(격리 방문의 리다이렉트 확인용)
 
 
 @dataclass

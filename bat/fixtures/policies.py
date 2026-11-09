@@ -142,6 +142,19 @@ class CleanupWarning(Exception):
 UNRAISED_CLEANUP_FAILURES: list[str] = []
 
 
+def confirm_gone(label: str, handle: "PolicyHandle", rows: list[dict], *, complete: bool = True) -> None:
+    """삭제를 보고한 뒤 다시 읽은 목록(rows)에 그 리소스가 없어야 한다. id나 이름이 같은 행이
+    있으면 ApiError다. 목록이 전체가 아니면(complete=False) 없다는 것을 확정할 수 없어 경고만
+    남긴다(실행 종료 때의 잔여 검사가 다시 본다)."""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("id") or row.get("policy_id") or "") == str(handle.policy_id) or row.get("name") == handle.name:
+            raise ApiError(f"{label} {handle.name} (id={handle.policy_id}) is still listed after delete")
+    if not complete:
+        log.warning("%s %s: the list read back is partial, so its removal is not confirmed", label, handle.name)
+
+
 @contextmanager
 def _cleanup_guard(delete: Any, handle: "PolicyHandle", label: str) -> Iterator[None]:
     """빠져나갈 때 리소스를 지우되, 실제 실패를 가리지 않는다.
@@ -326,25 +339,44 @@ class WebPolicyFactory:
         )
         return PolicyHandle(policy_id, name, "swg", "graphql", variables)
 
-    def _find_id_by_name(self, name: str) -> str | None:
-        payload = self.rest.get(WEB_POLICY_PATH + "/list", params={"offset": 1, "limit": 100})
+    LIST_LIMIT = 500
+
+    def list(self) -> tuple[list[dict], bool]:
+        """웹 정책 목록(응답 {total, policies})과 그것이 전체인지."""
+        payload = self.rest.get(WEB_POLICY_PATH + "/list", params={"offset": 1, "limit": self.LIST_LIMIT})
         rows = payload.get("policies") or payload.get("list") or payload.get("data") or []
-        for row in rows if isinstance(rows, list) else []:
-            if isinstance(row, dict) and row.get("name") == name:
+        rows = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+        total = payload.get("total")
+        return rows, isinstance(total, int) and total <= len(rows)
+
+    def _find_id_by_name(self, name: str) -> str | None:
+        rows, _ = self.list()
+        for row in rows:
+            if row.get("name") == name:
                 return str(row.get("id") or row.get("policy_id") or "")
         return None
 
     def set_enabled(self, handle: PolicyHandle, enabled: bool) -> None:
+        """켜거나 끄고, 다시 읽어 그 상태로 저장됐는지 확인한다(아니면 ApiError)."""
         self.rest.patch(
             f"{WEB_POLICY_PATH}/{handle.policy_id}/enable",
             json={"enable": enabled},
         )
+        stored = self.get(handle).get("enable")
+        if stored is None or (str(stored).lower() in ("true", "1")) is not enabled:
+            raise ApiError(
+                f"web policy {handle.name}: enable set to {enabled} but reads back as {stored!r}"
+            )
 
     def get(self, handle: PolicyHandle) -> dict:
         return self.rest.get(f"{WEB_POLICY_PATH}/{handle.policy_id}")
 
     def set_priority(self, order: list[tuple[str | int, int]]) -> None:
-        """정책 순서를 바꾼다. priority 숫자가 가장 작은 것부터 평가된다."""
+        """정책 순서를 바꾼다. priority 숫자가 가장 작은 것부터 평가된다.
+
+        REST 조회 응답에는 priority 필드가 없어 다시 읽어 확인할 수 없다. 순서가 바뀌었는지는
+        케이스가 트래픽으로(hold_after_change) 확인한다.
+        """
         self.rest.patch(
             f"{WEB_POLICY_PATH}/priority",
             json={
@@ -358,9 +390,11 @@ class WebPolicyFactory:
     def delete(self, handle: PolicyHandle) -> None:
         if handle.api == "graphql":
             self._gql_client().execute(DELETE_WEB_SECURITY, {"id": [int(handle.policy_id)]})
-            return
-        # 웹 엔드포인트는 "ids"를, DLP 엔드포인트는 "policy_ids"를 받는다.
-        self.rest.delete(WEB_POLICY_PATH, json={"ids": [int(handle.policy_id)]})
+        else:
+            # 웹 엔드포인트는 "ids"를, DLP 엔드포인트는 "policy_ids"를 받는다.
+            self.rest.delete(WEB_POLICY_PATH, json={"ids": [int(handle.policy_id)]})
+        rows, complete = self.list()
+        confirm_gone("web policy", handle, rows, complete=complete)
 
     @contextmanager
     def temporary(self, *args: Any, **kwargs: Any) -> Iterator[PolicyHandle]:
@@ -415,8 +449,21 @@ class DlpPolicyFactory:
         rows = payload.get("items") or payload.get("rules") or payload.get("data") or payload
         return rows if isinstance(rows, list) else []
 
+    LIST_LIMIT = 100
+
+    def list(self) -> tuple[list[dict], bool]:
+        """DLP 정책 목록(응답 {total, items})과 그것이 전체인지."""
+        payload = self.rest.get(DLP_POLICY_PATH, params={"offset": 1, "limit": self.LIST_LIMIT})
+        rows = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise ApiError(f"GET {DLP_POLICY_PATH} answered without an items list: {str(payload)[:200]}")
+        total = payload.get("total")
+        return [row for row in rows if isinstance(row, dict)], isinstance(total, int) and total <= len(rows)
+
     def delete(self, handle: PolicyHandle) -> None:
         self.rest.delete(DLP_POLICY_PATH, json={"policy_ids": [int(handle.policy_id)]})
+        rows, complete = self.list()
+        confirm_gone("dlp policy", handle, rows, complete=complete)
 
     @contextmanager
     def temporary(self, *args: Any, **kwargs: Any) -> Iterator[PolicyHandle]:
@@ -477,7 +524,10 @@ class RbiPolicyFactory:
         return PolicyHandle(policy_id, name, "rbi", "graphql", variables)
 
     def delete(self, handle: PolicyHandle) -> None:
+        from bat.fixtures.graphql_policies import RbiPolicyReader
+
         self.gql.execute(DELETE_RBI_POLICY, {"id": [int(handle.policy_id)]})
+        confirm_gone("rbi policy", handle, RbiPolicyReader(self.gql).list())
 
     @contextmanager
     def temporary(self, *args: Any, **kwargs: Any) -> Iterator[PolicyHandle]:

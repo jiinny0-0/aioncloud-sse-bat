@@ -15,7 +15,7 @@ import pytest
 
 from bat.endpoint.base import connector_state
 from bat.fixtures.enums import ActionType, Condition, Subject
-from bat.fixtures.naming import belongs_to_run, is_bat_resource, resource_name
+from bat.fixtures.naming import belongs_to_run, resource_name
 from bat.clients.rest import pick_id
 from bat.fixtures.policies import CleanupWarning, WEB_POLICY_PATH, WebPolicyFactory
 from bat.fixtures.testdata import ALLOW_TARGET_URL, BLOCK_TARGET_HOST
@@ -27,6 +27,7 @@ from tests.support import (
     marked_url,
     pass_case,
     request_until_logged,
+    unverified,
 )
 
 log = logging.getLogger(__name__)
@@ -205,30 +206,40 @@ def test_endpoint_is_behind_the_connector(
 @pytest.mark.case("BAT-BASIC-005")
 @pytest.mark.diagnostic
 @pytest.mark.priority("P2")
-def test_no_leftovers_from_previous_runs(case, rest, run_context):
-    """이전 실행이 남긴 BAT 리소스가 없다."""
-    listing = rest.get("/sia/v1/web/policy/list", params={"offset": 1, "limit": 500})
-    rows = listing.get("policies") or listing.get("list") or listing.get("data") or []
-    # 같은 실행의 다른 워커가 지금 정책을 쥐고 있을 수 있다. 그것은 잔여물이 아니다.
-    leftovers = [
-        row for row in rows
-        if isinstance(row, dict) and is_bat_resource(str(row.get("name", "")))
-        and not belongs_to_run(str(row.get("name", "")), run_context.run_id)
-    ]
+def test_no_leftovers_from_previous_runs(case, rest, console, run_context):
+    """이전 실행이 남긴 BAT 리소스가 없다.
 
+    모든 정책 종류(웹, DLP, GenAI, CASB 두 종류, RBI, DNS/Application Firewall, ZTNA 접근제어·
+    터널·접근정책)를 읽는다. 웹·DLP 목록은 total로 전체를 읽었는지 확인한다. 남은 것이 있으면
+    FAIL, 남은 것은 없지만 읽지 못한 목록이 있으면 UNVERIFIED다.
+    """
+    from bat.leftovers import scan
+
+    # 같은 실행의 다른 워커가 지금 리소스를 쥐고 있을 수 있다. 그것은 잔여물이 아니다.
+    leftovers, unread = scan(rest, console, lambda name: not belongs_to_run(name, run_context.run_id))
     case.record(
         Step.USER_RESULT,
         ok=not leftovers,
-        detail=f"{len(leftovers)} leftover BAT policy/policies",
+        kind=Kind.ASSERTION,
+        detail=f"{len(leftovers)} leftover BAT resource(s)",
         expected="none",
-        actual=[row.get("name") for row in leftovers],
+        actual=leftovers,
     )
     assert not leftovers, (
-        f"{len(leftovers)} BAT policies from earlier runs are still present: "
-        f"{[row.get('name') for row in leftovers]}. A leftover BLOCK policy changes "
-        f"the result of every case that follows. Run 'bat sweep --delete'."
+        f"{len(leftovers)} BAT resources from earlier runs are still present: {leftovers}. A "
+        f"leftover BLOCK policy changes the result of every case that follows. Run 'bat sweep --delete'."
     )
+    if unread:
+        unverified(case, Step.USER_RESULT, f"no leftovers in what could be read, but these lists were not confirmed: {unread}")
     pass_case(case)
+
+
+def _html_answer(payload: object) -> bool:
+    """REST 클라이언트가 JSON으로 읽지 못해 원문으로 돌려준 HTML 페이지인가."""
+    if not isinstance(payload, dict) or set(payload) != {"_raw"}:
+        return False
+    head = str(payload["_raw"])[:400].lower()
+    return "<html" in head or "<!doctype html" in head
 
 
 @pytest.mark.case("BAT-BASIC-006")
@@ -236,7 +247,12 @@ def test_no_leftovers_from_previous_runs(case, rest, run_context):
 @pytest.mark.priority("P1")
 @pytest.mark.critical
 def test_management_api_is_not_intercepted(case, run_context, rest, executor):
-    """커넥터가 켜진 상태에서도 관리 API 요청이 SSE에 가로채이지 않는다."""
+    """커넥터가 켜진 상태에서도 관리 API 요청이 SSE에 가로채이지 않는다.
+
+    API 오류(JSON)는 요청이 API에 닿았다는 뜻이라 통과다. SSE 차단 페이지(HTML)는 상태 코드와
+    상관없이 가로챔이다: 2xx로 HTML이 돌아와도 가로챔으로 본다. probe로 만든 웹 정책과 사용자는
+    끝나면 지우고, 사라졌는지 다시 확인한다.
+    """
     from bat.clients.errors import ApiError, SelfBlockedError
     from bat.fixtures.enums import Condition, Subject
 
@@ -247,6 +263,9 @@ def test_management_api_is_not_intercepted(case, run_context, rest, executor):
 
     # 읽기가 아니라 쓰기다: SSE는 POST 본문을 검사하므로, 스위트 자신의 관리용 쓰기가
     # 사용자 트래픽으로 취급되면 스위트가 동작할 수 없다.
+    from bat.fixtures.users import USER_PATH, UserFactory
+
+    probe_login = f"bat-bas-006-{case.case_id.lower()}@bat.local"
     created: dict[str, object] = {}
     probes = {
         "POST /sia/v1/web/policy": lambda: created.__setitem__(
@@ -273,16 +292,16 @@ def test_management_api_is_not_intercepted(case, run_context, rest, executor):
                 },
             ),
         ),
-        "POST /sia/v1/user": lambda: rest.post(
+        "POST /sia/v1/user": lambda: created.__setitem__("user", rest.post(
             "/sia/v1/user",
             json={
-                "login_id": f"bat-bas-006-{case.case_id.lower()}@bat.local",
+                "login_id": probe_login,
                 "first_name": "BAT",
                 "last_name": "Probe",
                 "password": "BatProbe1234!",
                 "role": "USER",
             },
-        ),
+        )),
     }
 
     intercepted: list[str] = []
@@ -292,7 +311,13 @@ def test_management_api_is_not_intercepted(case, run_context, rest, executor):
         for label, call in probes.items():
             try:
                 call()
-                outcomes[label] = "accepted"
+                key = "web_policy" if "policy" in label else "user"
+                if _html_answer(created.get(key)):
+                    # 2xx로 돌아왔지만 JSON이 아니라 HTML 페이지다. API가 아니라 SSE가 답했다.
+                    outcomes[label] = "intercepted (2xx HTML page instead of the API's JSON)"
+                    intercepted.append(label)
+                else:
+                    outcomes[label] = "accepted"
             except SelfBlockedError:
                 outcomes[label] = "intercepted by an SSE block page"
                 intercepted.append(label)
@@ -301,17 +326,32 @@ def test_management_api_is_not_intercepted(case, run_context, rest, executor):
                 # 바로 그것이다.
                 outcomes[label] = f"reached the API ({str(exc)[:80]})"
     finally:
-        # POST가 수락됐으면 probe 정책을 지운다.
+        # POST가 수락됐으면 probe 정책과 사용자를 지우고, 사라졌는지 다시 확인한다.
         policy_id = pick_id(created.get("web_policy") or {}, "id", "policy_id")
         if policy_id:
             try:
                 rest.delete(WEB_POLICY_PATH, json={"ids": [int(policy_id)]})
+                rows, _ = WebPolicyFactory(rest).list()
+                if any(str(row.get("id")) == str(policy_id) for row in rows):
+                    raise RuntimeError("still listed after delete")
             except Exception as exc:
+                case.cleanup_warnings.append(f"probe web policy {policy_id}: {exc}")
                 log.warning("Could not delete probe web policy %s: %s", policy_id, exc)
+        users = UserFactory(rest)
+        try:
+            user_id = pick_id(created.get("user") or {}, "id", "user_id") or users.find_id_by_login(probe_login)
+            if user_id:
+                rest.delete(f"{USER_PATH}/{user_id}")
+                if users.find_id_by_login(probe_login):
+                    raise RuntimeError("still listed after delete")
+        except Exception as exc:
+            case.cleanup_warnings.append(f"probe user {probe_login}: {exc}")
+            log.warning("Could not delete probe user %s: %s", probe_login, exc)
 
     case.record(
         Step.USER_RESULT,
         ok=not intercepted,
+        kind=Kind.ASSERTION,
         detail=f"probe outcomes: {outcomes}",
         expected="every management request reaches the API",
         actual=outcomes,

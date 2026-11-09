@@ -142,6 +142,7 @@ class BrowserSession:
                 detail=nav_error if nav_error else f"landed on {final_host} (HTTP {status})",
                 isolated=isolated,
                 delivered=direct,
+                final_url=final_url,
             )
 
     def screenshot(self, page, case_id: str, label: str = "") -> str:

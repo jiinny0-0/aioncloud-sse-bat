@@ -11,7 +11,7 @@ from bat.fixtures.graphql_policies import GenAIPolicyFactory
 from bat.fixtures.naming import resource_name
 from bat.fixtures.policies import CleanupWarning
 from bat.models import Step
-from tests.support import cleanup_failed, environment_error, pass_case
+from tests.support import cleanup_failed, environment_error, expect_values, pass_case, row_named, rule_values, stored
 
 pytestmark = [
     pytest.mark.product("genai"),
@@ -42,10 +42,12 @@ def _resolve_app(genai_policies: GenAIPolicyFactory) -> dict:
 @pytest.mark.verifies(Step.USER_RESULT)
 @pytest.mark.priority("P1")
 def test_keyword_policy_round_trip(case, run_context, genai_policies):
-    """GenAI 키워드 탐지 정책을 생성하면 목록에 반영되고, 삭제하면 사라진다.
+    """GenAI 키워드 탐지 정책을 생성하면 요청한 내용대로 저장되고, 삭제하면 사라진다.
 
     프롬프트 차단 자체는 검증하지 않는다: 카탈로그의 앱은 모두 로그인해야 프롬프트를
-    보낼 수 있어, 생성·조회·삭제만 확인한다.
+    보낼 수 있어, 생성·조회·삭제만 확인한다. 생성 직후 목록을 다시 읽어 action_type, 키워드
+    rule의 값, 대상 앱(gen_ai_app)이 요청값과 같아야 한다(목록에 있다는 것은 생성이 이미
+    확인한다). 삭제는 팩토리가 목록에서 사라진 것까지 확인한다.
     """
     app = _resolve_app(genai_policies)
     policy_name = resource_name(case.case_id, run_context.run_id)
@@ -67,15 +69,12 @@ def test_keyword_policy_round_trip(case, run_context, genai_policies):
                 detail=f"GenAI keyword policy {policy_name} (id={policy.policy_id})",
             )
 
-            found = genai_policies.find_id_by_name(policy_name)
-            case.record(
-                Step.USER_RESULT,
-                ok=bool(found),
-                detail=f"lookup returned id={found}",
-                expected="the policy is listed",
-                actual=found,
-            )
-            assert found, f"GenAI policy {policy_name} was created but is not listed"
+            row = row_named(genai_policies.list(), policy_name)
+            expect_values(case, f"GenAI policy {policy_name} as read back", {
+                "action_type": ("LOGGING", stored(row, "action_type")),
+                "keyword": (["password"], rule_values(stored(row, "rules"), "GENAI_REQUEST_KEYWORD")),
+                "gen_ai_app": ([int(app["id"])], stored(row, "gen_ai_app")),
+            })
             pass_case(case)
     except CleanupWarning as warning:
         cleanup_failed(case, warning)

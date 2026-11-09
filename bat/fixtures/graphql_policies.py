@@ -13,7 +13,7 @@ from typing import Any, Iterator
 
 from bat.clients.errors import ApiError
 from bat.clients.graphql import GraphQLClient
-from bat.fixtures.policies import PolicyHandle, _as_graphql_literal, _cleanup_guard
+from bat.fixtures.policies import PolicyHandle, _as_graphql_literal, _cleanup_guard, confirm_gone
 from bat.fixtures.testdata import GENAI_TOPIC_ALL_RULES
 
 log = logging.getLogger(__name__)
@@ -395,7 +395,7 @@ class GenAIPolicyFactory:
         errors: list[str] = []
         for path in self.LIST_PATHS:
             try:
-                return query_rows(self.gql, path, cache_key="genai")
+                return query_rows(self.gql, path, fields=[*COMMON_POLICY_FIELDS, "gen_ai_app"], cache_key="genai")
             except Exception as exc:
                 errors.append(f"{'.'.join(path)}: {str(exc)[:100]}")
 
@@ -511,7 +511,7 @@ class SaasAccessFactory:
         return query_rows(
             self.gql,
             ("casb", "saas_access"),
-            fields=["id", "name", "enable", "application", "users", "user_groups"],
+            fields=["id", "name", "enable", "action_type", "risk_level", "application", "users", "user_groups"],
             cache_key="casb.saas_access",
         )
 
@@ -653,6 +653,7 @@ class AccessPolicyFactory:
 
     def delete(self, handle: PolicyHandle) -> None:
         self.gql.execute(DELETE_ACCESS_POLICY, {"id": [int(handle.policy_id)]})
+        confirm_gone("ztna access policy", handle, self.list())
 
     @contextmanager
     def temporary(self, *args: Any, **kwargs: Any) -> Iterator[PolicyHandle]:
@@ -888,6 +889,7 @@ class DnsFirewallFactory:
 
     def delete(self, handle: PolicyHandle) -> None:
         self.gql.execute(DELETE_DNS_FIREWALL, {"id": [int(handle.policy_id)]})
+        confirm_gone("dns firewall policy", handle, self.list())
 
     @contextmanager
     def temporary(self, *args: Any, **kwargs: Any) -> Iterator[PolicyHandle]:
@@ -962,6 +964,7 @@ class ApplicationFirewallFactory:
 
     def delete(self, handle: PolicyHandle) -> None:
         self.gql.execute(DELETE_APPLICATION_FIREWALL, {"id": [int(handle.policy_id)]})
+        confirm_gone("application firewall policy", handle, self.list())
 
     @contextmanager
     def temporary(self, *args: Any, **kwargs: Any) -> Iterator[PolicyHandle]:

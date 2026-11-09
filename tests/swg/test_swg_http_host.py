@@ -166,16 +166,26 @@ def test_non_matching_host_allowed(case, run_context, web_policies, browser_sess
 
 
 @pytest.mark.case("BAT-SWG-010")
-@pytest.mark.verifies(Step.USER_RESULT)
+@pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P1")
 def test_priority_decides_and_flipping_it_flips_the_outcome(
-    case, run_context, web_policies, executor
+    case, run_context, web_policies, executor, web_log
 ):
     """겹치는 ALLOW/BLOCK의 판정은 우선순위가 정하고, 순서를 바꾸면 결과도 바뀐다.
 
-    BAT-SWG-007과 달리 같은 두 정책의 순서만 뒤집어 판정이 따라 바뀌는지 본다.
+    같은 두 정책의 순서만 뒤집어 판정이 따라 바뀌는지 본다(예전 BAT-SWG-007의 "ALLOW가 위면 통과"를 포함한다). BLOCK이 먼저일
+    때의 403은 그 요청 자신의 BLOCK 정책 행(마커)이 있어야 정책 차단으로 인정한다. 순서를 바꾼
+    뒤에는 전파 예산 안에 통과가 시작되고, 예산이 지난 뒤에도 연속해서 통과해야 한다(REST로는
+    priority를 다시 읽을 수 없어 트래픽으로 확인한다).
     """
-    from tests.support import curl_until_blocked, curl_until_delivered, expect_delivered
+    from tests.support import (
+        curl_until_blocked,
+        expect_hold,
+        hold_after_change,
+        marked_url,
+        policy_changed,
+    )
+    from bat.traffic.http import curl_status
 
     allow_name = resource_name(case.case_id, run_context.run_id, "allow")
     block_name = resource_name(case.case_id, run_context.run_id, "block")
@@ -197,8 +207,9 @@ def test_priority_decides_and_flipping_it_flips_the_outcome(
 
                 # 가장 작은 번호가 이긴다. BLOCK이 먼저면 요청이 막혀야 한다.
                 web_policies.set_priority([(blocker.policy_id, 1), (allower.policy_id, 2)])
+                block_url = marked_url(BLOCK_TARGET_URL, case, run_context, "block")
                 blocked = curl_until_blocked(
-                    executor, BLOCK_TARGET_URL, run_context.policy_propagation_timeout_sec
+                    executor, block_url, run_context.policy_propagation_timeout_sec
                 )
                 case.record(
                     Step.USER_RESULT,
@@ -211,19 +222,22 @@ def test_priority_decides_and_flipping_it_flips_the_outcome(
                     f"The BLOCK policy at priority 1 did not stop the request "
                     f"(HTTP {blocked.status_code}), so the flip below would prove nothing"
                 )
+                await_security_event(
+                    case, web_log, block_name, timeout_sec=run_context.event_poll_timeout_sec,
+                    policy_id=blocker.policy_id, marker_url=block_url,
+                )
 
                 # 같은 두 정책의 순서만 바꾼다. 판정도 따라 바뀌어야 한다.
                 web_policies.set_priority([(allower.policy_id, 1), (blocker.policy_id, 2)])
-                allowed = curl_until_delivered(
-                    executor,
-                    BLOCK_TARGET_URL,
-                    run_context.policy_propagation_timeout_sec,
-                    request_timeout_sec=15,
+                change = policy_changed(case, "ALLOW moved above the BLOCK")
+                hold = hold_after_change(
+                    lambda: curl_status(executor, BLOCK_TARGET_URL, timeout_sec=15),
+                    want=lambda t: t.delivered, against=lambda t: t.blocked,
+                    changed_at=change.at, budget_sec=run_context.policy_propagation_timeout_sec,
                 )
-                expect_delivered(
-                    case,
-                    allowed,
-                    expected="allowed once the ALLOW outranks the BLOCK",
+                expect_hold(
+                    case, hold,
+                    expected="allowed once the ALLOW outranks the BLOCK, and still allowed after the budget",
                     failure="Moving the ALLOW policy above the BLOCK did not change the "
                     "verdict. Priority is then not what decides",
                 )
@@ -303,17 +317,18 @@ def _record_raw_ip_reach(case, run_context, web_policies, executor, web_log, ip:
 
 
 @pytest.mark.case("BAT-SWG-022")
-@pytest.mark.verifies(Step.USER_RESULT)
+@pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P2")
 def test_host_block_matches_the_hostname_not_the_raw_ip(
     case, run_context, web_policies, executor, web_log
 ):
-    """HTTP_HOST로 막은 호스트명은 차단되고, 같은 목적지를 IP로 직접 접속한 결과는 기록한다.
+    """HTTP_HOST로 막은 호스트명은 차단되고, 같은 목적지를 IP로 직접 접속하면 통과한다.
 
-    HTTP_HOST는 호스트명을 보는 조건이라 IP 직접 접속에는 매칭되지 않는 게 일반적이다.
-    그래서 호스트명 차단만 판정하고, IP 요청 결과와 SSE가 그 요청을 보는지는 근거로 남긴다.
+    HTTP_HOST는 호스트명을 보는 조건이라 IP 직접 접속에는 매칭되지 않는 게 일반적이다(사용자
+    확인). 호스트명 차단은 그 요청 자신의 정책 행(마커)까지 확인하고, IP 직접 접속은 통과
+    (delivered)해야 한다. SSE가 IP 요청을 보는지는 근거로 남긴다.
     """
-    from tests.support import curl_until_blocked
+    from tests.support import curl_until_blocked, expect_delivered, marked_url
     from bat.traffic.http import curl_status, resolve_ip
 
     destination_ip = resolve_ip(executor, BLOCK_TARGET_HOST)
@@ -330,8 +345,9 @@ def test_host_block_matches_the_hostname_not_the_raw_ip(
         ) as policy:
             case.policy_ids.append(policy.policy_id)
 
+            host_url = marked_url(BLOCK_TARGET_URL, case, run_context, "host")
             by_hostname = curl_until_blocked(
-                executor, BLOCK_TARGET_URL, run_context.policy_propagation_timeout_sec
+                executor, host_url, run_context.policy_propagation_timeout_sec
             )
             case.record(
                 Step.USER_RESULT,
@@ -342,19 +358,19 @@ def test_host_block_matches_the_hostname_not_the_raw_ip(
             )
             assert by_hostname.blocked, (
                 f"The policy never blocked {BLOCK_TARGET_URL} by hostname, so "
-                f"testing the IP-direct bypass would prove nothing"
+                f"testing the IP-direct request would prove nothing"
+            )
+            await_security_event(
+                case, web_log, policy_name, timeout_sec=run_context.event_poll_timeout_sec,
+                policy_id=policy.policy_id, marker_url=host_url,
             )
 
             ip_url = marked("ip")
             by_ip = curl_status(executor, ip_url, timeout_sec=15)
-            case.record(
-                Step.USER_RESULT,
-                ok=True,
-                detail=f"by raw IP ({ip_url}) -> {describe(by_ip)} (recorded, not judged: "
-                f"HTTP_HOST matches the hostname, not an IP)",
-                expected="recorded as-is",
-                actual=describe(by_ip),
-                kind=Kind.EVIDENCE,
+            expect_delivered(
+                case, by_ip,
+                expected=f"the raw-IP request {ip_url} goes through: HTTP_HOST matches the hostname, not an IP",
+                failure=f"A policy on HTTP_HOST {BLOCK_TARGET_HOST} also blocked the raw-IP request {ip_url}",
             )
             # 판정할 검사는 모두 끝났다. 뒤따르는 것은 근거만 더하므로, 거기서 남은
             # LOGGING 정책은 ERROR가 아니라 정리 경고다.
@@ -373,21 +389,25 @@ def test_host_block_matches_the_hostname_not_the_raw_ip(
     "대문자 Host를 그대로 보내는 클라이언트(curl)만 HTTP_HOST 차단을 비켜 감, 브라우저는 차단됨",
     match=r"HTTP_HOST matching is case-sensitive: curl with the uppercase Host",
 )
-@pytest.mark.verifies(Step.USER_RESULT)
+@pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P2")
-def test_host_block_is_case_insensitive(case, run_context, web_policies, executor, browser_session):
+def test_host_block_is_case_insensitive(case, run_context, web_policies, executor, browser_session, web_log):
     """HTTP_HOST 조건은 대소문자와 무관하게 매칭된다 — 호스트를 대문자 그대로 보내는 클라이언트(curl 등)도 막혀야 한다.
 
     브라우저는 호스트를 소문자로 정규화해 보내고 curl은 입력한 그대로 보낸다. curl이 막히면 PASS다.
     curl이 응답을 받으면(delivered) 우회가 확인된 것이라 FAIL이고, curl이 응답을 받지 못하면(000,
-    타임아웃) UNVERIFIED다. 브라우저 결과는 근거로만 남긴다. known_issue는 "curl만 우회하고
-    브라우저는 차단됨" 증상일 때만 SKIP으로 바꾼다.
+    타임아웃) UNVERIFIED다. curl이 막히면 그 요청 자신의 정책 행(마커)도 있어야 한다. 브라우저
+    결과는 근거로만 남긴다. known_issue는 "curl만 우회하고 브라우저는 차단됨" 증상일 때만 SKIP으로
+    바꾼다.
     """
     from tests.support import curl_until_blocked
 
     policy_name = resource_name(case.case_id, run_context.run_id)
     rule = WebPolicyFactory.build_rule(Subject.HTTP_HOST, Condition.IS, [BLOCK_TARGET_HOST])
-    uppercase_url = f"https://{BLOCK_TARGET_HOST.upper()}/get"
+    # 호스트는 대문자 그대로 두고 마커만 붙인다(marked_url은 URL 전체를 소문자로 바꾼다).
+    tag = f"{case.case_id}-{run_context.run_id}".lower()
+    uppercase_url = f"https://{BLOCK_TARGET_HOST.upper()}/get?bat={tag}-curl"
+    browser_url = f"https://{BLOCK_TARGET_HOST.upper()}/get?bat={tag}-browser"
 
     try:
         with web_policies.temporary(
@@ -405,12 +425,12 @@ def test_host_block_is_case_insensitive(case, run_context, web_policies, executo
             )
             # curl 단계가 끝나면 어느 쪽이든 전파 예산은 이미 다 썼다. 브라우저 결과는 근거로만 남긴다.
             browser = visit_until_blocked(
-                browser_session, uppercase_url, case.case_id, run_context.policy_propagation_timeout_sec
+                browser_session, browser_url, case.case_id, run_context.policy_propagation_timeout_sec
             )
             case.record(
                 Step.USER_RESULT,
                 ok=browser.blocked,
-                detail=f"browser {uppercase_url}: {describe(browser)} ({browser.detail or browser.url}); "
+                detail=f"browser {browser_url}: {describe(browser)} ({browser.detail or browser.url}); "
                 f"the browser lowercases the host before sending",
                 expected="blocked",
                 actual=describe(browser),
@@ -441,6 +461,10 @@ def test_host_block_is_case_insensitive(case, run_context, web_policies, executo
                     f"A policy blocking {BLOCK_TARGET_HOST!r} blocked neither curl (HTTP "
                     f"{traffic.status_code}) nor the browser ({describe(browser)}) for {uppercase_url}"
                 )
+            await_security_event(
+                case, web_log, policy_name, timeout_sec=run_context.event_poll_timeout_sec,
+                policy_id=policy.policy_id, marker_url=uppercase_url,
+            )
             pass_case(case)
 
     except CleanupWarning as warning:

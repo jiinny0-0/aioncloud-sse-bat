@@ -570,7 +570,8 @@ def test_upload_file_extension_block_is_extension_specific(
 ):
     """HTTP_UPLOADFILE_EXTENSION으로 특정 확장자 업로드만 막으면 그 확장자만 막힌다.
 
-    값은 점 없는 확장자다(GenAI `GENAI_FILE_UPLOAD`의 형식과 다르다).
+    값은 점 없는 확장자다(GenAI `GENAI_FILE_UPLOAD`의 형식과 다르다). 이벤트는 막힌 .txt
+    업로드 요청 자신의 행(마커)이어야 한다.
     """
     policy_name = resource_name(case.case_id, run_context.run_id)
     rule = WebPolicyFactory.build_rule(Subject.HTTP_UPLOADFILE_EXTENSION, Condition.IN, ["txt"])
@@ -585,9 +586,10 @@ def test_upload_file_extension_block_is_extension_specific(
 
             blocked_name = f"{case.case_id}-{run_context.run_id}.txt"
             blocked_path = write_temp_file(executor, "BAT upload-extension probe\n", blocked_name)
+            blocked_url = marked_url(POST_TARGET_URL, case, run_context, "txt")
 
             def probe():
-                result = upload_file(executor, POST_TARGET_URL, remote_path=blocked_path)
+                result = upload_file(executor, blocked_url, remote_path=blocked_path)
                 return result if result.blocked else None
 
             try:
@@ -609,7 +611,9 @@ def test_upload_file_extension_block_is_extension_specific(
 
             allowed_name = f"{case.case_id}-{run_context.run_id}.csv"
             allowed_path = write_temp_file(executor, "BAT upload-extension probe\n", allowed_name)
-            other = upload_file(executor, POST_TARGET_URL, remote_path=allowed_path)
+            other = upload_file(
+                executor, marked_url(POST_TARGET_URL, case, run_context, "csv"), remote_path=allowed_path
+            )
             expect_delivered(
                 case,
                 other,
@@ -620,7 +624,7 @@ def test_upload_file_extension_block_is_extension_specific(
 
             await_security_event(
                 case, web_log, policy_name, timeout_sec=run_context.event_poll_timeout_sec,
-                policy_id=policy.policy_id,
+                policy_id=policy.policy_id, marker_url=blocked_url,
             )
             _check_audit_log(case, run_context, audit_log, policy_name)
             pass_case(case)
@@ -743,9 +747,8 @@ def test_cnc_traffic_signature(case, run_context, web_policies, executor, web_lo
                 case.policy_ids.append(policy.policy_id)
                 case.record(Step.SETUP, ok=True, detail="BLOCK_CNC_TRAFFIC module BLOCK enabled")
 
-                traffic = curl_until_blocked(
-                    executor, SIGNATURE_DENYLIST_URL, run_context.policy_propagation_timeout_sec
-                )
+                url = marked_url(SIGNATURE_DENYLIST_URL, case, run_context, "cnc")
+                traffic = curl_until_blocked(executor, url, run_context.policy_propagation_timeout_sec)
                 case.record(
                     Step.USER_RESULT,
                     ok=traffic.blocked,
@@ -762,7 +765,7 @@ def test_cnc_traffic_signature(case, run_context, web_policies, executor, web_lo
 
                 await_security_event(
                     case, web_log, policy_name, timeout_sec=run_context.event_poll_timeout_sec,
-                    policy_id=policy.policy_id,
+                    policy_id=policy.policy_id, marker_url=url,
                 )
                 pass_case(case)
     except CleanupWarning as warning:
@@ -927,9 +930,9 @@ def test_destination_ip_block_is_ip_specific(
 
             # IP를 고정한다. httpbin.org에는 A 레코드가 여러 개 있어서, 고정하지 않은
             # 요청은 정책이 지정하지 않은 IP로 갈 수 있다.
+            url = marked_url(BLOCK_TARGET_URL, case, run_context, "ip")
             traffic = curl_until_blocked(
-                executor, BLOCK_TARGET_URL, run_context.policy_propagation_timeout_sec,
-                pin_ip=target_ip,
+                executor, url, run_context.policy_propagation_timeout_sec, pin_ip=target_ip,
             )
             case.record(
                 Step.USER_RESULT,
@@ -954,7 +957,7 @@ def test_destination_ip_block_is_ip_specific(
 
             await_security_event(
                 case, web_log, policy_name, timeout_sec=run_context.event_poll_timeout_sec,
-                policy_id=policy.policy_id,
+                policy_id=policy.policy_id, marker_url=url,
             )
             _check_audit_log(case, run_context, audit_log, policy_name)
             pass_case(case)
@@ -987,9 +990,8 @@ def test_risky_website_signature(case, run_context, web_policies, executor, web_
                 case.policy_ids.append(policy.policy_id)
                 case.record(Step.SETUP, ok=True, detail="BLOCK_RISKY_WEBSITES module BLOCK enabled")
 
-                traffic = curl_until_blocked(
-                    executor, SIGNATURE_DENYLIST_URL, run_context.policy_propagation_timeout_sec
-                )
+                url = marked_url(SIGNATURE_DENYLIST_URL, case, run_context, "risky")
+                traffic = curl_until_blocked(executor, url, run_context.policy_propagation_timeout_sec)
                 case.record(
                     Step.USER_RESULT,
                     ok=traffic.blocked,
@@ -1006,7 +1008,7 @@ def test_risky_website_signature(case, run_context, web_policies, executor, web_
 
                 await_security_event(
                     case, web_log, policy_name, timeout_sec=run_context.event_poll_timeout_sec,
-                    policy_id=policy.policy_id,
+                    policy_id=policy.policy_id, marker_url=url,
                 )
                 pass_case(case)
     except CleanupWarning as warning:

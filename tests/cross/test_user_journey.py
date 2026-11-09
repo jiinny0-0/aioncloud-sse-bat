@@ -22,7 +22,9 @@ from bat.fixtures.testdata import (
     keyword_payload,
     marker,
 )
-from bat.models import Step
+from bat.events.web_log import all_of, matches_policy
+from bat.models import Kind, Step
+from bat.traffic.http import curl_status
 from tests.support import (
     await_security_event,
     cleanup_failed,
@@ -30,8 +32,15 @@ from tests.support import (
     environment_error,
     expect_casb_block,
     expect_delivered,
+    expect_no_event,
+    expect_values,
+    marked_url,
+    marker_of,
     pass_case,
     policy_changed,
+    row_named,
+    rule_values,
+    stored,
 )
 
 pytestmark = [
@@ -156,15 +165,12 @@ def test_normal_workday_journey(
             rules=GENAI_TOPIC_ALL_RULES, blockpage_id=0,
         ) as genai_policy:
             case.policy_ids.append(genai_policy.policy_id)
-            found = genai_policies.find_id_by_name(genai_name)
-            case.record(
-                Step.EVENT,
-                ok=bool(found),
-                detail=f"GenAI policy lookup returned id={found}",
-                expected="the policy is listed",
-                actual=found,
-            )
-            assert found, f"GenAI policy {genai_name} was created but is not listed"
+            row = row_named(genai_policies.list(), genai_name)
+            expect_values(case, f"GenAI policy {genai_name} as read back", {
+                "action_type": ("BLOCK", stored(row, "action_type")),
+                "topic": (["all"], rule_values(stored(row, "rules"), "GENAI_REQUEST_TOPIC")),
+                "gen_ai_app": ([int(genai_app["id"])], stored(row, "gen_ai_app")),
+            })
             # 마지막 단계 안에서 부르므로, 모든 검증이 끝난 뒤 이 정책 하나의 삭제가
             # 실패해도 정리 경고(cleanup_failed)로 남는다.
             pass_case(case)
@@ -191,6 +197,9 @@ def test_incident_lockdown_channels_stay_independent(
 
     CASB 전파 예산은 CASB 정책 생성 시각부터 잰다. DLP 채널이 도는 동안 예산이 지났으면
     전파 구간은 판정에서 제외하고(리포트에 사유를 남김), 예산 뒤 요청은 그대로 판정한다.
+    채널마다 그 요청 자신의 행(마커)을 확인하고, 교차 음성 대조로 DLP 업로드 요청의 행이 CASB
+    로그에 없고(그 뒤에 보낸 CASB 요청들의 행이 나타난 다음 판정) CASB 방문 요청들의 행이 DLP
+    웹정책으로 없어야 한다(그 뒤에 보낸 DLP 표지 요청의 행이 나타난 다음 판정).
     """
     token = marker(case.case_id, run_context.run_id)
     dlp = DlpPolicyFactory(rest)
@@ -225,9 +234,10 @@ def test_incident_lockdown_channels_stay_independent(
                     )
 
                     # 채널 A: DLP가 탐지하는 업로드.
+                    dlp_url = marked_url(POST_TARGET_URL, case, run_context, "dlp")
                     dlp_traffic = curl_until_blocked(
                         executor,
-                        POST_TARGET_URL,
+                        dlp_url,
                         run_context.policy_propagation_timeout_sec,
                         method="POST",
                         data=keyword_payload(token),
@@ -245,12 +255,13 @@ def test_incident_lockdown_channels_stay_independent(
                         f"{dlp_traffic.status_code}) — the two channels are not "
                         f"independent"
                     )
-                    dlp_event = await_security_event(
+                    await_security_event(
                         case,
                         web_log,
                         dlp_block_name,
                         timeout_sec=run_context.event_poll_timeout_sec,
                         policy_id=dlp_web_policy.policy_id,
+                        marker_url=dlp_url,
                     )
 
                     # 채널 B: 다른 호스트인 위험 SaaS 앱. BAT-CASB-004와 같이 판정한다.
@@ -274,25 +285,48 @@ def test_incident_lockdown_channels_stay_independent(
                         f"block {CASB_SAAS_APP_NAME}",
                     )
 
-                    # 어느 채널의 이벤트도 상대 정책의 이름을 달고 있으면 안 된다.
-                    mixed_up = dlp_event.get("policy_name") == casb_name or (
-                        casb_event is not None
-                        and str(casb_event.get("rule_name")) == dlp_block_name
-                    )
-                    case.record(
-                        Step.EVENT,
-                        ok=not mixed_up,
-                        detail="cross-checked which policy each event names",
-                        expected="each event names only its own policy",
-                        actual={
-                            "dlp_event_policy": dlp_event.get("policy_name"),
-                            "casb_event_rule": casb_event.get("rule_name") if casb_event else None,
-                        },
-                    )
-                    assert not mixed_up, (
-                        "The DLP and CASB events were attributed to each other's "
-                        "policy — the two simultaneously active BLOCK channels are "
-                        "not actually independent"
+                    # 교차 음성 대조 1: DLP 업로드 요청은 CASB 로그에 없어야 한다. expect_casb_block이
+                    # 그 뒤에 보낸 CASB 요청들의 행을 이미 받았으므로, 이 시점의 CASB 로그로 판정한다.
+                    if casb_event is None:
+                        # expect_casb_block이 이미 확인 불가를 기록했다. 그 사유를 덮지 않고 이 대조만 뺀다.
+                        case.record(
+                            Step.EVENT, ok=False, kind=Kind.UNAVAILABLE,
+                            detail="no CASB row came back for the requests sent after the DLP upload, so "
+                            "whether the DLP upload also landed in the CASB log cannot be judged",
+                        )
+                    else:
+                        dlp_marker = marker_of(dlp_url)
+                        crossed = [e for e in casb_log.events() if marker_of(e.get("request_uri")) == dlp_marker]
+                        case.record(
+                            Step.EVENT,
+                            ok=not crossed,
+                            kind=Kind.ASSERTION,
+                            detail=f"CASB rows for the DLP upload {dlp_url}: {[e.event_id for e in crossed] or 'none'} "
+                            f"(CASB row {casb_event.event_id} for a later request was already in)",
+                            expected="no CASB row for the DLP upload",
+                            actual=[{"id": e.event_id, "rule": e.get("rule_name")} for e in crossed] or "none",
+                        )
+                        assert not crossed, (
+                            f"The DLP upload {dlp_url} also shows up in the CASB log "
+                            f"({[e.get('rule_name') for e in crossed]}) — the two channels are not independent"
+                        )
+
+                    # 교차 음성 대조 2: CASB 방문 요청들(마커 bat=<casb 정책 이름>-<n>)은 DLP 웹정책으로
+                    # 기록되면 안 된다. 그 뒤에 보낸 DLP 표지 요청의 행이 나타난 다음 판정한다.
+                    dlp_rows = matches_policy(dlp_block_name, dlp_web_policy.policy_id)
+                    casb_marker = f"bat={casb_name.lower()}-"
+
+                    def sentinel() -> str:
+                        url = marked_url(POST_TARGET_URL, case, run_context, "sentinel")
+                        curl_status(executor, url, method="POST", data=keyword_payload(token))
+                        return url
+
+                    expect_no_event(
+                        case, web_log,
+                        absent=all_of(dlp_rows, lambda e: casb_marker in str(e.get("full_uri") or "").lower()),
+                        what=f"{dlp_block_name} (DLP) rows for the CASB visits",
+                        sentinel=sentinel, sentinel_match=dlp_rows,
+                        timeout_sec=run_context.event_poll_timeout_sec,
                     )
                     pass_case(case)
 

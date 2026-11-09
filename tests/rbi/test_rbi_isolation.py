@@ -7,12 +7,14 @@
 """
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlsplit
+
 import pytest
 
 from bat.fixtures.naming import resource_name
 from bat.fixtures.policies import CleanupWarning, RbiPolicyFactory
 from bat.fixtures.testdata import BLOCK_TARGET_HOST, BLOCK_TARGET_URL
-from bat.models import Step
+from bat.models import Kind, Step
 from tests.support import (
     cleanup_failed,
     expect_delivered,
@@ -46,23 +48,26 @@ def rb_options_shape() -> dict:
 
 
 @pytest.mark.case("BAT-RBI-002")
-@pytest.mark.verifies(Step.USER_RESULT)
+@pytest.mark.diagnostic
 @pytest.mark.priority("P2")
 @pytest.mark.smoke
 def test_rbi_policies_are_readable(case, console):
-    """RBI 정책 목록을 조회할 수 있다."""
+    """RBI 정책 목록을 조회할 수 있다(환경 점검, 보안 동작이 아님).
+
+    조회가 오류 없이 답하면 통과다. 조회가 실패하면 예외로 ERROR가 된다.
+    """
     from bat.fixtures.graphql_policies import RbiPolicyReader
 
     rows = RbiPolicyReader(console).list()
     case.record(
-        Step.USER_RESULT,
-        ok=isinstance(rows, list),
-        detail=f"{len(rows)} policy/policies; fields: "
+        Step.ACTION,
+        ok=True,
+        kind=Kind.ASSERTION,
+        detail=f"the RBI list query answered: {len(rows)} policy/policies; fields: "
         f"{sorted(rows[0]) if rows else '(none to inspect)'}",
-        expected="a list",
-        actual=type(rows).__name__,
+        expected="the list query answers",
+        actual=f"{len(rows)} row(s)",
     )
-    assert isinstance(rows, list), "No RBI policy list could be read"
     pass_case(case)
 
 
@@ -73,7 +78,12 @@ def test_rbi_policies_are_readable(case, console):
 def test_specific_website_rule_isolates_the_site(
     case, run_context, rbi_policies, browser_session, rb_options_shape
 ):
-    """RBI 정책에 특정 사이트를 지정하면 실제로 격리 세션으로 렌더링된다."""
+    """RBI 정책에 특정 사이트를 지정하면 실제로 격리 세션으로 렌더링된다.
+
+    요청한 호스트가 아닌 호스트에 도착하는 것만으로는 부족하다(다른 리다이렉트일 수 있다).
+    도착한 URL이 격리 세션 형식(`https://<격리 호스트>/view?url=<토큰>`)이어야 한다. 토큰은
+    기록하지 않는다.
+    """
     rbi_name = resource_name(case.case_id, run_context.run_id, "rbi")
     rule = RbiPolicyFactory.website_rule([BLOCK_TARGET_HOST])
 
@@ -94,16 +104,24 @@ def test_specific_website_rule_isolates_the_site(
                 case.case_id,
                 run_context.policy_propagation_timeout_sec,
             )
+            landed = urlsplit(traffic.final_url)
+            view = landed.path.rstrip("/") == "/view" and "url" in parse_qs(landed.query)
+            shown = f"{landed.scheme}://{landed.hostname}{landed.path} (query keys: {sorted(parse_qs(landed.query))})"
             case.record(
                 Step.USER_RESULT,
-                ok=traffic.isolated,
-                detail=traffic.detail,
-                expected="landed on the isolation host, not the origin",
-                actual=traffic.detail,
+                ok=traffic.isolated and view,
+                kind=Kind.ASSERTION,
+                detail=f"{traffic.detail}; landed on {shown}",
+                expected="an isolation session: another host, path /view with a url parameter",
+                actual=shown,
             )
             assert traffic.isolated, (
                 f"Visiting {BLOCK_TARGET_URL} under an RBI rule did not redirect to an "
                 f"isolation host ({traffic.detail}) — the site rendered directly"
+            )
+            assert view, (
+                f"Visiting {BLOCK_TARGET_URL} under an RBI rule left {BLOCK_TARGET_HOST} but did not land on "
+                f"an isolation session (/view?url=...): {shown}"
             )
             pass_case(case)
     except CleanupWarning as warning:

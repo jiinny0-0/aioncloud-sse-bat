@@ -14,15 +14,21 @@ import pytest
 from bat.fixtures.naming import resource_name
 from bat.fixtures.policies import CleanupWarning, InAppControlFactory
 from bat.events.casb_log import in_app_service_name, matches_rule
+from bat.events.poller import PollTimeout, poll_until
 from bat.fixtures.testdata import (
     CASB_IN_APP_ALL_APPS,
+    CASB_OTHER_APP_NAME,
     CASB_OTHER_APP_URL,
     CASB_SAAS_APP_ID,
     CASB_SAAS_APP_NAME,
     CASB_SAAS_URL,
 )
-from bat.models import Step
+from bat.models import Kind, Step
 from tests.support import (
+    expect_values,
+    row_named,
+    stored,
+    unverified,
     await_casb_event,
     cleanup_failed,
     expect_casb_block,
@@ -50,25 +56,25 @@ def application_shape() -> object:
 
 
 @pytest.mark.case("BAT-CASB-005")
-@pytest.mark.verifies(Step.USER_RESULT)
+@pytest.mark.diagnostic
 @pytest.mark.priority("P2")
 @pytest.mark.smoke
 def test_in_app_control_is_readable(case, in_app_control):
-    """CASB In-App Control 정책 목록을 조회할 수 있다."""
+    """CASB In-App Control 정책 목록을 조회할 수 있다(환경 점검, 보안 동작이 아님).
+
+    조회가 오류 없이 답하면 통과다. 조회가 실패하면 예외로 ERROR가 된다.
+    """
     from bat.fixtures.graphql_policies import InAppControlReader
 
     rows = InAppControlReader(in_app_control.gql).list()
     case.record(
-        Step.USER_RESULT,
-        ok=isinstance(rows, list),
-        detail=f"{len(rows)} policy/policies; fields: "
+        Step.ACTION,
+        ok=True,
+        kind=Kind.ASSERTION,
+        detail=f"SIA.casb.in_app_control answered: {len(rows)} policy/policies; fields: "
         f"{sorted(rows[0]) if rows else '(none to inspect)'}",
-        expected="a list",
-        actual=type(rows).__name__,
-    )
-    assert isinstance(rows, list), (
-        "SIA.casb.in_app_control returned nothing, so CASB policies cannot be "
-        "managed through the API in this tenant"
+        expected="the list query answers",
+        actual=f"{len(rows)} row(s)",
     )
     pass_case(case)
 
@@ -80,7 +86,13 @@ def test_in_app_control_is_readable(case, in_app_control):
 def test_in_app_control_policy_round_trip(
     case, run_context, in_app_control, application_shape
 ):
-    """CASB 정책을 생성하면 목록에 반영되고, 삭제하면 사라진다."""
+    """CASB 정책을 생성하면 요청한 내용대로 저장되고, 삭제하면 사라진다.
+
+    생성 직후 목록을 다시 읽어 action_type·risk_level이 요청값과 같은지 본다(목록에 있다는 것은
+    생성이 이미 확인한다). 삭제는 팩토리가 목록에서 사라진 것까지 확인한다.
+    """
+    from bat.fixtures.graphql_policies import InAppControlReader
+
     policy_name = resource_name(case.case_id, run_context.run_id)
 
     try:
@@ -99,15 +111,11 @@ def test_in_app_control_policy_round_trip(
                 detail=f"in-app control {policy_name} (id={handle.policy_id})",
             )
 
-            found = in_app_control.find_id_by_name(policy_name)
-            case.record(
-                Step.USER_RESULT,
-                ok=bool(found),
-                detail=f"lookup returned id={found}",
-                expected="the policy is listed",
-                actual=found,
-            )
-            assert found, f"CASB policy {policy_name} was created but is not listed"
+            row = row_named(InAppControlReader(in_app_control.gql).list(), policy_name)
+            expect_values(case, f"in-app control {policy_name} as read back", {
+                "action_type": ("LOGGING", stored(row, "action_type")),
+                "risk_level": ("Minor", stored(row, "risk_level")),
+            })
             pass_case(case)
     except CleanupWarning as warning:
         cleanup_failed(case, warning)
@@ -117,7 +125,11 @@ def test_in_app_control_policy_round_trip(
 @pytest.mark.verifies(Step.USER_RESULT)
 @pytest.mark.priority("P1")
 def test_saas_access_policy_round_trip(case, run_context, saas_access):
-    """CASB SaaS Access 정책을 생성하면 목록에 반영되고, 삭제하면 사라진다."""
+    """CASB SaaS Access 정책을 생성하면 요청한 내용대로 저장되고, 삭제하면 사라진다.
+
+    생성 직후 목록을 다시 읽어 action_type·risk_level·application(앱 id)이 요청값과 같은지 본다.
+    application이 객체로 읽히면 saas_desc_id(없으면 id)를 앱 id로 본다.
+    """
     policy_name = resource_name(case.case_id, run_context.run_id)
 
     try:
@@ -135,15 +147,15 @@ def test_saas_access_policy_round_trip(case, run_context, saas_access):
                 f"application=[{CASB_SAAS_APP_ID}])",
             )
 
-            found = saas_access.find_id_by_name(policy_name)
-            case.record(
-                Step.USER_RESULT,
-                ok=bool(found),
-                detail=f"lookup returned id={found}",
-                expected="the policy is listed",
-                actual=found,
-            )
-            assert found, f"SaaS Access policy {policy_name} was created but is not listed"
+            row = row_named(saas_access.list(), policy_name)
+            apps = stored(row, "application")
+            if isinstance(apps, list):
+                apps = [a.get("saas_desc_id", a.get("id")) if isinstance(a, dict) else a for a in apps]
+            expect_values(case, f"SaaS Access {policy_name} as read back", {
+                "action_type": ("LOGGING", stored(row, "action_type")),
+                "risk_level": ("Minor", stored(row, "risk_level")),
+                "application": ([CASB_SAAS_APP_ID], apps),
+            })
             pass_case(case)
     except CleanupWarning as warning:
         cleanup_failed(case, warning)
@@ -157,8 +169,10 @@ def test_saas_access_detects_only_the_app_it_names(
 ):
     """CASB SaaS Access가 지정한 SaaS 앱만 탐지하고 다른 앱은 건드리지 않는다.
 
-    한 앱으로 좁힌 정책을 걸고 그 앱과 다른 앱을 둘 다 방문해, 그 앱만 기록되는지 본다.
-    CASB 앱 분류는 curl이 아니라 실제 브라우저 방문에만 걸린다.
+    한 앱으로 좁힌 정책을 걸고 그 앱과 다른 앱을 둘 다 방문한다. 두 방문 모두 렌더링돼야 하고
+    (LOGGING), 그 앱의 행이 남아야 한다. 다른 앱의 행이 없다는 판정은 그 뒤에 보낸 표지 방문
+    (그 앱)의 새 행이 나타난 다음에 한다. CASB 앱 분류는 curl이 아니라 실제 브라우저 방문에만
+    걸린다.
     """
     policy_name = resource_name(case.case_id, run_context.run_id)
 
@@ -174,7 +188,7 @@ def test_saas_access_detects_only_the_app_it_names(
             )
 
             traffic = browser_session.visit(CASB_SAAS_URL, case_id=case.case_id)
-            browser_session.visit(CASB_OTHER_APP_URL, case_id=case.case_id)
+            other = browser_session.visit(CASB_OTHER_APP_URL, case_id=case.case_id)
             # fatal=False: 여기서 차단되면 실패로 기록은 되지만, 아래 이벤트 검사는
             # 그대로 실행된다.
             expect_delivered(
@@ -182,6 +196,13 @@ def test_saas_access_detects_only_the_app_it_names(
                 traffic,
                 expected="page rendered (LOGGING does not block)",
                 failure=f"A LOGGING policy blocked {CASB_SAAS_URL}",
+                fatal=False,
+            )
+            expect_delivered(
+                case,
+                other,
+                expected=f"{CASB_OTHER_APP_NAME} rendered (the policy names only {CASB_SAAS_APP_NAME})",
+                failure=f"A LOGGING policy scoped to {CASB_SAAS_APP_NAME} blocked {CASB_OTHER_APP_URL}",
                 fatal=False,
             )
 
@@ -193,10 +214,28 @@ def test_saas_access_detects_only_the_app_it_names(
                 expected_service=CASB_SAAS_APP_NAME,
             )
 
+            mine = matches_rule(policy_name)
+            seen = {e.event_id for e in casb_log.events() if mine(e)}
+            browser_session.visit(CASB_SAAS_URL, case_id=case.case_id)  # 표지 방문
+            try:
+                poll_until(
+                    lambda: next(
+                        (e for e in casb_log.events() if mine(e) and e.event_id not in seen
+                         and in_app_service_name(e) == CASB_SAAS_APP_NAME), None,
+                    ),
+                    timeout_sec=run_context.event_poll_timeout_sec,
+                    description=f"a new {CASB_SAAS_APP_NAME} row after the sentinel visit",
+                )
+            except PollTimeout as timeout:
+                unverified(
+                    case, Step.EVENT,
+                    f"the sentinel visit to {CASB_SAAS_URL} left no new row, so whether "
+                    f"{CASB_OTHER_APP_NAME} was recorded cannot be judged: {timeout}",
+                )
             others = {
                 in_app_service_name(event)
-                for event in casb_log.events(lookback_min=5)
-                if matches_rule(policy_name)(event)
+                for event in casb_log.events()
+                if mine(event)
             } - {CASB_SAAS_APP_NAME}
             case.record(
                 Step.EVENT,

@@ -59,20 +59,6 @@ def token_budget(run_context) -> TokenBudget:
     return TokenBudget(run_context.token_budget)
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _warn_about_leftovers(run_context):
-    """이전 실행이 켜진 정책을 남겼으면 경고한다.
-
-    남은 BLOCK 정책은 뒤따르는 모든 케이스의 결과를 바꾸고, 그로 인한 실패는 잔여물이
-    아니라 제품 결함처럼 보인다.
-    """
-    yield
-    log.info(
-        "Run finished. If any case reported a cleanup warning, run 'bat sweep' "
-        "to check for leftover policies before trusting the next run."
-    )
-
-
 @pytest.fixture(scope="session")
 def collector(run_context) -> Iterator[ResultCollector]:
     collector = ResultCollector(
@@ -409,6 +395,7 @@ def pytest_runtest_makereport(item, call):
         if status is Status.SKIP:
             report.outcome = "skipped"
             report.longrepr = (str(item.path), item.location[1] or 0, reason)
+    reason = _with_cleanup_note(status, reason, case_result.cleanup_warnings)
     case_result.status = status
     case_result.verdict_reason = reason
     if status in (Status.FAIL, Status.ERROR):
@@ -425,6 +412,14 @@ def pytest_runtest_makereport(item, call):
         ("bat_status", status.value),
         ("bat_reason", reason),
     ]
+
+
+def _with_cleanup_note(status: Status, reason: str, warnings: list[str]) -> str:
+    """검사는 전부 통과했지만(PASS) 정리가 실패한 케이스는 사유에 그 사실을 남긴다. 판정은 바꾸지
+    않는다. 남은 리소스는 실행 종료 검사(pytest_sessionfinish)가 실행 실패로 만든다."""
+    if status is Status.PASS and warnings:
+        return f"{reason}; cleanup failed after the checks passed: {'; '.join(warnings)}"
+    return reason
 
 
 def pytest_report_teststatus(report, config):
@@ -510,6 +505,46 @@ def pytest_collection_finish(session):
                             int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1")))
     except Exception as exc:  # noqa: BLE001 - 진행 상황 기록 때문에 실행이 멈추면 안 된다
         log.warning("No progress plan for this run: %s", exc)
+
+
+def _ran_bat_cases(terminalreporter) -> bool:
+    """이번 세션에서 BAT 케이스(case fixture를 쓴 테스트)가 하나라도 판정됐는가. selfcheck만
+    돌린 세션은 환경에 접속하지 않는다."""
+    return any(
+        dict(getattr(report, "user_properties", []) or []).get("bat_status")
+        for reports in terminalreporter.stats.values()
+        for report in reports
+    )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """이번 실행(run_id)이 만든 리소스가 남았으면 실행을 실패로 끝낸다.
+
+    xdist에서는 모든 워커가 끝난 뒤 컨트롤러에서만 본다(워커끼리는 서로의 진행 중인 리소스를
+    잔여물로 볼 수 있다). 목록을 읽지 못하면 확인 못 함으로 알리고 실패로 만들지는 않는다.
+    """
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is None or not _ran_bat_cases(reporter):
+        return
+    from bat.leftovers import find_run_leftovers
+
+    try:
+        context = build_run_context(profile_name=env("BAT_PROFILE", "qa"))
+        found, unread = find_run_leftovers(context, context.run_id)
+    except Exception as exc:  # noqa: BLE001 - 확인 못 함으로 알린다
+        reporter.write_line(f"BAT leftover check could not run: {type(exc).__name__}: {exc}", yellow=True)
+        return
+    for line in unread:
+        reporter.write_line(f"BAT leftover check: not confirmed, {line}", yellow=True)
+    if not found:
+        return
+    reporter.section("BAT resources this run left behind (the run fails)", red=True)
+    for line in found:
+        reporter.write_line(line, red=True)
+    reporter.write_line("Remove them with 'bat sweep --delete' before the next run.")
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 def pytest_configure(config):

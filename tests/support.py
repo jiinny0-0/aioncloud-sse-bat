@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -234,7 +235,9 @@ def curl_until_unreachable(executor, url: str, timeout_sec: int, **kwargs):
 
 
 def curl_until_reachable(executor, url: str, timeout_sec: int, **kwargs):
-    """위의 반대 방향으로, 정책을 지우면 연결이 복구돼야 하는 케이스용이다."""
+    """위의 반대 방향으로, 정책을 지우면 연결이 복구돼야 하는 케이스용이다. 아무 응답이
+    아니라 전달(TrafficResult.delivered)에서 멈춘다: 403·5xx도 연결은 된 것이지만 요청이
+    통과했다는 근거는 아니다."""
     from bat.traffic.http import curl_status
 
     last: dict = {}
@@ -242,7 +245,7 @@ def curl_until_reachable(executor, url: str, timeout_sec: int, **kwargs):
     def probe():
         result = curl_status(executor, url, **kwargs)
         last["result"] = result
-        return result if result.status_code else None
+        return result if result.delivered else None
 
     try:
         return poll_until(
@@ -1505,3 +1508,272 @@ def expect_no_event(
     assert not found, (
         f"Found {what}: {[(e.event_id, e.get('full_uri')) for e in found[:3]]}"
     )
+
+
+# -- 차단을 정책의 것으로 인정하기, 기준선, 저장값 재조회 ----------------------------
+#
+# 이름 해석 실패(SERVFAIL/NXDOMAIN), 연결 실패(curl 000), 차단 페이지 문구 없는 403은 그것만으로는
+# 정책이 막았다는 근거가 아니다(리졸버 장애, 경로 문제, 원 서버의 거부일 수 있다). 그래서 이런
+# 차단은 그 정책의 로그 행이 함께 있어야 정책 차단으로 인정한다(await_network_row). 정책을
+# 만들기 전에는 대상이 정상 해석·도달되는지 먼저 확인한다(require_baseline). 그래야 정책 뒤의
+# 실패를 정책의 효과로 읽을 수 있다.
+
+
+def require_baseline(case: CaseResult, traffic: TrafficResult, *, what: str) -> None:
+    """정책을 만들기 전 기준선. 대상이 지금 정상 해석·도달되지 않으면 정책 뒤의 실패를 차단으로
+    셀 수 없으므로 UNVERIFIED다."""
+    if traffic.delivered:
+        case.record(Step.SETUP, ok=True, kind=Kind.EVIDENCE, detail=f"baseline {what}: {describe(traffic)}")
+        return
+    unverified(
+        case, Step.USER_RESULT,
+        f"baseline: {what} gave {describe(traffic)} before any policy existed ({traffic.detail}), so a "
+        f"failure after the policy cannot be counted as its block",
+    )
+
+
+def dns_baseline(case: CaseResult, executor, host: str, timeout_sec: float) -> None:
+    """host가 정책 전에 주소로 해석되는가. 직전 케이스의 DNS 정책이 아직 풀리는 중일 수 있어
+    timeout_sec까지 기다린다."""
+    require_baseline(case, dns_lookup_until_allowed(executor, host, timeout_sec), what=f"{host} resolves")
+
+
+def reach_baseline(case: CaseResult, executor, url: str, timeout_sec: float, **kwargs) -> None:
+    """url이 정책 전에 응답(delivered)하는가. kwargs는 curl_status로 간다(pin_ip 등)."""
+    require_baseline(
+        case, curl_until_delivered(executor, url, timeout_sec, **kwargs), what=f"{url} answers"
+    )
+
+
+def network_rows(network_log: NetworkLogReader, kind: str, policy_name: str) -> list[SecurityEvent]:
+    """policy_name(정확히 일치)의 DNS("dns") 또는 Application Firewall("firewall") 로그 행."""
+    read = getattr(network_log, {"dns": "dns_events", "firewall": "firewall_events"}[kind])
+    mine = matches_network_policy(policy_name)
+    return [event for event in read() if mine(event)]
+
+
+def not_aaaa(value: object) -> bool:
+    """nslookup은 A와 AAAA를 함께 묻는다. A 조회 하나의 행을 가릴 때 AAAA 행을 뺀다."""
+    return str(value or "").upper() != "AAAA"
+
+
+def ip_of(value: object) -> str:
+    """로그의 주소 필드("<ip>" 또는 "<ip>:<port>")에서 IPv4 주소만."""
+    text = str(value or "")
+    return text.rsplit(":", 1)[0] if text.count(":") == 1 else text
+
+
+def await_network_row(
+    case: CaseResult,
+    network_log: NetworkLogReader,
+    policy_name: str,
+    *,
+    kind: str,
+    timeout_sec: float,
+    what: str,
+    after: set[str] | frozenset[str] = frozenset(),
+    where: dict[str, Callable[[object], bool]] | None = None,
+    expected_action: str = "BLOCK",
+) -> SecurityEvent:
+    """그 차단이 policy_name의 것이라는 근거: after에 없는 새 행 중 where(필드 → 조건)를
+    만족하는 행을 기다리고, 그 행의 action을 확인한다.
+
+    after는 요청 직전에 network_rows로 모은 id다(DNS 로그에는 도메인 필드가 없어 요청
+    전후의 id로 그 요청의 행을 가린다). where는 행을 그 요청에 묶는 조건이다(예: dst_ip가
+    그 IP, record_type이 AAAA가 아님). 행이 없으면 EVENT FAIL이다.
+    """
+    conditions = where or {}
+
+    def wanted(event: SecurityEvent) -> bool:
+        return event.event_id not in after and all(
+            check(event.raw.get(field)) for field, check in conditions.items()
+        )
+
+    try:
+        row = poll_until(
+            lambda: next((e for e in network_rows(network_log, kind, policy_name) if wanted(e)), None),
+            timeout_sec=timeout_sec,
+            description=f"a {kind} row of {policy_name} for {what}",
+        )
+    except PollTimeout as timeout:
+        others = [
+            {"id": e.event_id, **{f: e.raw.get(f) for f in ("action", *conditions)}}
+            for e in network_rows(network_log, kind, policy_name)
+            if e.event_id not in after
+        ][:5]
+        case.record(
+            Step.EVENT, ok=False, kind=Kind.ASSERTION, detail=f"{what}: {timeout}",
+            expected=f"a new {kind} row of {policy_name}" + (f" with {sorted(conditions)}" if conditions else ""),
+            actual=others or "no new row of this policy",
+        )
+        raise AssertionError(
+            f"No {kind} security log row of {policy_name} for {what}, so the failure is not "
+            f"attributable to the policy (new rows of the policy: {others or 'none'})"
+        ) from timeout
+    case.event_ids.append(row.event_id)
+    action = str(row.get("action") or "")
+    ok = action.upper() == expected_action.upper()
+    case.record(
+        Step.EVENT, ok=ok, kind=Kind.ASSERTION,
+        detail=f"{kind}_security_log_id={row.event_id} for {what}",
+        expected={"policy": policy_name, "action": expected_action, **{f: "matched" for f in conditions}},
+        actual={"policy": row.get("policy_name"), "action": action, **{f: row.raw.get(f) for f in conditions}},
+    )
+    assert ok, f"The {kind} row {row.event_id} of {policy_name} for {what} records action {action!r}, expected {expected_action}"
+    return row
+
+
+MISSING = object()
+
+
+def _plain(value: object) -> object:
+    """조회 응답과 요청을 비교할 수 있는 형태로. 객체는 id로({id, name} 사용자 등), 리스트는
+    정렬한 문자열 목록으로, 나머지는 문자열로."""
+    if isinstance(value, dict) and "id" in value:
+        return str(value["id"])
+    if isinstance(value, (list, tuple)):
+        return sorted(str(_plain(item)) for item in value)
+    return str(value)
+
+
+def rule_values(rules: object, subject: str) -> object:
+    """저장된 rules(중첩 깊이 무관)에서 subject가 같은 rule들의 value를 모은다. 그런 rule이
+    없으면 [], rules 자체가 없으면(MISSING) MISSING."""
+    if rules is MISSING:
+        return MISSING
+    found: list = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            if str(node.get("subject")) == subject:
+                value = node.get("value")
+                found.extend(value if isinstance(value, list) else [value])
+            for child in node.values():
+                if isinstance(child, (list, dict)):
+                    walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(rules)
+    return found
+
+
+def expect_values(
+    case: CaseResult, what: str, compared: dict[str, tuple[object, object]], *, step: Step = Step.USER_RESULT
+) -> None:
+    """기대값과 다시 읽은(또는 다른 기록에서 얻은) 값을 비교한다. compared는 {필드: (기대값,
+    읽은 값)}이고, 읽지 못한 필드는 MISSING으로 준다. 하나라도 다르면 FAIL, 다른 것 없이 읽지
+    못한 필드가 있으면 UNVERIFIED, 전부 같으면 통과다. 객체는 id로, 리스트는 순서 없이 비교한다."""
+    differ = {k: (want, got) for k, (want, got) in compared.items() if got is not MISSING and _plain(want) != _plain(got)}
+    missing = [k for k, (_, got) in compared.items() if got is MISSING]
+    read = {k: got for k, (_, got) in compared.items() if got is not MISSING}
+    expected = {k: want for k, (want, _) in compared.items()}
+    if differ:
+        case.record(
+            step, ok=False, kind=Kind.ASSERTION, expected=expected, actual=read,
+            detail=f"{what}: differs from what was expected: {differ}",
+        )
+        raise AssertionError(f"{what} differs from what was expected: {differ}")
+    if missing:
+        unverified(case, step, f"{what}: could not read {missing} (read: {read})")
+    case.record(
+        step, ok=True, kind=Kind.ASSERTION, expected=expected, actual=read,
+        detail=f"{what}: as expected ({sorted(compared)})",
+    )
+
+
+def stored(row: dict | None, name: str) -> object:
+    """다시 읽은 행의 필드. 행이나 필드가 없으면 MISSING."""
+    return row.get(name, MISSING) if isinstance(row, dict) else MISSING
+
+
+def expect_dns_block(
+    case: CaseResult,
+    executor,
+    network_log: NetworkLogReader,
+    policy_name: str,
+    host: str,
+    *,
+    budget_sec: float,
+    event_timeout_sec: float,
+    failure: str,
+    expected: str = "",
+) -> SecurityEvent:
+    """host 조회가 막히고(해석 실패 또는 차단 페이지 주소), 그 조회 뒤 policy_name의 새 A 행이
+    BLOCK으로 남아야 한다. 행이 없으면 그 실패를 정책의 차단으로 인정하지 않는다(EVENT FAIL).
+    그 행을 돌려준다."""
+    seen = {e.event_id for e in network_rows(network_log, "dns", policy_name)}
+    traffic = dns_lookup_until_blocked(executor, host, budget_sec)
+    case.record(
+        Step.USER_RESULT, ok=traffic.blocked, kind=Kind.ASSERTION, detail=traffic.detail,
+        expected=expected or f"{host}: name resolution fails", actual=describe(traffic),
+    )
+    assert traffic.blocked, f"{failure}: {traffic.detail}"
+    return await_network_row(
+        case, network_log, policy_name, kind="dns", after=seen, where={"record_type": not_aaaa},
+        timeout_sec=event_timeout_sec, what=f"the {host} lookup",
+    )
+
+
+def expect_unreachable(
+    case: CaseResult,
+    executor,
+    network_log: NetworkLogReader,
+    policy_name: str,
+    url: str,
+    ip: str,
+    *,
+    budget_sec: float,
+    event_timeout_sec: float,
+    failure: str,
+    expected: str = "connection cut",
+) -> SecurityEvent:
+    """ip로 붙인(pin_ip) url 요청의 연결이 끊기고, policy_name의 새 행이 dst_ip가 그 ip인 BLOCK으로
+    남아야 한다. 행이 없으면 연결 실패를 정책의 차단으로 인정하지 않는다(EVENT FAIL). 그 행을
+    돌려준다."""
+    seen = {e.event_id for e in network_rows(network_log, "firewall", policy_name)}
+    traffic = curl_until_unreachable(executor, url, budget_sec, pin_ip=ip)
+    cut = not traffic.status_code
+    case.record(
+        Step.USER_RESULT, ok=cut, kind=Kind.ASSERTION, detail=traffic.detail,
+        expected=f"{expected} ({url} via {ip})", actual=describe(traffic),
+    )
+    assert cut, f"{failure} ({describe(traffic)})"
+    return await_network_row(
+        case, network_log, policy_name, kind="firewall", after=seen,
+        where={"dst_ip": lambda value: ip_of(value) == ip},
+        timeout_sec=event_timeout_sec, what=f"the connection to {ip}",
+    )
+
+
+# 커넥터의 device_id는 하드웨어(SMBIOS) UUID다(웹·CASB 보안로그와 인증 로그의 device_id가 이
+# 값과 같다). 단말에 device_id가 설정돼 있으면 그 값이 우선한다.
+DEVICE_ID_SCRIPT = "(Get-CimInstance Win32_ComputerSystemProduct).UUID"
+_UUID_RE = re.compile(r"^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$")
+
+
+def endpoint_device_id(lane, executor) -> tuple[str, str]:
+    """레인 단말의 (device_id, 그 값의 출처)를 반환한다. 모르면 ""이다."""
+    configured = str(getattr(lane.endpoint, "device_id", "") or "").strip()
+    if configured:
+        return configured, "configured device_id"
+    value = executor.run_powershell(DEVICE_ID_SCRIPT).stdout.strip()
+    # 값을 설정한 적 없는 펌웨어는 전부 F나 전부 0을 보고하는데, 이는 어떤 기기도 가리키지 않는다.
+    if _UUID_RE.match(value) and len(set(value.replace("-", ""))) > 1:
+        return value, "hardware UUID"
+    return "", f"hardware UUID unusable: {value[:40]!r}"
+
+
+def row_named(rows: list[dict], name: str) -> dict | None:
+    """다시 읽은 목록에서 그 이름의 행. 이름이 같은 행이 없으면 description에 그 이름을 담은
+    행(GenAI처럼 이름을 description에 쓰는 정책)."""
+    exact = next((row for row in rows if str(row.get("name") or "") == name), None)
+    return exact or next((row for row in rows if name in str(row.get("description") or "")), None)
+
+
+def as_list(value: object) -> object:
+    """단일 값으로 읽힌 필드를 리스트로(비교용). MISSING과 리스트는 그대로."""
+    if value is MISSING or isinstance(value, list):
+        return value
+    return [] if value is None else [value]

@@ -34,12 +34,12 @@ from bat.traffic.http import BLOCK_STATUS_CODES, is_delivered_status, resolve_ip
 from tests.support import (
     cleanup_failed,
     describe,
+    endpoint_device_id,
     environment_error,
     expect_delivered,
     pass_case,
     unverified,
 )
-from tests.ztna.test_ztna_access import _endpoint_device_id
 
 log = logging.getLogger(__name__)
 
@@ -220,7 +220,7 @@ def _expect_row(
 
 
 def _device(lane, executor) -> str:
-    device, _ = _endpoint_device_id(lane, executor)
+    device, _ = endpoint_device_id(lane, executor)
     return device
 
 

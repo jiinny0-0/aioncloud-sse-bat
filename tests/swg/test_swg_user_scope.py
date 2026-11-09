@@ -17,6 +17,8 @@ from bat.events.poller import PollTimeout, poll_until
 from bat.events.web_log import matches_policy
 from bat.models import Step
 from tests.support import (
+    expect_values,
+    stored,
     await_security_event,
     cleanup_failed,
     environment_error,
@@ -227,7 +229,11 @@ def _find_other_user(users: UserFactory, *, exclude: int) -> int | None:
 @pytest.mark.verifies(Step.USER_RESULT)
 @pytest.mark.priority("P1")
 def test_new_user_can_be_created_and_targeted(case, run_context, rest, web_policies):
-    """새로 만든 사용자를 정책 대상으로 지정할 수 있고, 삭제까지 정상 처리된다."""
+    """새로 만든 사용자를 정책 대상으로 지정할 수 있고, 삭제까지 정상 처리된다.
+
+    사용자를 다시 읽어 login_id가 같은지, 정책을 다시 읽어 users가 정확히 그 사용자이고
+    user_groups가 비어 있으며 action_type이 BLOCK인지 본다.
+    """
     users = UserFactory(rest)
     login_id = f"bat-{case.case_id.lower()}-{run_context.run_id[-6:]}@bat.local"
     policy_name = resource_name(case.case_id, run_context.run_id)
@@ -239,6 +245,9 @@ def test_new_user_can_be_created_and_targeted(case, run_context, rest, web_polic
 
             fetched = users.find_by_id(user.user_id)
             assert fetched, f"User {user.user_id} was created but cannot be read back"
+            expect_values(case, f"user {user.user_id} as read back", {
+                "login_id": (login_id, stored(fetched, "login_id")),
+            })
 
             rule = WebPolicyFactory.build_rule(
                 Subject.HTTP_HOST, Condition.IS, [BLOCK_TARGET_HOST]
@@ -252,19 +261,12 @@ def test_new_user_can_be_created_and_targeted(case, run_context, rest, web_polic
             ) as policy:
                 case.policy_ids.append(policy.policy_id)
 
-                stored = web_policies.get(policy)
-                targeted = stored.get("users") or []
-                case.record(
-                    Step.USER_RESULT,
-                    ok=int(user.user_id) in [int(u) for u in targeted if str(u).isdigit()],
-                    detail=f"policy targets users {targeted}",
-                    expected=[int(user.user_id)],
-                    actual=targeted,
-                )
-                assert any(str(u) == str(user.user_id) for u in targeted), (
-                    f"Policy {policy_name} was created with user {user.user_id} but stores "
-                    f"{targeted}"
-                )
+                saved = web_policies.get(policy)
+                expect_values(case, f"web policy {policy_name} as read back", {
+                    "users": ([int(user.user_id)], stored(saved, "users")),
+                    "user_groups": ([], stored(saved, "user_groups")),
+                    "action_type": (ActionType.BLOCK, stored(saved, "action_type")),
+                })
                 pass_case(case)
 
     except CleanupWarning as warning:

@@ -15,15 +15,16 @@ from bat.fixtures.enums import ActionType, Condition, RiskLevel, Subject
 from bat.fixtures.naming import resource_name
 from bat.fixtures.policies import CleanupWarning, WebPolicyFactory
 from bat.fixtures.testdata import ECHO_HOSTS, echo_url
-from bat.models import Step
+from bat.models import Kind, Step
 from tests.support import (
     across_targets,
     await_security_event,
     cleanup_failed,
-    environment_error,
     expect_allowed,
     expect_block,
+    marked_url,
     pass_case,
+    unverified,
     visit_until_blocked,
 )
 
@@ -43,19 +44,20 @@ def test_builtin_category_matches_traffic(
 ):
     """내장 HTTP 카테고리 조건이 실제 트래픽에 매칭되고 이벤트에 기록된다.
 
-    대상 호스트마다(ECHO_HOSTS) 그 호스트의 카테고리로 정책을 만들어 같은 확인을 한다.
-    카테고리를 알아내지 못한 호스트는 기록만 하고 빼며, 하나도 없으면 실행 조건 미비다.
+    대상 호스트마다(ECHO_HOSTS) 그 호스트의 카테고리로 정책을 만들어 같은 확인을 한다. 마커를
+    단 방문 자신의 행이 이 정책으로 남아야 하고, 그 행의 categories에 정책에 설정한 카테고리
+    id가 있어야 한다. 카테고리를 알아내지 못한 호스트는 확인할 수 없어 UNVERIFIED로 센다.
     """
-    targets: dict[str, dict] = {}
-    for host in ECHO_HOSTS:
-        category = _category_of(case, run_context, web_policies, browser_session, web_log, host)
-        if category:
-            targets[host] = category
-    if not targets:
-        environment_error(f"No category could be learned for any of {list(ECHO_HOSTS)}")
+    targets: dict[str, dict | None] = {
+        host: _category_of(case, run_context, web_policies, browser_session, web_log, host)
+        for host in ECHO_HOSTS
+    }
 
     def check(host: str) -> None:
-        category, url = targets[host], echo_url(host)
+        category = targets[host]
+        if not category:
+            unverified(case, Step.USER_RESULT, f"the category of {host} could not be learned, so no category policy was tried")
+        url = marked_url(echo_url(host), case, run_context, host.split(".")[0])
         policy_name = resource_name(case.case_id, run_context.run_id, host.split(".")[0])
         rule = WebPolicyFactory.build_rule(
             Subject.HTTP_CATEGORY, Condition.IN, [str(category["id"])]
@@ -72,34 +74,31 @@ def test_builtin_category_matches_traffic(
             case.record(Step.ACTION, ok=True, detail=f"browser visited {url}")
             expect_allowed(case, traffic, url)
 
+            # 카테고리가 관리 API 호스트도 덮으므로, 그 방문 자신의 행(마커)만 인정한다.
             event = await_security_event(
                 case,
                 web_log,
                 policy_name,
                 timeout_sec=run_context.event_poll_timeout_sec,
                 expected_action="LOGGING",
-                expected_target=host,
-                # 카테고리가 관리 API 호스트도 덮으므로, 이 정책 이름을 단 가장 최근
-                # 이벤트는 러너 자신의 트래픽인 경우가 많다.
-                target_in_search=True,
                 policy_id=policy.policy_id,
+                marker_url=url,
             )
 
-            names = [
-                str(item.get("name", ""))
-                for item in (event.get("categories") or [])
-                if isinstance(item, dict)
-            ]
+            recorded = [item for item in (event.get("categories") or []) if isinstance(item, dict)]
+            ids = [str(item.get("id")) for item in recorded]
+            ok = str(category.get("id")) in ids
             case.record(
                 Step.EVENT,
-                ok=bool(names),
-                detail=f"categories on the event for {host}: {names}",
-                expected=f"contains {category.get('name')}",
-                actual=names,
+                ok=ok,
+                kind=Kind.ASSERTION,
+                detail=f"categories on the event for {host}: {recorded}",
+                expected=f"contains the configured category id {category.get('id')} ({category.get('name')})",
+                actual=ids,
             )
-            assert names, (
-                f"Event {event.event_id} matched the category policy but records no "
-                f"categories, so category attribution cannot be verified"
+            assert ok, (
+                f"Event {event.event_id} matched the category policy for {category.get('name')} "
+                f"(id={category.get('id')}) but records categories {recorded}"
             )
 
     try:

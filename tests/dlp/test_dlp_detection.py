@@ -27,21 +27,25 @@ from bat.fixtures.testdata import (
 )
 from bat.traffic.http import post_payload
 from tests.support import (
+    MISSING,
     across_targets,
     await_security_event,
     cleanup_failed,
     curl_until_blocked,
-    curl_until_delivered,
+    describe,
+    endpoint_device_id,
     environment_error,
     expect_block,
-    expect_delivered,
     expect_hold,
     expect_no_event,
+    expect_values,
     hold_after_change,
     marked_url,
     matches_any_target,
     pass_case,
+    policy_changed,
     record_identity,
+    unverified,
 )
 from bat.events.web_log import all_of, matches_policy
 from bat.models import Kind, Step
@@ -63,12 +67,17 @@ def _attach(web_policies: WebPolicyFactory, policy_name: str, dlp_policy_id: str
     )
 
 
-def _await_dlp_event(case, run_context, web_log, web_name: str, policy, host: str):
-    """그 호스트로 보낸 요청의 DLP 이벤트. 정책 하나가 여러 호스트를 막으므로 호스트로도 찾는다."""
+def _await_dlp_event(case, run_context, web_log, web_name: str, policy, url: str):
+    """마커를 단 그 요청(url) 자신의 DLP 이벤트. 정책 하나가 여러 호스트를 막고, 같은 호스트의
+    다른 요청 행과도 섞이지 않게 마커로 찾는다."""
     return await_security_event(
         case, web_log, web_name, timeout_sec=run_context.event_poll_timeout_sec,
-        expected_target=host, target_in_search=True, policy_id=policy.policy_id,
+        policy_id=policy.policy_id, marker_url=url,
     )
+
+
+def _post_url(case, run_context, host: str, label: str) -> str:
+    return marked_url(echo_url(host, "/post"), case, run_context, f"{label}-{host.split('.')[0]}")
 
 
 @pytest.mark.case("BAT-DLP-001")
@@ -98,7 +107,7 @@ def test_keyword_detection_blocks_upload(
                 )
 
                 def check(host: str) -> None:
-                    url = echo_url(host, "/post")
+                    url = _post_url(case, run_context, host, "kw")
                     traffic = curl_until_blocked(
                         executor,
                         url,
@@ -118,7 +127,7 @@ def test_keyword_detection_blocks_upload(
                         f"{traffic.status_code}; expected it to be refused"
                     )
 
-                    event = _await_dlp_event(case, run_context, web_log, web_name, policy, host)
+                    event = _await_dlp_event(case, run_context, web_log, web_name, policy, url)
                     record_identity(case, event)
 
                 across_targets(case, ECHO_HOSTS, check, what="DLP keyword block")
@@ -148,7 +157,7 @@ def test_regex_detection_blocks_upload(
                 case.policy_ids.append(policy.policy_id)
 
                 def check(host: str) -> None:
-                    url = echo_url(host, "/post")
+                    url = _post_url(case, run_context, host, "re")
                     traffic = curl_until_blocked(
                         executor,
                         url,
@@ -159,7 +168,7 @@ def test_regex_detection_blocks_upload(
                     assert traffic.blocked, (
                         f"Payload matching {CUSTOM_REGEX} to {url} returned HTTP {traffic.status_code}"
                     )
-                    _await_dlp_event(case, run_context, web_log, web_name, policy, host)
+                    _await_dlp_event(case, run_context, web_log, web_name, policy, url)
 
                 across_targets(case, ECHO_HOSTS, check, what="DLP regex block", step=Step.EVENT)
                 pass_case(case)
@@ -239,12 +248,17 @@ def test_clean_payload_passes(case, run_context, rest, web_policies, executor, w
 
 
 @pytest.mark.case("BAT-DLP-006")
-@pytest.mark.verifies(Step.USER_RESULT)
+@pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P3")
 def test_disabling_the_policy_restores_delivery(
     case, run_context, rest, web_policies, executor, web_log
 ):
-    """정책을 비활성화하면 같은 데이터가 다시 정상 전송된다."""
+    """정책을 비활성화하면 같은 데이터가 다시 정상 전송된다.
+
+    차단은 그 요청 자신의 정책 행(마커)까지 확인한다. 비활성화는 다시 읽어 enable=false로
+    저장됐는지 보고(set_enabled), 그 뒤 대상마다 전파 예산 안에 통과가 시작되고 예산이 지난 뒤에도
+    HOLD_REPEATS번 연속 통과해야 한다.
+    """
     dlp = DlpPolicyFactory(rest)
     token = marker(case.case_id, run_context.run_id)
     dlp_name = resource_name(case.case_id, run_context.run_id, "dlp")
@@ -259,36 +273,35 @@ def test_disabling_the_policy_restores_delivery(
                 case.policy_ids.append(policy.policy_id)
 
                 def check_blocked(host: str) -> None:
+                    url = _post_url(case, run_context, host, "on")
                     blocked = curl_until_blocked(
-                        executor,
-                        echo_url(host, "/post"),
-                        run_context.policy_propagation_timeout_sec,
-                        method="POST",
-                        data=payload,
+                        executor, url, run_context.policy_propagation_timeout_sec,
+                        method="POST", data=payload,
+                    )
+                    case.record(
+                        Step.USER_RESULT, ok=blocked.blocked, kind=Kind.ASSERTION, detail=blocked.detail,
+                        expected=f"{url} blocked while the policy is enabled", actual=describe(blocked),
                     )
                     assert blocked.blocked, (
                         f"The policy never took effect on {host}, so disabling it would prove nothing"
                     )
+                    _await_dlp_event(case, run_context, web_log, web_name, policy, url)
 
                 def check_delivered(host: str) -> None:
-                    # post_payload()가 보내는 것과 같은 요청을, 통과할 때까지 재시도한다.
-                    delivered = curl_until_delivered(
-                        executor,
-                        echo_url(host, "/post"),
-                        run_context.policy_propagation_timeout_sec,
-                        method="POST",
-                        data=payload,
-                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    hold = hold_after_change(
+                        lambda: post_payload(executor, echo_url(host, "/post"), payload),
+                        want=lambda t: t.delivered, against=lambda t: t.blocked,
+                        changed_at=disabled.at, budget_sec=run_context.policy_propagation_timeout_sec,
                     )
-                    expect_delivered(
-                        case,
-                        delivered,
-                        expected=f"delivered to {host} once disabled",
+                    expect_hold(
+                        case, hold,
+                        expected=f"delivered to {host} once disabled, and still after the budget",
                         failure=f"Still blocked on {host} after the policy was disabled",
                     )
 
                 across_targets(case, ECHO_HOSTS, check_blocked, what="DLP block before disabling")
-                web_policies.set_enabled(policy, False)
+                web_policies.set_enabled(policy, False)  # 다시 읽어 enable=false가 아니면 ApiError
+                disabled = policy_changed(case, f"{web_name} disabled (read back as enable=false)")
                 across_targets(case, ECHO_HOSTS, check_delivered, what="delivery after disabling")
                 pass_case(case)
     except CleanupWarning as warning:
@@ -299,9 +312,14 @@ def test_disabling_the_policy_restores_delivery(
 @pytest.mark.verifies(Step.EVENT)
 @pytest.mark.priority("P2")
 def test_event_carries_enough_to_investigate(
-    case, run_context, rest, web_policies, executor, web_log
+    case, run_context, lane, rest, web_policies, executor, web_log, auth_log
 ):
-    """DLP 이벤트에 사용자·단말·정책·행위·대상이 모두 기록된다."""
+    """DLP 이벤트에 사용자·단말·정책·행위·대상이 모두 기록된다.
+
+    필드가 있는지만이 아니라 값이 맞는지 본다. 마커를 단 요청 자신의 행이어야 하고(대상
+    URL), device_id는 이 단말의 id(설정값 또는 하드웨어 UUID), user_name은 같은 단말의 인증
+    로그(로그인·터널 연결 행)의 user_name, policy_name/action은 이 정책과 BLOCK이어야 한다.
+    """
     dlp = DlpPolicyFactory(rest)
     token = marker(case.case_id, run_context.run_id)
     dlp_name = resource_name(case.case_id, run_context.run_id, "dlp")
@@ -314,9 +332,10 @@ def test_event_carries_enough_to_investigate(
             with _attach(web_policies, web_name, rule.policy_id) as policy:
                 case.policy_ids.append(policy.policy_id)
 
+                url = marked_url(POST_TARGET_URL, case, run_context, "inspect")
                 traffic = curl_until_blocked(
                     executor,
-                    POST_TARGET_URL,
+                    url,
                     run_context.policy_propagation_timeout_sec,
                     method="POST",
                     data=keyword_payload(token),
@@ -325,7 +344,7 @@ def test_event_carries_enough_to_investigate(
 
                 event = await_security_event(
                     case, web_log, web_name, timeout_sec=run_context.event_poll_timeout_sec,
-                    policy_id=policy.policy_id,
+                    policy_id=policy.policy_id, marker_url=url,
                 )
                 from bat.events.web_log import details_of
 
@@ -345,11 +364,27 @@ def test_event_carries_enough_to_investigate(
                 )
                 record_identity(case, event)
 
-                required = ("user_name", "policy_name", "action")
-                missing = [name for name in required if not event.get(name)]
-                assert not missing, (
-                    f"Event {event.event_id} is missing {missing}, which makes it "
-                    f"unusable for investigation"
+                device, source = endpoint_device_id(lane, executor)
+                if not device:
+                    unverified(case, Step.EVENT, f"no device id for this endpoint ({source}) to compare with")
+                sessions = [
+                    e for e in auth_log.events(lookback_min=24 * 60, device_id=device)
+                    if str(e.get("device_id") or "") == device
+                    and str(e.get("auth_result") or "") in ("AUTH_SUCCESS_SDP", "AUTH_CONNECT_VPN")
+                ]
+                user = next((str(e.get("user_name")) for e in sessions if e.get("user_name")), "")
+                if not user:
+                    unverified(case, Step.EVENT, f"no auth_log sign-in row of device {device} in 24h names a user to compare with")
+                # 비어 있는 필드는 조사에 쓸 수 없으니 읽지 못한 것이 아니라 틀린 값("")으로 센다.
+                expect_values(
+                    case, f"security event {event.event_id} of {url}",
+                    {
+                        "user_name": (user, event.get("user_name") or ""),
+                        "device_id": (device, event.get("device_id") or ""),
+                        "policy_name": (web_name, event.get("policy_name") or ""),
+                        "action": ("BLOCK", str(event.get("action") or "").upper()),
+                    },
+                    step=Step.EVENT,
                 )
                 pass_case(case)
     except CleanupWarning as warning:
@@ -399,7 +434,7 @@ def test_predefined_rule_detects_card_number(
                 case.policy_ids.append(policy.policy_id)
 
                 def check(host: str) -> None:
-                    url = echo_url(host, "/post")
+                    url = _post_url(case, run_context, host, "card")
                     traffic = curl_until_blocked(
                         executor,
                         url,
@@ -418,7 +453,7 @@ def test_predefined_rule_detects_card_number(
                         f"The test card number sent to {url} was not detected by "
                         f"{card.get('code')} (HTTP {traffic.status_code})"
                     )
-                    _await_dlp_event(case, run_context, web_log, web_name, policy, host)
+                    _await_dlp_event(case, run_context, web_log, web_name, policy, url)
 
                 across_targets(case, ECHO_HOSTS, check, what="DLP predefined card block")
                 pass_case(case)
@@ -429,7 +464,11 @@ def test_predefined_rule_detects_card_number(
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P1")
 def test_file_upload_detection(case, run_context, rest, web_policies, executor, web_log):
-    """민감 문자열이 포함된 파일을 업로드하면 차단된다."""
+    """민감 문자열이 포함된 파일을 업로드하면 차단된다.
+
+    대상마다 그 업로드 요청 자신의 행(마커)을 찾고, 그 행의 file_name이 업로드한 파일 이름과
+    같아야 한다(행에 file_name이 없으면 UNVERIFIED).
+    """
     from bat.fixtures.testdata import upload_file_body
     from bat.traffic.http import remove_temp_file, upload_file, write_temp_file
 
@@ -437,10 +476,9 @@ def test_file_upload_detection(case, run_context, rest, web_policies, executor, 
     token = marker(case.case_id, run_context.run_id)
     dlp_name = resource_name(case.case_id, run_context.run_id, "dlp")
     web_name = resource_name(case.case_id, run_context.run_id)
+    file_name = f"{case.case_id}-{run_context.run_id}.txt"
 
-    remote_path = write_temp_file(
-        executor, upload_file_body(token), f"{case.case_id}-{run_context.run_id}.txt"
-    )
+    remote_path = write_temp_file(executor, upload_file_body(token), file_name)
     case.record(Step.SETUP, ok=True, detail=f"synthetic file written to {remote_path}")
 
     try:
@@ -453,7 +491,7 @@ def test_file_upload_detection(case, run_context, rest, web_policies, executor, 
                 from bat.events.poller import PollTimeout, poll_until
 
                 def check(host: str) -> None:
-                    url = echo_url(host, "/post")
+                    url = _post_url(case, run_context, host, "file")
 
                     def probe():
                         result = upload_file(executor, url, remote_path=remote_path)
@@ -480,18 +518,15 @@ def test_file_upload_detection(case, run_context, rest, web_policies, executor, 
                         kind=Kind.ASSERTION,
                     )
 
-                    event = _await_dlp_event(case, run_context, web_log, web_name, policy, host)
+                    event = _await_dlp_event(case, run_context, web_log, web_name, policy, url)
                     case.record(
-                        Step.EVENT,
-                        ok=True,
-                        detail=f"file_name on the event: {event.get('file_name')!r}, "
-                        f"file_action: {event.get('file_action')!r}",
-                        expected="the event identifies the file",
-                        actual={
-                            "file_name": event.get("file_name"),
-                            "file_action": event.get("file_action"),
-                        },
-                        kind=Kind.EVIDENCE,
+                        Step.EVENT, ok=True, kind=Kind.EVIDENCE,
+                        detail=f"file_action on the event: {event.get('file_action')!r}",
+                    )
+                    expect_values(
+                        case, f"security event {event.event_id} of the upload to {url}",
+                        {"file_name": (file_name, event.raw.get("file_name") or MISSING)},
+                        step=Step.EVENT,
                     )
 
                 across_targets(case, ECHO_HOSTS, check, what="DLP file upload block")
@@ -514,7 +549,8 @@ def test_one_policy_with_two_rules_catches_either_of_them(
 ):
     """한 DLP 정책에 여러 룰을 넣으면 그 중 어느 룰에 걸려도 차단된다.
 
-    키워드 룰과 정규식 룰을 한 정책에 넣고, 각각만 맞는 페이로드를 따로 보낸다.
+    키워드 룰과 정규식 룰을 한 정책에 넣고, 각각만 맞는 페이로드를 마커가 다른 요청으로 따로
+    보낸다. 요청마다 막히고 그 요청 자신의 행이 남아야 한다.
     알려진 결함: 키워드 룰과 함께 있으면 정규식 룰이 탐지하지 않는다(룰 순서 무관).
     """
     dlp = DlpPolicyFactory(rest)
@@ -538,9 +574,11 @@ def test_one_policy_with_two_rules_catches_either_of_them(
             with _attach(web_policies, web_name, rule.policy_id) as policy:
                 case.policy_ids.append(policy.policy_id)
 
+                keyword_url = marked_url(POST_TARGET_URL, case, run_context, "keyword")
+                regex_url = marked_url(POST_TARGET_URL, case, run_context, "regex")
                 by_keyword = curl_until_blocked(
                     executor,
-                    POST_TARGET_URL,
+                    keyword_url,
                     run_context.policy_propagation_timeout_sec,
                     method="POST",
                     data=keyword_payload(token),
@@ -556,10 +594,11 @@ def test_one_policy_with_two_rules_catches_either_of_them(
                     f"The keyword rule in a two-rule policy did not block its own "
                     f"payload (HTTP {by_keyword.status_code})"
                 )
+                _await_dlp_event(case, run_context, web_log, web_name, policy, keyword_url)
 
                 by_regex = curl_until_blocked(
                     executor,
-                    POST_TARGET_URL,
+                    regex_url,
                     run_context.policy_propagation_timeout_sec,
                     method="POST",
                     data=regex_sample(),
@@ -576,14 +615,7 @@ def test_one_policy_with_two_rules_catches_either_of_them(
                     f"{by_regex.status_code}); rules in one policy are not independent, "
                     f"so a multi-rule policy catches less than its rules suggest"
                 )
-
-                await_security_event(
-                    case,
-                    web_log,
-                    web_name,
-                    timeout_sec=run_context.event_poll_timeout_sec,
-                    policy_id=policy.policy_id,
-                )
+                _await_dlp_event(case, run_context, web_log, web_name, policy, regex_url)
                 pass_case(case)
 
     except CleanupWarning as warning:
