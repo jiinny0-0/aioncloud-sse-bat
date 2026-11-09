@@ -42,16 +42,17 @@ BAT-BASIC-003:
   expected_results: 최근 24시간 내 보안 이벤트가 조회되고, 가장 최신 이벤트에 id/time/policy_name/action 필드가 모두 포함되어야 한다.
 BAT-BASIC-004:
   test_steps: |-
-    1. 커넥터 프로세스(AIConnector for Client)가 실행 중인지 확인
-    2. web_log.security_events(lookback_min=1440)으로 기존 이벤트 건수(before) 확인
-    3. 실제 브라우저 세션으로 ALLOW_TARGET_URL 방문
-    4. 보안 로그 API가 방문 이후에도 정상 조회 가능한지 기록(신규 이벤트 발생 여부는 단언하지 않음)
+    1. 커넥터 프로세스가 실행 중인지 확인
+    2. ALLOW_TARGET_URL 호스트(www.iana.org)에 HTTP_HOST LOGGING 정책을 만든다
+    3. 단말 브라우저로 마커를 단 ALLOW_TARGET_URL을 전파 시간 동안 되풀이해 방문한다
+    4. 그 마커가 든 행이 이 정책 id로 보안 로그에 찍히는지 확인한다(이 단말의 트래픽이 SSE를 지난다는 근거). 행의 device_id·사용자·출발지 IP는 근거로 남긴다
+    5. 정책 삭제
   test_parameters: |-
     Connector process: AIConnector for Client
     Target URL: ALLOW_TARGET_URL
     Lookback: 24시간(1440분)
   test_data: ALLOW_TARGET_URL = "https://www.iana.org/"
-  expected_results: 커넥터 프로세스(AIConnector for Client)가 실행 중이어야 하며, 브라우저로 허용 대상 URL을 방문한 뒤에도 보안 로그 API가 정상 조회되어야 한다(정책에 걸리지 않는 허용 트래픽이므로 신규 이벤트 발생 자체는 검증 대상이 아님).
+  expected_results: 커넥터 프로세스가 실행 중이고, 단말이 보낸 마커 요청이 LOGGING 정책의 보안 로그 행으로 찍힌다(트래픽이 실제로 SSE를 경유).
 BAT-BASIC-005:
   test_steps: |-
     1. GET /sia/v1/web/policy/list 조회(offset=1, limit=500)
@@ -244,10 +245,12 @@ BAT-DLP-005:
   test_steps: |-
     1. 키워드 룰(이름 'bat-token', 키워드는 런별 마커 토큰)을 가진 DLP 정책을 생성한다.
     2. 이 DLP 정책을 참조하는 DLP_POLICY rule을 가진 웹 정책을 BLOCK/MAJOR로 생성한다.
-    3. 키워드가 포함되지 않은 깨끗한 페이로드를 대상 호스트 세 곳(httpbin.org, postman-echo.com, httpbingo.org)의 /post로 1회 전송한다(재시도 없음).
-    4. 응답이 차단되지 않았는지(정상 전달) 확인한다.
-    5. 웹 보안 로그에서 해당 웹 정책명으로 이벤트가 전혀 없는지(no_security_event) 확인한다.
-    6. with 블록 종료 시 웹 정책과 DLP 정책을 자동 삭제한다.
+    3. 양성 대조: 키워드 페이로드를 마커를 단 https://httpbin.org/post로 보내 차단되고, 그 요청(마커) 자신의 이벤트가 이 정책 id로 남는지 확인한다.
+    4. 키워드가 없는 깨끗한 페이로드를 대상 호스트 세 곳(httpbin.org, postman-echo.com, httpbingo.org)의 /post로 각자 마커를 달아 3회씩 보내 매번 정상 전달되는지 확인한다(한 번이라도 차단되면 FAIL).
+    5. 표지 요청: 키워드 페이로드를 마커를 단 httpbin.org/post로 한 번 더 보내 그 행이 로그에 나타날 때까지 기다린다(안 나타나면 UNVERIFIED).
+    6. 그 다음 깨끗한 요청들의 마커가 든 행이 이 정책으로 하나도 없는지 확인한다(부재 검증).
+    7. with 블록 종료 시 웹 정책과 DLP 정책을 자동 삭제한다.
+    8. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
   test_parameters: |-
     DLP rule type: KEYWORD
     DLP rule name: bat-token
@@ -259,7 +262,7 @@ BAT-DLP-005:
     키워드(미사용 대조값): marker(case_id, run_id) 결과(런마다 동적 생성)
     전송 페이로드: clean_payload() = "note=quarterly review&owner=bat-suite&secret=nothing-to-see-here" (키워드 미포함)
     대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
-  expected_results: DLP 키워드가 없는 정상 페이로드는 차단되지 않고 정상 전달되어야 하며, 해당 웹 정책명으로 어떤 보안 이벤트도 남지 않아야 한다(오탐 없음).
+  expected_results: 정책이 키워드 데이터를 실제로 막는 상태에서, 키워드가 없는 정상 페이로드는 매번 차단되지 않고 전달되어야 하며 그 요청들에 대해 이 웹 정책의 보안 이벤트가 남지 않아야 한다(오탐 없음).
 BAT-DLP-006:
   test_steps: |-
     1. 키워드 룰(이름 'bat-token', 키워드는 런별 마커 토큰)을 가진 DLP 정책을 생성한다.
@@ -449,20 +452,22 @@ BAT-FW-009:
 BAT-FW-010:
   test_steps: |-
     1. LOGGING 정책으로 커넥터 실사용자 id 확인(dns 보안로그에서)
-    2. 다른 사용자 id로 좁힌 BLOCK -> 안 막힘 확인
+    2. 다른 사용자 id로 좁힌 BLOCK -> 전파 시간 내내 그리고 그 뒤 3회까지 조회해 한 번도 안 막힘 확인
     3. 실제 커넥터 사용자 id로 좁힌 BLOCK -> 막힘 확인
   test_parameters: 'Subject: FQDN, users: [다른 id] 그리고 [실사용자 id]'
   test_data: httpbin.org
   expected_results: 다른 사용자로 좁히면 안 막히고, 실사용자로 좁히면 막힌다
 BAT-FW-011:
   test_steps: |-
-    1. FQDN=[example.com, example.net, postman-echo.com] BLOCK 정책 하나 생성(AAAA 레코드가 실제로 있는 도메인. httpbin.org는 AAAA가 없어 제외)
-    2. 도메인마다 A 레코드 조회 차단 확인
-    3. 도메인마다 AAAA(IPv6) 조회도 차단되는지 확인(실패 문구가 있거나 응답에 IPv6 주소가 없으면 차단)
-    4. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
+    1. 정책 전 기준선: 도메인마다 AAAA 조회가 IPv6 주소를 돌려주는지 확인(없던 도메인은 그 도메인만 UNVERIFIED)
+    2. FQDN=[example.com, example.net, postman-echo.com] BLOCK 정책 하나 생성(AAAA 레코드가 실제로 있는 도메인. httpbin.org는 AAAA가 없어 제외)
+    3. 도메인마다 A 레코드 조회 차단 확인
+    4. 도메인마다 AAAA(IPv6) 조회도 차단되는지 확인(실패 문구가 있거나 기준선에 있던 IPv6 주소가 없어지면 차단)
+    5. 그 AAAA 조회 뒤 이 정책의 새 DNS 로그 행이 record_type AAAA, action BLOCK으로 남는지 확인(조회 전후 행 id로 그 조회의 행을 가림)
+    6. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
   test_parameters: 'Subject: FQDN, value: [example.com, example.net, postman-echo.com]'
   test_data: nslookup -type=AAAA <도메인> (example.com, example.net, postman-echo.com, 모두 AAAA 레코드가 있는 도메인)
-  expected_results: A/AAAA 둘 다 막힌다 - 듀얼스택 우회 불가
+  expected_results: A/AAAA 둘 다 막히고 AAAA 차단이 DNS 로그에 record_type AAAA, action BLOCK으로 남는다 - 듀얼스택 우회 불가
 BAT-FW-012:
   test_steps: |-
     1. FQDN=*.iana.org(와일드카드) BLOCK 정책 생성
@@ -521,17 +526,18 @@ BAT-SWG-001:
 BAT-SWG-002:
   test_steps: |-
     1. HTTP_HOST 조건(IS, httpbin.org)으로 BLOCK 웹 정책을 생성한다
-    2. 정책과 무관한 사이트 여러 곳(https://www.iana.org/, https://example.net/, https://example.com/)을 브라우저로 방문한다
-    3. 모두 정상 접속(허용)됨을 확인한다
-    4. 보안 로그에 이 정책명을 포함하는 이벤트가 하나도 없는지 확인한다(부재 검증)
-    5. 정책을 삭제한다
-    6. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
+    2. 양성 대조: 마커를 단 httpbin.org 요청이 차단되고, 그 요청(마커) 자신의 BLOCK 이벤트가 이 정책 id로 남는지 확인한다
+    3. 정책과 무관한 사이트 여러 곳(https://www.iana.org/, https://example.net/, https://example.com/)을 각자 마커를 달아 브라우저로 방문해 모두 정상 접속되는지 확인한다
+    4. 표지 요청: 마커를 단 httpbin.org 요청을 한 번 더 보내 그 행이 로그에 나타날 때까지 기다린다(안 나타나면 UNVERIFIED)
+    5. 그 다음 무관한 사이트 요청들의 마커가 든 행이 이 정책으로 하나도 없는지 확인한다(부재 검증)
+    6. 정책을 삭제한다
+    7. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
   test_parameters: |-
     subject: HTTP_HOST
     condition: IS
     action_type: BLOCK
   test_data: 정책 대상 BLOCK_TARGET_HOST="httpbin.org", 실제 방문 URL(UNRELATED_URLS)="https://www.iana.org/", "https://example.net/", "https://example.com/"
-  expected_results: 정책 조건에 매칭되지 않는 사이트는 정상적으로 로드되어야 하고, 그 정책 이름으로 된 보안 이벤트가 전혀 발생하지 않아야 한다.
+  expected_results: 정책이 적용 중(대상 호스트 차단·이벤트 확인)인 상태에서 조건에 매칭되지 않는 사이트는 정상적으로 로드되고, 그 요청들에 대해 이 정책의 보안 이벤트가 전혀 발생하지 않아야 한다.
 BAT-SWG-003:
   test_steps: |-
     대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 아래를 반복한다.
@@ -551,7 +557,7 @@ BAT-SWG-004:
   test_steps: |-
     1. HTTP_HOST 조건(IS, httpbin.org)의 LOGGING probe 정책으로 커넥터가 로그인된 사용자(id/name)를 알아낸다
     2. /sia/v1/user/all 목록에서 커넥터 사용자가 아닌 다른 사용자(bystander) id를 찾는다
-    3. bystander id에만 스코프된 HTTP_HOST BLOCK 정책을 생성하고 BLOCK_TARGET_URL을 방문해 정상 허용됨을 확인한다
+    3. bystander id에만 스코프된 HTTP_HOST BLOCK 정책을 생성하고, 전파 시간 내내 그리고 그 뒤 3회까지 BLOCK_TARGET_URL을 되풀이해 방문해 한 번도 차단되지 않는지 확인한다
     4. 해당 정책을 삭제하고, 이번엔 커넥터 사용자 id에만 스코프된 동일 조건 BLOCK 정책을 생성한다
     5. 같은 URL을 재방문해 차단됨을 확인한다
     6. 보안 로그 이벤트의 user_id가 커넥터 사용자 id와 일치하는지 확인한다
@@ -757,13 +763,14 @@ BAT-SWG-018:
   expected_results: /get만 차단되고 같은 호스트의 다른 경로(/headers)는 영향받지 않는다
 BAT-SWG-019:
   test_steps: |-
-    1. HTTP_METHOD=POST LOGGING 정책 생성(BLOCK 아님, 아래 참고)
-    2. POST https://httpbin.org/post 전송
-    3. 차단되지 않음(LOGGING이라 통과) + 보안로그에 LOGGING 이벤트 확인
-    4. 감사로그 확인, 정책 삭제
+    1. HTTP_METHOD=POST LOGGING 정책 생성(BLOCK 아님: 러너 자신의 POST까지 막음)
+    2. 마커를 단 POST https://httpbin.org/post를 전파 시간 동안 되풀이해 보내, 그중 하나가 이 정책 id로 기록될 때까지 본다(러너 자신의 API POST 행은 마커가 없어 인정하지 않음)
+    3. 기록된 그 요청이 차단되지 않았는지(LOGGING이라 통과) + 그 요청 자신의 LOGGING 이벤트 확인
+    4. 음성 대조: 마커를 단 GET https://httpbin.org/get을 보내고, 그 뒤 보낸 POST 표지의 행이 나타난 다음 GET의 행이 이 정책으로 없는지 확인
+    5. 감사로그 확인, 정책 삭제
   test_parameters: 'Subject: HTTP_METHOD, Condition: IN, value: ["POST"], action_type: LOGGING'
   test_data: POST https://httpbin.org/post (bat=probe)
-  expected_results: POST 요청이 조건과 매칭되어 LOGGING 이벤트가 남고, 트래픽 자체는 차단되지 않는다
+  expected_results: 마커를 단 POST 요청이 조건과 매칭되어 그 요청의 LOGGING 이벤트가 남고 트래픽은 차단되지 않으며, 같은 호스트로 보낸 GET은 이 정책에 기록되지 않는다
 BAT-SWG-020:
   test_steps: |-
     1. BLOCK_TARGET_HOST(httpbin.org)를 IP로 해석
@@ -900,17 +907,18 @@ BAT-X-008:
     3. 그 DLP 정책을 참조하는 DLP_POLICY rule의 웹 BLOCK 정책(risk_level=MAJOR)을 생성한다.
     4. 토큰이 포함된 POST 페이로드로 SECOND_URL에 curl 요청을 보내, DLP 단독으로 403 차단 페이지가 뜨는지 먼저 확인한다(선행 검증).
     5. 같은 SECOND_HOST를 막는 DNS Firewall BLOCK 정책을 추가로 생성한다(DLP와 DNS 두 계층이 동시에 걸린 상태).
-    6. nslookup으로 SECOND_HOST 조회가 차단되는지 확인해 DNS 계층이 실제로 작동 중임을 검증한다.
-    7. 같은 토큰 포함 POST 페이로드로 다시 curl 요청을 보내, DNS 계층(연결 실패) 또는 HTTP 계층(차단 페이지) 둘 중 하나로 요청이 막히는지 확인한다(어느 계층이 응답하는지는 결정적이지 않음을 기록만 함, DNS 캐시 때문).
-    8. network_log(dns_security_log)에서 DNS 정책명의 이벤트를 폴링한다.
-    9. 두 정책(DLP 연결 웹 정책, DNS Firewall 정책)과 DLP 정책을 정리(삭제)한다.
+    6. nslookup으로 SECOND_HOST 조회가 차단되는지, 그 DNS 정책의 이벤트가 남는지 확인한다.
+    7. 단말 DNS 캐시를 비운 뒤(ipconfig /flushdns) 마커를 단 SECOND_URL로 토큰 포함 POST를 보내 통과하지 않는지 확인한다.
+    8. 그 요청 뒤에 DNS Firewall 정책의 새 행이 생겼는지 확인한다(없으면 FAIL: DNS 계층에서 막히지 않음).
+    9. 표지 요청: 토큰 포함 POST를 마커를 단 httpbin.org/post로 보내 그 DLP 행이 나타난 다음, 7번 요청의 마커가 든 DLP 웹정책 행이 없는지 확인한다(있으면 FAIL: DLP 검사까지 감).
+    10. 두 정책(DLP 연결 웹 정책, DNS Firewall 정책)과 DLP 정책을 정리(삭제)한다.
   test_parameters: |-
     dlp_policy: rule=keyword_rule('bat-token', [token])
     web_policy: action_type=BLOCK, risk_level=MAJOR, rule=DLP_POLICY rule(dlp_policy_id)
     dns_firewall: action_type=BLOCK, rule.subject=FQDN, rule.value=[example.com]
     traffic: method=POST, data=keyword_payload(token)
   test_data: SECOND_HOST=example.com, SECOND_URL=https://example.com/, token=marker(case_id, run_id)로 동적 생성된 'BATSENSITIVE...' 문자열, payload='note=quarterly review&secret=<token>&owner=bat-suite'
-  expected_results: DLP 연결 웹 정책과 DNS Firewall 정책이 동시에 걸려 있을 때, 토큰이 포함된 POST 요청이 DNS 계층(연결 실패) 또는 HTTP 계층(차단 페이지) 중 어느 쪽으로든 반드시 막혀야 한다(둘 다 단독으로는 차단함이 선행 확인됨).
+  expected_results: DLP 연결 웹 정책과 DNS Firewall 정책이 동시에 걸려 있을 때 토큰이 포함된 요청은 통과하지 않고, 그 요청은 DNS Firewall 행을 새로 남기며 DLP 웹정책 행은 남기지 않는다(DNS 계층에서 먼저 막힘).
 BAT-X-009:
   test_steps: |-
     1. HTTP_HOST가 chatgpt.com인 BLOCK 웹정책을 생성한다.

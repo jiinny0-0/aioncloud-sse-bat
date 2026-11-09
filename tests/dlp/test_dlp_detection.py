@@ -7,6 +7,8 @@ DLP 정책 자체는 탐지 룰만 정의한다. 적용은 웹 정책이 DLP_POL
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from bat.fixtures.enums import ActionType, Condition, RiskLevel, Subject
@@ -31,11 +33,17 @@ from tests.support import (
     curl_until_blocked,
     curl_until_delivered,
     environment_error,
+    expect_block,
     expect_delivered,
+    expect_hold,
+    expect_no_event,
+    hold_after_change,
+    marked_url,
+    matches_any_target,
     pass_case,
     record_identity,
 )
-from bat.events.web_log import matches_policy
+from bat.events.web_log import all_of, matches_policy
 from bat.models import Kind, Step
 
 pytestmark = [
@@ -164,11 +172,21 @@ def test_regex_detection_blocks_upload(
 @pytest.mark.priority("P0")
 @pytest.mark.critical
 def test_clean_payload_passes(case, run_context, rest, web_policies, executor, web_log):
-    """탐지 조건에 걸리지 않는 데이터는 정상 전송되고 이벤트도 남지 않는다."""
+    """탐지 조건에 걸리지 않는 데이터는 정상 전송되고 이벤트도 남지 않는다.
+
+    같은 정책이 키워드 데이터를 실제로 막고 그 요청의 이벤트를 남기는 것을 먼저 증명한다
+    (양성 대조). 그 뒤 깨끗한 데이터를 대상마다 HOLD_REPEATS번 보내 모두 통과해야 하고,
+    마지막에 키워드 데이터로 표지 요청을 보내 그 행이 로그에 나타난 다음 깨끗한 요청들의
+    행이 이 정책으로 하나도 없는지 판정한다.
+    """
     dlp = DlpPolicyFactory(rest)
     token = marker(case.case_id, run_context.run_id)
     dlp_name = resource_name(case.case_id, run_context.run_id, "dlp")
     web_name = resource_name(case.case_id, run_context.run_id)
+    clean = {
+        host: marked_url(echo_url(host, "/post"), case, run_context, f"clean{number}")
+        for number, host in enumerate(ECHO_HOSTS, start=1)
+    }
 
     try:
         with dlp.temporary(dlp_name, [DlpPolicyFactory.keyword_rule("bat-token", [token])]) as rule:
@@ -176,31 +194,45 @@ def test_clean_payload_passes(case, run_context, rest, web_policies, executor, w
 
             with _attach(web_policies, web_name, rule.policy_id) as policy:
                 case.policy_ids.append(policy.policy_id)
+                mine = matches_policy(web_name, policy.policy_id)
+
+                positive = marked_url(POST_TARGET_URL, case, run_context, "positive")
+                blocked = curl_until_blocked(
+                    executor, positive, run_context.policy_propagation_timeout_sec,
+                    method="POST", data=keyword_payload(token),
+                )
+                expect_block(case, blocked, positive)
+                await_security_event(
+                    case, web_log, web_name, timeout_sec=run_context.event_poll_timeout_sec,
+                    policy_id=policy.policy_id, marker_url=positive,
+                )
 
                 def check(host: str) -> None:
-                    url = echo_url(host, "/post")
-                    traffic = post_payload(executor, url, clean_payload())
-                    expect_delivered(
-                        case,
-                        traffic,
-                        expected=f"delivered to {url}",
-                        failure=f"A payload without the keyword was refused by {url} (HTTP "
-                        f"{traffic.status_code}); this is a false positive",
+                    url = clean[host]
+                    hold = hold_after_change(
+                        lambda: post_payload(executor, url, clean_payload()),
+                        want=lambda t: t.delivered, against=lambda t: t.blocked,
+                        changed_at=time.monotonic(), budget_sec=0, steady=True,
+                    )
+                    expect_hold(
+                        case, hold, expected=f"clean payload delivered to {url} every time",
+                        failure=f"A payload without the keyword was refused by {url}; this is a false positive",
                     )
 
                 across_targets(case, ECHO_HOSTS, check, what="clean payload delivered")
 
-                quiet = web_log.no_security_event(
-                    matches_policy(web_name)
+                def sentinel() -> str:
+                    url = marked_url(POST_TARGET_URL, case, run_context, "sentinel")
+                    post_payload(executor, url, keyword_payload(token))
+                    return url
+
+                expect_no_event(
+                    case, web_log,
+                    absent=all_of(mine, matches_any_target(clean.values())),
+                    what=f"{web_name} rows for the clean payloads",
+                    sentinel=sentinel, sentinel_match=mine,
+                    timeout_sec=run_context.event_poll_timeout_sec,
                 )
-                case.record(
-                    Step.EVENT,
-                    ok=quiet,
-                    detail="a clean payload must not raise a DLP event",
-                    expected="no event",
-                    actual="no event" if quiet else "event found",
-                )
-                assert quiet, f"Unexpected DLP event for {web_name}"
                 pass_case(case)
     except CleanupWarning as warning:
         cleanup_failed(case, warning)

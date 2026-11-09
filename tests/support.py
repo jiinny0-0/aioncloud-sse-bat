@@ -388,9 +388,13 @@ def await_security_event(
     target_in_search: bool = False,
     extra: Callable[[SecurityEvent], bool] | None = None,
     policy_id: str | int | None = None,
+    marker_url: str | None = None,
 ) -> SecurityEvent:
     """정책 이름(정확히 일치)과, 주어지면 케이스가 만든 정책의 id로 이벤트를 찾은 뒤
     그 내용을 검증한다.
+
+    marker_url(marked_url로 만든 URL)을 주면 full_uri에 그 마커가 있는 행, 즉 그 요청
+    자신의 행만 찾는다. 같은 정책의 이전 단계 행이나 다른 요청의 행은 인정하지 않는다.
 
     검색 조건에 action과 target까지 넣으면 틀린 값이 타임아웃으로 바뀌어 "이벤트가 안
     남았다"로 읽히고 실제 차이가 가려진다. 먼저 찾고 나중에 확인하면 둘이 구분된다.
@@ -400,7 +404,10 @@ def await_security_event(
     요청의 것일 수 있다. 이런 케이스는 target으로도 검색해야 한다.
     """
     search = matches_policy(policy_name, policy_id)
-    if target_in_search and expected_target:
+    if marker_url:
+        expected_target = expected_target or marker_url
+        search = all_of(search, matches_target(marker_url))
+    elif target_in_search and expected_target:
         search = all_of(search, matches_target(expected_target))
 
     try:
@@ -1287,3 +1294,214 @@ def module_scope_or_stop(case: CaseResult, run_context, web_policies, executor, 
     unverified(case, Step.USER_RESULT,
                f"neither {module_name} nor {control_name} logged {host} within "
                f"{run_context.event_poll_timeout_sec}s ({sent} request(s)); BLOCK not attempted")
+
+
+# -- 요청 단위 판정, 상태 유지(hold), 부재 확인 ----------------------------------------
+#
+# 이벤트는 그 요청 자신의 행이어야 한다. 요청 URL에 `bat=<케이스>-<실행>-<라벨>` 마커를
+# 붙이고, 행의 full_uri에 그 마커가 있어야 인정한다(marked_url, await_security_event의
+# marker_url). 상태를 바꾼 뒤의 판정은 처음 조건이 맞는 순간이 아니라, 전파 예산이 지난
+# 뒤 연속 HOLD_REPEATS번 같은 결과여야 한다(hold_after_change). "이벤트가 없다"는 그
+# 뒤에 보낸 표지(sentinel) 요청의 행이 로그에 나타난 다음에만 판정한다(expect_no_event).
+
+HOLD_REPEATS = 3
+HOLD_INTERVAL_SEC = 2.0
+
+
+def marked_url(url: str, case: CaseResult, run_context, label: str) -> str:
+    """다른 어떤 요청도 갖지 않는 URL. 로그 행을 이 요청에 묶는 데 쓴다."""
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}bat={case.case_id}-{run_context.run_id}-{label}".lower()
+
+
+def matches_any_target(urls) -> Callable[[SecurityEvent], bool]:
+    checks = [matches_target(url) for url in urls]
+    return lambda event: any(check(event) for check in checks)
+
+
+@dataclass
+class Hold:
+    """hold_after_change의 결과.
+
+    held          전파 예산 뒤 HOLD_REPEATS번이 모두 기대한 결과였다(steady면 처음부터 줄곧).
+    broke         기대와 반대 결과가 나왔다(차단을 기대했는데 통과 등).
+    never         전파 예산 안에 한 번도 기대한 결과가 나오지 않았다(transition만).
+    inconclusive  반대 결과는 없지만 판정할 수 없는 응답(000, 타임아웃)이 섞였다.
+    """
+
+    outcome: str
+    results: list[TrafficResult]
+    after_deadline: int = 0  # 결과 중 기한 뒤에 받은 것의 개수(끝에서부터)
+
+    @property
+    def last(self) -> TrafficResult:
+        return self.results[-1]
+
+
+def hold_after_change(
+    check: Callable[[], TrafficResult],
+    *,
+    want: Callable[[TrafficResult], bool],
+    against: Callable[[TrafficResult], bool],
+    changed_at: float,
+    budget_sec: float,
+    steady: bool = False,
+    repeats: int = HOLD_REPEATS,
+    interval_sec: float = HOLD_INTERVAL_SEC,
+) -> Hold:
+    """상태 변경(changed_at, time.monotonic()) 뒤의 결과를 판정할 수 있게 모은다.
+
+    transition(기본): 기한(changed_at + budget_sec) 안에 want가 한 번 나와야 하고, 기한이
+    지난 뒤 repeats번이 전부 want여야 한다. 첫 want에서 멈추지 않는다.
+    steady: 처음부터 기한까지 계속, 그리고 기한 뒤 repeats번 동안 against가 한 번도 없어야
+    한다("다른 사용자 정책은 나를 막지 않는다"처럼 바뀌면 안 되는 상태).
+    """
+    deadline = changed_at + budget_sec
+    results: list[TrafficResult] = []
+    unclear = False
+    reached = False
+    while True:
+        result = check()
+        results.append(result)
+        if against(result) and (steady or reached):
+            return Hold("broke", results)
+        if want(result):
+            reached = True
+            if not steady:
+                break
+        elif not against(result):
+            unclear = unclear or steady
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(min(interval_sec, max(deadline - time.monotonic(), 0.0)) or interval_sec)
+    if not steady and not reached:
+        return Hold("never", results)
+
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)
+    for number in range(repeats):
+        result = check()
+        results.append(result)
+        if against(result):
+            return Hold("broke", results, after_deadline=number + 1)
+        if not want(result):
+            unclear = True
+        if number < repeats - 1:
+            time.sleep(interval_sec)
+    return Hold("inconclusive" if unclear else "held", results, after_deadline=repeats)
+
+
+def expect_hold(
+    case: CaseResult,
+    hold: Hold,
+    *,
+    expected: str,
+    failure: str,
+    step: Step = Step.USER_RESULT,
+) -> None:
+    """hold_after_change의 결과를 기록하고 판정한다. held만 통과, 판정할 수 없는 응답이
+    섞이면 UNVERIFIED, 그 밖에는 FAIL이다."""
+    seen = ", ".join(describe(r) for r in hold.results[-(HOLD_REPEATS + 2):])
+    for result in hold.results:
+        if result.artifact:
+            case.artifacts.append(result.artifact)
+    if hold.outcome == "held":
+        case.record(
+            step, ok=True, kind=Kind.ASSERTION, expected=expected, actual=seen,
+            detail=f"{len(hold.results)} request(s); the last {hold.after_deadline} after the "
+            f"propagation budget all as expected",
+        )
+        return
+    if hold.outcome == "inconclusive":
+        unverified(case, step, f"{expected}: some answers were inconclusive ({seen})")
+    when = "never within the propagation budget" if hold.outcome == "never" else "then broke"
+    case.record(step, ok=False, kind=Kind.ASSERTION, expected=expected, actual=seen, detail=f"{when}: {seen}")
+    raise AssertionError(f"{failure} ({when}; last: {describe(hold.last)})")
+
+
+def request_until_logged(
+    web_log: WebLogReader,
+    send: Callable[[str], TrafficResult],
+    *,
+    match: Callable[[SecurityEvent], bool],
+    url_for: Callable[[int], str],
+    budget_sec: float,
+    event_timeout_sec: float,
+    interval_sec: float = HOLD_INTERVAL_SEC,
+) -> tuple[str, TrafficResult] | None:
+    """마커가 다른 요청을 전파 예산 동안 되풀이해 보내고, 그중 하나가 match 행으로 찍히면
+    (그 URL, 그 요청의 결과)를 돌려준다. 끝내 안 찍히면 None.
+
+    정책이 언제부터 적용될지 모르므로 한 번 보내고 기다리면 안 된다. 보낸 요청마다 마커가
+    달라 어느 요청이 기록됐는지 정확히 안다.
+    """
+    sent: dict[str, TrafficResult] = {}
+    deadline = time.monotonic() + budget_sec
+    number = 0
+
+    def logged() -> str | None:
+        for event in web_log.security_events():
+            if match(event):
+                for url in sent:
+                    if matches_target(url)(event):
+                        return url
+        return None
+
+    while time.monotonic() < deadline:
+        number += 1
+        url = url_for(number)
+        sent[url] = send(url)
+        found = logged()
+        if found:
+            return found, sent[found]
+        time.sleep(interval_sec)
+    try:
+        found = poll_until(logged, timeout_sec=event_timeout_sec, description="a marked request in the log")
+    except PollTimeout:
+        return None
+    return found, sent[found]
+
+
+def expect_no_event(
+    case: CaseResult,
+    web_log: WebLogReader,
+    *,
+    absent: Callable[[SecurityEvent], bool],
+    what: str,
+    sentinel: Callable[[], str],
+    sentinel_match: Callable[[SecurityEvent], bool],
+    timeout_sec: float,
+) -> None:
+    """absent에 맞는 행이 없어야 한다. 시간을 재고 한 번 보는 대신, 판정할 요청들 뒤에
+    표지 요청을 하나 보내(sentinel()이 보내고 그 URL을 돌려준다) 그 행이 sentinel_match로
+    로그에 나타난 다음에 본다. 표지가 끝내 안 보이면 로그가 따라왔는지 알 수 없으므로
+    UNVERIFIED다.
+    """
+    url = sentinel()
+    try:
+        row = web_log.wait_for_security_event(
+            all_of(sentinel_match, matches_target(url)),
+            timeout_sec=timeout_sec,
+            description=f"sentinel row for {url}",
+        )
+    except PollTimeout as timeout:
+        unverified(
+            case, Step.EVENT,
+            f"the sentinel request {url} never appeared in the log, so the absence of {what} "
+            f"cannot be judged: {timeout}",
+        )
+    found = [e for e in web_log.security_events() if absent(e)]
+    case.record(
+        Step.EVENT,
+        ok=not found,
+        kind=Kind.ASSERTION,
+        detail=f"no {what} once the sentinel row (id={row.event_id}) for a later request was in the log"
+        if not found else f"{len(found)} row(s) of {what}: ids {[e.event_id for e in found][:5]}",
+        expected=f"no {what}",
+        actual=[{"id": e.event_id, "policy": e.get("policy_name"), "target": e.get("full_uri")} for e in found[:5]]
+        or "none",
+    )
+    assert not found, (
+        f"Found {what}: {[(e.event_id, e.get('full_uri')) for e in found[:3]]}"
+    )

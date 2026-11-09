@@ -28,7 +28,7 @@ from bat.fixtures.testdata import (
     SECOND_HOST,
 )
 from bat.models import Kind, Step
-from bat.events.poller import PollTimeout
+from bat.events.poller import PollTimeout, poll_until
 from bat.traffic.http import curl_status, dns_lookup, resolve_ip
 from tests.support import (
     across_targets,
@@ -40,8 +40,12 @@ from tests.support import (
     dns_lookup_until_blocked,
     environment_error,
     expect_delivered,
+    expect_hold,
+    hold_after_change,
     matches_network_policy,
     pass_case,
+    policy_changed,
+    unverified,
 )
 
 pytestmark = [
@@ -514,12 +518,19 @@ def test_dns_firewall_applies_only_to_its_users(case, run_context, dns_firewall,
             other_name, [rule], action_type="BLOCK", users=[other_user_id], user_groups=[]
         ) as other_policy:
             case.policy_ids.append(other_policy.policy_id)
+            change = policy_changed(case, f"DNS BLOCK scoped to user {other_user_id}")
 
-            traffic = dns_lookup(executor, BLOCK_TARGET_HOST, timeout_sec=15)
-            expect_delivered(
-                case,
-                traffic,
-                expected="not blocked for a different (non-existent) user",
+            # 한 번 조회해서는 정책이 아직 안 퍼졌을 뿐인지 알 수 없다. 전파 예산 내내,
+            # 그리고 그 뒤에도 연속해서 풀려야 한다.
+            hold = hold_after_change(
+                lambda: dns_lookup(executor, BLOCK_TARGET_HOST, timeout_sec=15),
+                want=lambda t: t.delivered, against=lambda t: t.blocked,
+                changed_at=change.at, budget_sec=run_context.policy_propagation_timeout_sec,
+                steady=True,
+            )
+            expect_hold(
+                case, hold,
+                expected="not blocked for a different user, through and after the propagation budget",
                 failure="A DNS Firewall policy scoped to a user id that cannot be the "
                 "connector still blocked resolution — the users scope is not being applied",
             )
@@ -551,19 +562,23 @@ def test_dns_firewall_applies_only_to_its_users(case, run_context, dns_firewall,
 
 
 @pytest.mark.case("BAT-FW-011")
-@pytest.mark.verifies(Step.USER_RESULT)
+@pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P3")
-def test_dns_firewall_blocks_aaaa_queries_too(case, run_context, dns_firewall, executor):
+def test_dns_firewall_blocks_aaaa_queries_too(case, run_context, dns_firewall, executor, network_log):
     """DNS Firewall 차단은 A 레코드뿐 아니라 AAAA(IPv6) 조회도 막는다.
 
-    대상은 AAAA 레코드가 실제로 있는 도메인들(AAAA_HOSTS)이다. httpbin.org는 AAAA 레코드가
-    없어 차단 여부와 상관없이 AAAA 조회가 주소 없이 끝나므로 쓰지 않는다. 그래서 실패 문구가
-    있거나 응답에 IPv6 주소가 없으면 차단으로 본다.
+    대상은 AAAA 레코드가 실제로 있는 도메인들(AAAA_HOSTS)이다. 정책을 만들기 전에 대상마다
+    AAAA 조회가 IPv6 주소를 돌려주는지 확인한다(기준선). 기준선에서 주소가 없던 대상은
+    차단으로 셀 수 없으므로 UNVERIFIED다. 기준선이 있는 대상은 정책 뒤 실패 문구가 있거나
+    IPv6 주소가 없어지면 사용자 결과로 차단이고, 그 조회 뒤 이 정책의 새 행이
+    record_type "AAAA", action BLOCK으로 남아야 한다(DNS 로그에는 도메인 필드가 없어서
+    조회 전후의 행 id로 그 조회의 행을 가린다).
     """
     policy_name = resource_name(case.case_id, run_context.run_id)
     rule = DnsFirewallFactory.fqdn_rule(list(AAAA_HOSTS))
 
-    def aaaa_lookup(host: str) -> tuple[bool, str]:
+    def aaaa_lookup(host: str) -> tuple[bool, bool, str]:
+        """(실패 문구, IPv6 주소 있음, 출력 요약)."""
         result = executor.run(f"nslookup -type=AAAA {host}", timeout_sec=15)
         output = f"{result.stdout}\n{result.stderr}"
         failed = any(
@@ -572,16 +587,35 @@ def test_dns_firewall_blocks_aaaa_queries_too(case, run_context, dns_firewall, e
         )
         # 서버 주소(맨 위)는 빼고, 응답 부분(Name: 아래)에 IPv6 주소가 있는지 본다.
         answer = output.split("Name:", 1)[1] if "Name:" in output else ""
-        has_ipv6 = bool(_IPV6_RE.search(answer))
-        return failed or not has_ipv6, " ".join(output.split())[-300:]
+        return failed, bool(_IPV6_RE.search(answer)), " ".join(output.split())[-300:]
+
+    baseline = {host: aaaa_lookup(host) for host in AAAA_HOSTS}
+    for host, (failed, has_ipv6, output) in baseline.items():
+        case.record(
+            Step.SETUP, ok=has_ipv6 and not failed, kind=Kind.EVIDENCE,
+            detail=f"baseline AAAA {host}: {'IPv6 answer' if has_ipv6 and not failed else 'no IPv6 answer'}: {output}",
+        )
 
     def check(host: str) -> None:
+        failed, has_ipv6, output = baseline[host]
+        if failed or not has_ipv6:
+            unverified(
+                case, Step.USER_RESULT,
+                f"{host} gave no IPv6 answer even before the policy, so a missing answer "
+                f"afterwards proves nothing: {output}",
+            )
         a_blocked = dns_lookup_until_blocked(
             executor, host, run_context.policy_propagation_timeout_sec
         )
         assert a_blocked.blocked, f"A-record lookup for {host} never blocked: {a_blocked.detail}"
 
-        aaaa_blocked, output = aaaa_lookup(host)
+        mine = matches_network_policy(policy_name)
+        aaaa_rows = lambda: [  # noqa: E731
+            e for e in network_log.dns_events() if mine(e) and str(e.get("record_type")).upper() == "AAAA"
+        ]
+        seen = {e.event_id for e in aaaa_rows()}
+        failed, has_ipv6, output = aaaa_lookup(host)
+        aaaa_blocked = failed or not has_ipv6
         case.record(
             Step.USER_RESULT,
             ok=aaaa_blocked,
@@ -593,6 +627,26 @@ def test_dns_firewall_blocks_aaaa_queries_too(case, run_context, dns_firewall, e
             f"A DNS Firewall rule blocking {host} stopped the A-record "
             f"query but let an AAAA (IPv6) query for the same name through: {output}"
         )
+        try:
+            row = poll_until(
+                lambda: next((e for e in aaaa_rows() if e.event_id not in seen), None),
+                timeout_sec=run_context.event_poll_timeout_sec,
+                description=f"an AAAA row of {policy_name} after the {host} lookup",
+            )
+        except PollTimeout as timeout:
+            case.record(
+                Step.EVENT, ok=False, kind=Kind.ASSERTION, detail=str(timeout),
+                expected=f"a new record_type AAAA row of {policy_name}",
+            )
+            raise AssertionError(f"The AAAA lookup for {host} left no AAAA row under {policy_name}: {timeout}") from timeout
+        case.event_ids.append(row.event_id)
+        blocked_row = str(row.get("action")).upper() == "BLOCK"
+        case.record(
+            Step.EVENT, ok=blocked_row, kind=Kind.ASSERTION,
+            detail=f"dns_security_log id={row.event_id} record_type={row.get('record_type')} action={row.get('action')}",
+            expected="record_type AAAA, action BLOCK", actual=row.get("action"),
+        )
+        assert blocked_row, f"The AAAA row {row.event_id} for {host} records action {row.get('action')!r}, expected BLOCK"
 
     try:
         with dns_firewall.temporary(policy_name, [rule], action_type="BLOCK") as policy:

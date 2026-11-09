@@ -15,14 +15,17 @@ from bat.fixtures.testdata import BLOCK_TARGET_HOST, BLOCK_TARGET_URL
 from bat.fixtures.users import UserFactory
 from bat.events.poller import PollTimeout, poll_until
 from bat.events.web_log import matches_policy
-from bat.models import Kind, Step
+from bat.models import Step
 from tests.support import (
     await_security_event,
     cleanup_failed,
     environment_error,
     expect_allowed,
     expect_block,
+    expect_hold,
+    hold_after_change,
     pass_case,
+    policy_changed,
     record_identity,
     visit_until_blocked,
 )
@@ -152,17 +155,22 @@ def test_policy_applies_only_to_its_users(
             user_groups=[],
         ) as other_policy:
             case.policy_ids.append(other_policy.policy_id)
+            change = policy_changed(case, f"BLOCK scoped to user {bystander_id}")
 
-            traffic = browser_session.visit(BLOCK_TARGET_URL, case_id=case.case_id)
-            expect_allowed(case, traffic, BLOCK_TARGET_URL)
-            case.record(
-                Step.USER_RESULT,
-                ok=True,
-                detail=f"policy scoped to user {bystander_id} did not affect "
-                f"user {connector_user['id']}",
-                expected="not blocked for a different user",
-                actual="not blocked",
-                kind=Kind.EVIDENCE,
+            # 한 번 방문해서는 정책이 아직 안 퍼졌을 뿐인지 알 수 없다. 전파 예산 내내,
+            # 그리고 그 뒤에도 연속해서 열려야 한다.
+            hold = hold_after_change(
+                lambda: browser_session.visit(BLOCK_TARGET_URL, case_id=case.case_id),
+                want=lambda t: t.delivered, against=lambda t: t.blocked,
+                changed_at=change.at, budget_sec=run_context.policy_propagation_timeout_sec,
+                steady=True,
+            )
+            expect_hold(
+                case, hold,
+                expected=f"a policy scoped to user {bystander_id} never blocks user "
+                f"{connector_user['id']}, through and after the propagation budget",
+                failure=f"A policy scoped to user {bystander_id} blocked the connector user "
+                f"{connector_user['id']} — the users scope is not being applied",
             )
 
         # 이제 우리로 스코프한다. 같은 요청이 막혀야 한다.

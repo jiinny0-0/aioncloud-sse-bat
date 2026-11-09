@@ -2974,3 +2974,177 @@ def test_auth_server_password_encryption_fits_the_key():
     pem = "-----BEGIN PUBLIC KEY-----\n" + b64.b64encode(spki).decode() + "\n-----END PUBLIC KEY-----"
     assert _rsa_public_numbers(pem) == (n, e)
     assert len(rsa_oaep_encrypt(pem, b"user@example.com#_password")) == 256
+
+
+# -- 2단계: 요청 단위 이벤트, 상태 유지(hold), 부재 확인 (tests/support.py) -----------
+
+
+def _answer(kind: str) -> TrafficResult:
+    return {
+        "blocked": TrafficResult(url="u", status_code=403, blocked=True, via="curl"),
+        "delivered": TrafficResult(url="u", status_code=200, blocked=False, via="curl", delivered=True),
+        "none": TrafficResult(url="u", status_code=0, blocked=False, via="curl"),
+    }[kind]
+
+
+def _hold(clock, sequence, *, steady=False, budget=10.0):
+    """sequence[i]는 i번째 check의 결과. 시계는 instant_polling의 가짜 시계다."""
+    from tests.support import hold_after_change
+
+    answers = iter(sequence)
+    start = clock.now
+    return hold_after_change(
+        lambda: _answer(next(answers)),
+        want=lambda t: t.blocked if not steady else t.delivered,
+        against=lambda t: t.delivered if not steady else t.blocked,
+        changed_at=start, budget_sec=budget, steady=steady, interval_sec=2.0,
+    )
+
+
+def test_hold_requires_the_state_after_the_propagation_budget(instant_polling):
+    """상태 변경 뒤에는 첫 차단에서 멈추지 않는다. 기한 뒤 HOLD_REPEATS번 모두 차단이어야 held다."""
+    from tests.support import HOLD_REPEATS
+
+    held = _hold(instant_polling, ["delivered", "blocked"] + ["blocked"] * HOLD_REPEATS)
+    assert held.outcome == "held" and held.after_deadline == HOLD_REPEATS
+    assert instant_polling.now >= 10.0, "the repeats must come after the deadline"
+    # 이미 막혀 있다가(첫 결과 차단) 기한 뒤 풀리면 broke: X-001의 예전 거짓 PASS
+    broke = _hold(instant_polling, ["blocked", "blocked", "delivered"])
+    assert broke.outcome == "broke"
+    assert _hold(instant_polling, ["delivered"] * 20).outcome == "never"
+    assert _hold(instant_polling, ["blocked", "blocked", "none", "blocked"]).outcome == "inconclusive"
+
+
+def test_steady_hold_fails_on_any_block_during_or_after_the_budget(instant_polling):
+    """steady(바뀌면 안 되는 상태): 전파 구간이든 그 뒤든 한 번이라도 막히면 broke다."""
+    from tests.support import HOLD_REPEATS
+
+    assert _hold(instant_polling, ["delivered"] * 20, steady=True).outcome == "held"
+    late = ["delivered"] * 6 + ["blocked"] + ["delivered"] * 20
+    assert _hold(instant_polling, late, steady=True).outcome == "broke"
+    after = ["delivered"] * 6 + ["delivered"] * (HOLD_REPEATS - 1) + ["blocked"]
+    assert _hold(instant_polling, after, steady=True).outcome == "broke"
+    assert _hold(instant_polling, ["delivered", "none"] + ["delivered"] * 20, steady=True).outcome == "inconclusive"
+
+
+def test_expect_hold_verdicts(instant_polling):
+    """held만 통과한 assertion, inconclusive는 UNVERIFIED, never/broke는 FAIL(failure 문구를 그대로 씀)."""
+    from bat.verdict import Raised, classify
+    from tests.support import HOLD_REPEATS, Hold, VerificationUnavailable, expect_hold
+
+    def run(outcome):
+        case = CaseResult(case_id="BAT-X-001", product="cross", scenario="s", criteria=[Step.USER_RESULT.value])
+        hold = Hold(outcome, [_answer("blocked")] * 4, after_deadline=HOLD_REPEATS)
+        try:
+            expect_hold(case, hold, expected="blocked", failure="A higher-priority ALLOW policy on h let it through")
+        except VerificationUnavailable as exc:
+            return classify(case, Raised.UNAVAILABLE, str(exc))
+        except AssertionError as exc:
+            return classify(case, Raised.ASSERTION, str(exc))
+        case.status = Status.PASS
+        return classify(case, Raised.NOTHING)
+
+    assert run("held")[0] is Status.PASS
+    assert run("inconclusive")[0] is Status.UNVERIFIED
+    for outcome in ("broke", "never"):
+        status, reason = run(outcome)
+        assert status is Status.FAIL and reason.startswith("A higher-priority ALLOW policy on h let it through")
+
+
+class _FakeWebLog:
+    """보안 로그. sentinel_lag번 조회한 뒤에야 표지 행이 보인다(로그 지연)."""
+
+    def __init__(self, rows, *, sentinel_row=None, sentinel_lag=1):
+        self.rows = list(rows)
+        self.sentinel_row = sentinel_row
+        self.sentinel_lag = sentinel_lag
+        self.reads = 0
+
+    def security_events(self, lookback_min=10):
+        self.reads += 1
+        visible = list(self.rows)
+        if self.sentinel_row is not None and self.reads > self.sentinel_lag:
+            visible.append(self.sentinel_row)
+        return visible
+
+    def wait_for_security_event(self, match, *, timeout_sec=30.0, description="", **_):
+        from bat.events.poller import poll_until
+
+        return poll_until(
+            lambda: next((e for e in self.security_events() if match(e)), None),
+            timeout_sec=timeout_sec, description=description,
+        )
+
+
+def _no_event_case(log, absent_uri):
+    from bat.events.web_log import all_of, matches_policy, matches_target
+    from bat.verdict import Raised, classify
+    from tests.support import VerificationUnavailable, expect_no_event
+
+    case = CaseResult(case_id="BAT-SWG-002", product="swg", scenario="s", criteria=[Step.EVENT.value])
+    mine = matches_policy("P", "9")
+    try:
+        expect_no_event(
+            case, log, absent=all_of(mine, matches_target(absent_uri)), what="P rows for the other site",
+            sentinel=lambda: "https://httpbin.org/get?bat=s", sentinel_match=mine, timeout_sec=10,
+        )
+    except VerificationUnavailable as exc:
+        return classify(case, Raised.UNAVAILABLE, str(exc))
+    except AssertionError as exc:
+        return classify(case, Raised.ASSERTION, str(exc))
+    case.status = Status.PASS
+    return classify(case, Raised.NOTHING)
+
+
+def test_absence_is_judged_only_after_a_later_sentinel_row_appears(instant_polling):
+    """부재는 표지 요청의 행이 로그에 나타난 다음에 판정한다. 표지가 안 보이면 UNVERIFIED다."""
+    sentinel = _event(id=50, policy_name="P", policy_id=9, action="BLOCK", full_uri="https://httpbin.org/get?bat=s")
+    other = "https://www.iana.org/?bat=other1"
+    assert _no_event_case(_FakeWebLog([], sentinel_row=sentinel), other)[0] is Status.PASS
+    stray = _event(id=40, policy_name="P", policy_id=9, action="BLOCK", full_uri=other)
+    status, reason = _no_event_case(_FakeWebLog([stray], sentinel_row=sentinel), other)
+    assert status is Status.FAIL and "40" in reason
+    status, reason = _no_event_case(_FakeWebLog([]), other)  # 표지 행이 끝내 없다
+    assert status is Status.UNVERIFIED and "sentinel" in reason
+
+
+def test_marker_url_binds_the_event_to_that_request(instant_polling):
+    """marker_url을 주면 같은 정책의 이전 단계 행이 아니라 그 요청 자신의 행만 인정한다."""
+    from tests.support import await_security_event
+
+    earlier = _event(id=1, policy_name="P", policy_id=9, action="BLOCK", full_uri="https://httpbin.org/post?bat=x-before")
+    log = _FakeWebLog([earlier])
+    case = CaseResult(case_id="BAT-X-001", product="cross", scenario="s", criteria=[Step.EVENT.value])
+    with pytest.raises(AssertionError, match="no security event"):
+        await_security_event(case, log, "P", timeout_sec=5, policy_id=9,
+                             marker_url="https://httpbin.org/post?bat=x-after3")
+    own = _event(id=2, policy_name="P", policy_id=9, action="BLOCK", full_uri="https://httpbin.org/post?bat=x-after3")
+    log.rows.insert(0, own)
+    event = await_security_event(case, log, "P", timeout_sec=5, policy_id=9,
+                                 marker_url="https://httpbin.org/post?bat=x-after3")
+    assert event.event_id == "2"
+
+
+def test_request_until_logged_names_the_request_that_was_logged(instant_polling):
+    """정책이 늦게 적용돼도 되풀이해 보낸 요청 중 실제로 찍힌 요청의 URL을 돌려준다."""
+    from bat.events.web_log import matches_policy
+    from tests.support import request_until_logged
+
+    log = _FakeWebLog([])
+    sent = []
+
+    def send(url):
+        sent.append(url)
+        if len(sent) == 3:  # 세 번째 요청부터 정책이 적용됐다
+            log.rows.insert(0, _event(id=len(sent), policy_name="P", policy_id=9, action="LOGGING", full_uri=url))
+        return _answer("delivered")
+
+    found = request_until_logged(
+        log, send, match=matches_policy("P", 9), url_for=lambda n: f"https://httpbin.org/post?bat=p{n}",
+        budget_sec=20, event_timeout_sec=10,
+    )
+    assert found is not None and found[0] == "https://httpbin.org/post?bat=p3"
+    assert request_until_logged(
+        _FakeWebLog([]), lambda url: _answer("delivered"), match=matches_policy("P", 9),
+        url_for=lambda n: f"https://h/?bat={n}", budget_sec=6, event_timeout_sec=6,
+    ) is None

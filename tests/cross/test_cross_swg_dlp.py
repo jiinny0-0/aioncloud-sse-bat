@@ -12,7 +12,17 @@ from bat.fixtures.naming import resource_name
 from bat.fixtures.policies import CleanupWarning, DlpPolicyFactory, WebPolicyFactory
 from bat.fixtures.testdata import BLOCK_TARGET_HOST, POST_TARGET_URL, keyword_payload, marker
 from bat.models import Step
-from tests.support import await_security_event, cleanup_failed, curl_until_blocked, pass_case
+from bat.traffic.http import curl_status
+from tests.support import (
+    await_security_event,
+    cleanup_failed,
+    curl_until_blocked,
+    expect_hold,
+    hold_after_change,
+    marked_url,
+    pass_case,
+    policy_changed,
+)
 
 pytestmark = [
     pytest.mark.product("cross"),
@@ -77,33 +87,36 @@ def test_dlp_block_survives_a_higher_priority_allow(
                     web_policies.set_priority(
                         [(allower.policy_id, 1), (blocker.policy_id, 2)]
                     )
+                    change = policy_changed(case, "ALLOW raised above the DLP-linked BLOCK")
 
-                    traffic = curl_until_blocked(
-                        executor,
-                        POST_TARGET_URL,
-                        run_context.policy_propagation_timeout_sec,
-                        method="POST",
-                        data=keyword_payload(token),
+                    # 이미 막고 있던 상태라 변경 직후의 첫 403은 아무것도 증명하지 않는다.
+                    # 전파 예산이 지난 뒤에도 연속해서 막혀야 하고, 이벤트는 그 마지막
+                    # 요청(마커) 자신의 행이어야 한다.
+                    sent: list[str] = []
+
+                    def check():
+                        url = marked_url(POST_TARGET_URL, case, run_context, f"after{len(sent) + 1}")
+                        sent.append(url)
+                        return curl_status(executor, url, method="POST", data=keyword_payload(token))
+
+                    hold = hold_after_change(
+                        check, want=lambda t: t.blocked, against=lambda t: t.delivered,
+                        changed_at=change.at, budget_sec=run_context.policy_propagation_timeout_sec,
                     )
-                    case.record(
-                        Step.USER_RESULT,
-                        ok=traffic.blocked,
-                        detail=f"HTTP {traffic.status_code}",
-                        expected="blocked (DLP holds despite the higher-priority ALLOW)",
-                        actual=f"HTTP {traffic.status_code}",
-                    )
-                    assert traffic.blocked, (
-                        f"A higher-priority ALLOW policy on {BLOCK_TARGET_HOST} let the "
-                        f"DLP-flagged payload through (HTTP {traffic.status_code}) -- a "
-                        f"broad ALLOW policy can create a silent DLP blind spot"
+                    expect_hold(
+                        case, hold,
+                        expected="blocked (DLP holds despite the higher-priority ALLOW) after the propagation budget",
+                        failure=f"A higher-priority ALLOW policy on {BLOCK_TARGET_HOST} let the "
+                        f"DLP-flagged payload through -- a broad ALLOW policy can create a silent DLP blind spot",
                     )
 
-                    event = await_security_event(
+                    await_security_event(
                         case,
                         web_log,
                         block_name,
                         timeout_sec=run_context.event_poll_timeout_sec,
                         policy_id=blocker.policy_id,
+                        marker_url=sent[-1],
                     )
                     pass_case(case)
 

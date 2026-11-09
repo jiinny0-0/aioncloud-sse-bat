@@ -11,21 +11,26 @@ from __future__ import annotations
 
 import pytest
 
-from bat.events.web_log import matches_policy
+from bat.events.poller import PollTimeout, poll_until
+from bat.events.web_log import all_of, matches_policy, matches_target
 from bat.fixtures.enums import ActionType, Condition, RiskLevel, Subject
 from bat.fixtures.graphql_policies import ApplicationFirewallFactory, DnsFirewallFactory
 from bat.fixtures.naming import resource_name
 from bat.fixtures.policies import CleanupWarning, DlpPolicyFactory, WebPolicyFactory
-from bat.fixtures.testdata import SECOND_HOST, SECOND_URL, keyword_payload, marker
-from bat.models import Step
-from bat.traffic.http import resolve_ip
+from bat.fixtures.testdata import POST_TARGET_URL, SECOND_HOST, SECOND_URL, keyword_payload, marker
+from bat.models import Kind, Step
+from bat.traffic.http import curl_status, resolve_ip
 from tests.support import (
     await_network_event,
     cleanup_failed,
     curl_until_blocked,
     curl_until_unreachable,
+    describe,
     dns_lookup_until_allowed,
     dns_lookup_until_blocked,
+    expect_no_event,
+    marked_url,
+    matches_network_policy,
     pass_case,
 )
 
@@ -278,12 +283,14 @@ def test_dns_firewall_events_stay_out_of_the_web_log(
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P1")
 def test_dns_layer_intercepts_before_dlp_inspection(
-    case, run_context, rest, web_policies, dns_firewall, executor, network_log
+    case, run_context, rest, web_policies, dns_firewall, executor, network_log, web_log
 ):
     """DNS Firewall이 막으면 요청이 DLP 검사 단계까지 가지도 못한다.
 
-    단말 DNS 캐시 때문에 어느 계층이 답할지는 결정적이지 않다. 계층은 기록만 하고,
-    두 계층이 걸려 있을 때 요청이 어떤 식으로든 막히는지를 판정한다.
+    마지막 요청(마커) 전에 단말 DNS 캐시를 비워, 그 요청이 이름 해석부터 다시 하게 한다.
+    PASS하려면 그 요청이 통과하지 않고, 요청 뒤 DNS Firewall 정책의 새 행이 생기고,
+    DLP 연결 웹정책에는 그 요청의 행이 없어야 한다(뒤에 보낸 DLP 표지 요청의 행이 나타난
+    다음 판정).
     """
     await_baseline(executor, run_context.policy_propagation_timeout_sec)
     dlp = DlpPolicyFactory(rest)
@@ -343,33 +350,71 @@ def test_dns_layer_intercepts_before_dlp_inspection(
                         f"so there is no second layer to test: {lookup.detail}"
                     )
 
-                    traffic = curl_until_blocked(
-                        executor,
-                        SECOND_URL,
-                        run_context.policy_propagation_timeout_sec,
-                        method="POST",
-                        data=keyword_payload(token),
-                    )
-                    stopped = traffic.blocked or not traffic.status_code
-                    layer = "DNS (connection failed)" if not traffic.status_code else "HTTP (block page)"
-                    case.record(
-                        Step.USER_RESULT,
-                        ok=stopped,
-                        detail=f"answered by the {layer} layer",
-                        expected="the request is stopped by one of the two layers",
-                        actual=f"HTTP {traffic.status_code}" if traffic.status_code else "connection refused",
-                    )
-                    assert stopped, (
-                        f"Neither the DNS Firewall block on {SECOND_HOST} nor the "
-                        f"DLP-linked web policy stopped the request (HTTP "
-                        f"{traffic.status_code}), even though each of them blocks it alone"
-                    )
-
                     await_network_event(
                         case,
                         network_log,
                         dns_name,
                         kind="dns",
+                        timeout_sec=run_context.event_poll_timeout_sec,
+                    )
+                    dns_rows = matches_network_policy(dns_name)
+                    seen = {e.event_id for e in network_log.dns_events() if dns_rows(e)}
+
+                    executor.run("ipconfig /flushdns", timeout_sec=15)
+                    final = marked_url(SECOND_URL, case, run_context, "final")
+                    traffic = curl_status(executor, final, method="POST", data=keyword_payload(token))
+                    case.record(
+                        Step.USER_RESULT,
+                        ok=not traffic.delivered,
+                        kind=Kind.ASSERTION,
+                        detail=f"{final} -> {describe(traffic)}",
+                        expected="the request does not go through",
+                        actual=describe(traffic),
+                    )
+                    assert not traffic.delivered, (
+                        f"Neither the DNS Firewall block on {SECOND_HOST} nor the "
+                        f"DLP-linked web policy stopped the request (HTTP "
+                        f"{traffic.status_code}), even though each of them blocks it alone"
+                    )
+
+                    try:
+                        new_row = poll_until(
+                            lambda: next(
+                                (e for e in network_log.dns_events() if dns_rows(e) and e.event_id not in seen),
+                                None,
+                            ),
+                            timeout_sec=run_context.event_poll_timeout_sec,
+                            description=f"a new {dns_name} row after the final request",
+                        )
+                    except PollTimeout as timeout:
+                        case.record(
+                            Step.EVENT, ok=False, kind=Kind.ASSERTION, detail=str(timeout),
+                            expected=f"a new {dns_name} row for the final request's lookup",
+                        )
+                        raise AssertionError(
+                            f"The final request left no new DNS Firewall row, so it was not "
+                            f"stopped at the DNS layer: {timeout}"
+                        ) from timeout
+                    case.event_ids.append(new_row.event_id)
+                    case.record(
+                        Step.EVENT, ok=True, kind=Kind.ASSERTION,
+                        detail=f"dns_security_log id={new_row.event_id} after the final request "
+                        f"(cache flushed first)",
+                        expected=f"a new {dns_name} row", actual=new_row.event_id,
+                    )
+
+                    blocker_rows = matches_policy(block_name, blocker.policy_id)
+
+                    def sentinel() -> str:
+                        url = marked_url(POST_TARGET_URL, case, run_context, "sentinel")
+                        curl_status(executor, url, method="POST", data=keyword_payload(token))
+                        return url
+
+                    expect_no_event(
+                        case, web_log,
+                        absent=all_of(blocker_rows, matches_target(final)),
+                        what=f"{block_name} (DLP) row for the final request",
+                        sentinel=sentinel, sentinel_match=blocker_rows,
                         timeout_sec=run_context.event_poll_timeout_sec,
                     )
                     pass_case(case)

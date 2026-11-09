@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -18,8 +19,15 @@ from bat.fixtures.naming import belongs_to_run, is_bat_resource, resource_name
 from bat.clients.rest import pick_id
 from bat.fixtures.policies import CleanupWarning, WEB_POLICY_PATH, WebPolicyFactory
 from bat.fixtures.testdata import ALLOW_TARGET_URL, BLOCK_TARGET_HOST
+from bat.events.web_log import all_of, matches_policy, matches_target
 from bat.models import Kind, Step
-from tests.support import cleanup_failed, environment_error, pass_case
+from tests.support import (
+    cleanup_failed,
+    environment_error,
+    marked_url,
+    pass_case,
+    request_until_logged,
+)
 
 log = logging.getLogger(__name__)
 
@@ -131,8 +139,14 @@ def test_security_log_is_readable(case, web_log):
 @pytest.mark.case("BAT-BASIC-004")
 @pytest.mark.diagnostic
 @pytest.mark.priority("P1")
-def test_endpoint_is_behind_the_connector(case, run_context, executor, web_log, browser_session):
-    """테스트 단말의 트래픽이 실제로 SSE를 경유한다."""
+def test_endpoint_is_behind_the_connector(
+    case, run_context, executor, web_log, browser_session, web_policies
+):
+    """테스트 단말의 트래픽이 실제로 SSE를 경유한다.
+
+    커넥터 프로세스가 떠 있는지만으로는 모른다. ALLOW_TARGET 호스트에 LOGGING 정책을 걸고
+    단말 브라우저로 마커를 단 요청을 보내, 그 요청 자신의 행이 보안 로그에 찍혀야 한다.
+    """
     process = run_context.profile.connector_process
     state = connector_state(executor, process)
     case.record(
@@ -147,19 +161,45 @@ def test_endpoint_is_behind_the_connector(case, run_context, executor, web_log, 
         f"SSE and every enforcement case becomes meaningless."
     )
 
-    before = len(web_log.security_events(lookback_min=24 * 60))
-    browser_session.visit(ALLOW_TARGET_URL, case_id=case.case_id)
-    case.record(Step.ACTION, ok=True, detail=f"browser visited {ALLOW_TARGET_URL}")
-
-    # 어떤 정책에도 맞지 않는 트래픽은 이벤트를 남기지 않으므로 새 기록을 assert할 수
-    # 없다. 확인할 수 있는 것은 터널 어댑터와 로그를 읽을 수 있는지다.
-    case.record(
-        Step.USER_RESULT,
-        ok=True,
-        detail=f"log reachable, {before} event(s) known before the request",
-        kind=Kind.EVIDENCE,
-    )
-    pass_case(case)
+    policy_name = resource_name(case.case_id, run_context.run_id)
+    host = urlsplit(ALLOW_TARGET_URL).hostname
+    rule = WebPolicyFactory.build_rule(Subject.HTTP_HOST, Condition.IS, [host])
+    try:
+        with web_policies.temporary(policy_name, [rule], action_type="LOGGING") as policy:
+            case.policy_ids.append(policy.policy_id)
+            logged = request_until_logged(
+                web_log,
+                lambda url: browser_session.visit(url, case_id=case.case_id),
+                match=matches_policy(policy_name, policy.policy_id),
+                url_for=lambda n: marked_url(ALLOW_TARGET_URL, case, run_context, f"via{n}"),
+                budget_sec=run_context.policy_propagation_timeout_sec,
+                event_timeout_sec=run_context.event_poll_timeout_sec,
+            )
+            case.record(
+                Step.USER_RESULT,
+                ok=logged is not None,
+                kind=Kind.ASSERTION,
+                detail=f"{logged[0]} was logged under {policy_name}" if logged
+                else f"none of the marked requests to {host} reached the security log",
+                expected="this endpoint's own marked request appears in the SSE log",
+            )
+            assert logged, (
+                f"{process} is running but none of this endpoint's marked requests to {host} "
+                f"appeared under the LOGGING policy {policy_name}, so its traffic is not going through SSE"
+            )
+            event = web_log.wait_for_security_event(
+                all_of(matches_policy(policy_name, policy.policy_id), matches_target(logged[0])),
+                timeout_sec=run_context.event_poll_timeout_sec,
+            )
+            case.event_ids.append(event.event_id)
+            case.record(
+                Step.EVENT, ok=True, kind=Kind.EVIDENCE,
+                detail=f"row id={event.event_id} device_id={event.get('device_id')} "
+                f"user={event.get('user_name')} src_ip={event.get('src_ip')}",
+            )
+            pass_case(case)
+    except CleanupWarning as warning:
+        cleanup_failed(case, warning)
 
 
 @pytest.mark.case("BAT-BASIC-005")

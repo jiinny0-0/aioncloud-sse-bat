@@ -22,7 +22,7 @@ from bat.fixtures.testdata import (
     UNRELATED_URLS,
     echo_url,
 )
-from bat.events.web_log import matches_policy
+from bat.events.web_log import all_of, matches_policy
 from bat.models import Kind, Step
 from tests.support import (
     across_targets,
@@ -31,7 +31,10 @@ from tests.support import (
     describe,
     expect_allowed,
     expect_block,
+    expect_no_event,
+    marked_url,
     marker_of,
+    matches_any_target,
     pass_case,
     record_identity,
     unverified,
@@ -106,15 +109,23 @@ def test_http_host_block(case, run_context, web_policies, browser_session, web_l
 def test_non_matching_host_allowed(case, run_context, web_policies, browser_session, web_log):
     """정책에 매칭되지 않는 사이트는 정상 접속되고 보안 로그가 남지 않는다.
 
-    BLOCK_TARGET_HOST만 막은 채로 관계없는 사이트 여러 곳(UNRELATED_URLS)에 접속한다.
+    BLOCK_TARGET_HOST만 막는 정책이 적용 중임을 먼저 그 호스트의 차단과 그 요청의 이벤트로
+    증명한다(양성 대조). 그 뒤 관계없는 사이트 여러 곳(UNRELATED_URLS)이 열리는지 보고,
+    마지막에 차단 대상으로 표지 요청을 보내 그 행이 로그에 나타난 다음 관계없는 요청들의
+    행이 이 정책으로 하나도 없는지 판정한다.
     """
     policy_name = resource_name(case.case_id, run_context.run_id)
     rule = WebPolicyFactory.build_rule(Subject.HTTP_HOST, Condition.IS, [BLOCK_TARGET_HOST])
+    unrelated = {
+        url: marked_url(url, case, run_context, f"other{number}")
+        for number, url in enumerate(UNRELATED_URLS, start=1)
+    }
 
     def check(url: str) -> None:
-        traffic = browser_session.visit(url, case_id=case.case_id)
-        case.record(Step.ACTION, ok=True, detail=f"browser visited {url}")
-        expect_allowed(case, traffic, url)
+        target = unrelated[url]
+        traffic = browser_session.visit(target, case_id=case.case_id)
+        case.record(Step.ACTION, ok=True, detail=f"browser visited {target}")
+        expect_allowed(case, traffic, target)
 
     try:
         with web_policies.temporary(policy_name, [rule], action_type=ActionType.BLOCK) as policy:
@@ -122,22 +133,32 @@ def test_non_matching_host_allowed(case, run_context, web_policies, browser_sess
             case.record(
                 Step.SETUP, ok=True, detail=f"policy {policy_name} blocks {BLOCK_TARGET_HOST} only"
             )
+            mine = matches_policy(policy_name, policy.policy_id)
+
+            positive = marked_url(BLOCK_TARGET_URL, case, run_context, "positive")
+            blocked = visit_until_blocked(
+                browser_session, positive, case.case_id, run_context.policy_propagation_timeout_sec
+            )
+            expect_block(case, blocked, positive)
+            await_security_event(
+                case, web_log, policy_name, timeout_sec=run_context.event_poll_timeout_sec,
+                policy_id=policy.policy_id, marker_url=positive,
+            )
 
             across_targets(case, UNRELATED_URLS, check, what="non-matching site delivered")
 
-            # 여기서는 부재가 판정의 전부다. 이 테넌트는 접근 로그를 남기지 않으므로
-            # 찾아볼 긍정 기록이 없다.
-            quiet = web_log.no_security_event(
-                matches_policy(policy_name)
+            def sentinel() -> str:
+                url = marked_url(BLOCK_TARGET_URL, case, run_context, "sentinel")
+                browser_session.visit(url, case_id=case.case_id)
+                return url
+
+            expect_no_event(
+                case, web_log,
+                absent=all_of(mine, matches_any_target(unrelated.values())),
+                what=f"{policy_name} rows for the non-matching requests",
+                sentinel=sentinel, sentinel_match=mine,
+                timeout_sec=run_context.event_poll_timeout_sec,
             )
-            case.record(
-                Step.EVENT,
-                ok=quiet,
-                detail="a non-matching request must not raise a security event",
-                expected="no event for this policy",
-                actual="no event" if quiet else "event found",
-            )
-            assert quiet, f"Unexpected security event recorded for {policy_name}"
             pass_case(case)
 
     except CleanupWarning as warning:

@@ -37,6 +37,7 @@ from bat.fixtures.testdata import (
 )
 from bat.models import Kind, Step
 from bat.traffic.http import (
+    curl_status,
     remove_temp_file,
     resolve_ip,
     upload_content_echoed,
@@ -53,8 +54,11 @@ from tests.support import (
     expect_allowed,
     expect_block,
     expect_delivered,
+    expect_no_event,
+    marked_url,
     module_scope_or_stop,
     pass_case,
+    request_until_logged,
     unverified,
     visit_until_blocked,
 )
@@ -162,8 +166,7 @@ NEGATIVE_SETTLE_SEC = 5.0
 
 def _marked(url: str, case, run_context, label: str) -> str:
     """다른 어떤 요청도 갖지 않는 URL을 만들어, 로그 행을 이 요청에 묶을 수 있게 한다."""
-    separator = "&" if "?" in url else "?"
-    return f"{url}{separator}bat={case.case_id}-{run_context.run_id}-{label}".lower()
+    return marked_url(url, case, run_context, label)
 
 
 def _created_priority(run_context, audit_log: AuditLogReader, name: str) -> int | None:
@@ -838,9 +841,16 @@ def test_http_method_condition_matches_real_traffic(
 
     값은 `IN` + 대문자 메서드명이다. BLOCK을 쓰지 않는다: 메서드 조건은 목적지를
     가리지 않아 러너 자신의 콘솔 로그인(POST)까지 막는다. LOGGING으로 매칭만 본다.
+
+    이 정책은 러너 자신의 API POST(로그 조회 포함)도 기록하므로, 마커를 단 POST 그 요청의
+    행만 인정한다. 음성 대조로 마커를 단 GET을 보내고, 그 뒤 보낸 POST 표지의 행이 나타난
+    다음 GET의 행이 없는지 본다.
     """
     policy_name = resource_name(case.case_id, run_context.run_id)
     rule = WebPolicyFactory.build_rule(Subject.HTTP_METHOD, Condition.IN, ["POST"])
+
+    def post(url: str):
+        return curl_status(executor, url, method="POST", data="bat=probe")
 
     try:
         with web_policies.temporary(
@@ -848,20 +858,43 @@ def test_http_method_condition_matches_real_traffic(
         ) as policy:
             case.policy_ids.append(policy.policy_id)
             case.record(Step.SETUP, ok=True, detail="LOGGING scoped to HTTP_METHOD POST")
+            mine = matches_policy(policy_name, policy.policy_id)
 
-            traffic = curl_until_blocked(
-                executor,
-                POST_TARGET_URL,
-                run_context.policy_propagation_timeout_sec,
-                method="POST",
-                data="bat=probe",
+            logged = request_until_logged(
+                web_log, post, match=mine,
+                url_for=lambda n: marked_url(POST_TARGET_URL, case, run_context, f"post{n}"),
+                budget_sec=run_context.policy_propagation_timeout_sec,
+                event_timeout_sec=run_context.event_poll_timeout_sec,
             )
-            expect_allowed(case, traffic, POST_TARGET_URL)
-
+            if logged is None:
+                case.record(
+                    Step.EVENT, ok=False, kind=Kind.ASSERTION,
+                    detail="none of the marked POST requests was logged under the policy",
+                    expected=f"a row of {policy_name} for a marked POST",
+                )
+                raise AssertionError(f"{policy_name} never logged any of this case's own POST requests")
+            post_url, traffic = logged
+            expect_allowed(case, traffic, post_url)
             await_security_event(
                 case, web_log, policy_name, timeout_sec=run_context.event_poll_timeout_sec,
-                expected_action="LOGGING",
-                policy_id=policy.policy_id,
+                expected_action="LOGGING", policy_id=policy.policy_id, marker_url=post_url,
+            )
+
+            get_url = marked_url(BLOCK_TARGET_URL, case, run_context, "get")
+            expect_allowed(case, curl_status(executor, get_url), get_url)
+
+            def sentinel() -> str:
+                url = marked_url(POST_TARGET_URL, case, run_context, "sentinel")
+                post(url)
+                return url
+
+            expect_no_event(
+                case, web_log,
+                absent=all_of(mine, matches_target(get_url)),
+                what=f"{policy_name} row for the GET request",
+                sentinel=sentinel,
+                sentinel_match=mine,
+                timeout_sec=run_context.event_poll_timeout_sec,
             )
             _check_audit_log(case, run_context, audit_log, policy_name)
             pass_case(case)
