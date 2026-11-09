@@ -115,54 +115,6 @@ def post_payload(
     )
 
 
-def find_live_proxies(
-    executor: Executor,
-    probe_url: str,
-    *,
-    list_url: str,
-    max_found: int = 8,
-    max_candidates: int = 60,
-    probe_timeout_sec: int = 5,
-) -> list[str]:
-    """지금 실제로 트래픽을 중계하는 공개 HTTP 프록시를 찾는다.
-
-    공개 프록시 목록은 계속 바뀌므로, 후보를 `list_url`(`proxy`와 `anonymity` 항목이
-    있는 JSON 피드)에서 매번 새로 받아 단말을 통해 시도하고, transparent 프록시는
-    마지막에 시도한다. `probe_url`은 평문 http://여야 한다. 목록에 있는 프록시 대부분이
-    CONNECT 터널을 쓰는 HTTPS를 중계하지 못한다.
-
-    처음 시도한 max_candidates개 중 동작하는 프록시를 최대 max_found개 반환한다.
-    중계가 된다고 BLOCK_PUBLIC_PROXY가 그 프록시를 잡는다는 뜻은 아니므로, 호출자가
-    정책에 대고 시도해 본다.
-    """
-    import httpx
-
-    try:
-        response = httpx.get(list_url, timeout=10)
-        response.raise_for_status()
-        entries = response.json()
-        candidates = [
-            e["proxy"] for e in sorted(entries, key=lambda e: e.get("anonymity") == "transparent")
-            if isinstance(e, dict) and e.get("proxy")
-        ]
-    except Exception as exc:
-        log.warning("Could not fetch/parse live proxy list from %s: %s", list_url, exc)
-        return []
-
-    found: list[str] = []
-    for candidate in candidates[:max_candidates]:
-        result = curl_status(executor, probe_url, proxy=candidate, timeout_sec=probe_timeout_sec)
-        if result.status_code:
-            found.append(candidate)
-            if len(found) >= max_found:
-                break
-
-    log.info(
-        "Found %d live proxies (of %d tried) from %s", len(found), max_candidates, list_url
-    )
-    return found
-
-
 _DNS_ANSWER_RE = re.compile(r"address(?:es)?:\s*[0-9a-f]")
 # DNS Firewall 차단 페이지의 문구(lguplus에서 확인). 웹 정책 차단 페이지("blocked by a web security
 # policy")와 구분해야, 웹 정책이 막은 호스트를 DNS 차단으로 잘못 보지 않는다.

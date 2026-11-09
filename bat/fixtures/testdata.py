@@ -39,13 +39,6 @@ UNRELATED_URLS = (ALLOW_TARGET_URL, "https://example.net/", SECOND_URL)
 def echo_url(host: str, path: str = "/get") -> str:
     return f"https://{host}{path}"
 
-# public-proxy 시그니처 케이스용 공개 HTTP 프록시 실시간 목록. 무료 프록시는
-# 계속 바뀌므로 후보는 실행 시점에 가져온다(bat.traffic.http.find_live_proxies).
-# JSON에 anonymity 필드가 들어 있다.
-PUBLIC_PROXY_LIST_URL = (
-    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.json"
-)
-
 # CASB SaaS 앱 카탈로그 id. API는 목록을 주지 않으며, 이 값은 CASB 보안로그의
 # in_app_service { id name }에서 얻었다. `1`은 앱 하나가 아니라 "전체 앱"
 # 센티널이라 뺐다.

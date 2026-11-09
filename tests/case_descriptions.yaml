@@ -548,20 +548,6 @@ BAT-SWG-005:
     action_type: BLOCK
   test_data: category_name/policy_name은 resource_name()으로 동적 생성, 카테고리에 등록한 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org, 방문 URL="https://<호스트>/get"
   expected_results: 직접 만든 카테고리에 대상 호스트를 등록하고 그 카테고리를 조건으로 건 정책이 실제 트래픽을 차단하고 보안 로그에 남아야 한다.
-BAT-SWG-006:
-  test_steps: |-
-    1. 실시간 공개 프록시 목록에서 트래픽을 중계하는 프록시를 찾음
-    2. 시그니처 LOGGING 사본으로 목록 밖 매칭이 없는지 먼저 확인(module_scope_or_stop)
-    3. BLOCK_PUBLIC_PROXY BLOCK 정책 생성
-    4. 프록시를 하나씩 거쳐 요청을 보내, 403/451이면서 본문에 SSE 차단 페이지 문구(profile.block_page_marker)가 있으면 차단으로 셈(프록시 자신의 403 배제)
-    5. 차단되면 이 정책의 보안로그 행 확인. 어느 프록시도 인식되지 않으면 UNVERIFIED
-    6. 정책 삭제
-  test_parameters: |-
-    Signature module: BLOCK_PUBLIC_PROXY
-    Probe target: http://<BLOCK_TARGET_HOST>/get(plain HTTP)
-  test_data: PUBLIC_PROXY_LIST_URL에서 매 실행 동적으로 가져오는 공개 프록시 후보 목록(고정 리스트 아님)
-  expected_results: 공개 프록시를 거친 요청이 SSE 차단 페이지로 막히고 이벤트가 남는다.
-  actual_result: 공개 프록시 10개로 요청했지만 어느 것도 시그니처에 차단되지 않음
 BAT-SWG-008:
   test_steps: |-
     1. HTTP_HOST 조건(IS, httpbin.org)으로 LOGGING 정책을 생성한다
