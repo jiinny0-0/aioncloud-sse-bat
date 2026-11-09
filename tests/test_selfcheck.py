@@ -1195,8 +1195,10 @@ def test_eicar_counts_as_missed_only_when_delivered_intact():
     assert eicar_outcome(traffic(0), None) == "unknown"      # 업로드가 응답을 받지 못함
 
     content = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$TEST"
-    body = json.dumps({"files": {"file": content + "\r\n"}, "form": {}})
+    body = json.dumps({"files": {"file": content}, "form": {}})
     assert echoed_file_intact(body, content) is True
+    # 바이트 그대로 비교한다: 끝에 줄바꿈이 붙어도 그대로 전달된 것이 아니다.
+    assert echoed_file_intact(json.dumps({"files": {"file": content + "\r\n"}}), content) is False
     assert echoed_file_intact(json.dumps({"files": {"file": "changed"}}), content) is False
     assert echoed_file_intact("<html>block page</html>", content) is None
     assert echoed_file_intact(json.dumps({"files": {}}), content) is None
@@ -2123,7 +2125,14 @@ CONFIGURED_DEVICE = "9F8E7D6C-5B4A-3333-4444-555566667777"
 OTHER_DEVICE = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"  # 서버 터널의 id에는 대시가 없다
 
 
-def _auth_row(row_id, result, device_id=None, time="2026-10-13T06:17:04Z"):
+def _ago(hours: float) -> str:
+    """지금부터 hours시간 전(UTC, auth_log 행의 time 형식)."""
+    moment = datetime.now(timezone.utc).timestamp() - hours * 3600
+    return datetime.fromtimestamp(moment, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _auth_row(row_id, result, device_id=None, time=None):
+    time = time or _ago(2)
     return _event(id=row_id, auth_result=result, device_id=device_id, login_id="someone",
                   user_name="someone", src_ip="10.0.8.1", time=time)
 
@@ -2154,11 +2163,25 @@ class _FakeConnectorEndpoint:
             output = ""
         return SimpleNamespace(stdout=f"{output}\r\n", stderr="", ok=True)
 
+    refuse_from_days = None  # 이 일수 이상의 조회는 서버가 거부한다(ApiError)
+
     def events(self, *, lookback_min=10, device_id="", **_):
         self.device_filters.append(device_id)
         if device_id and self.honours_filter:
             return [row for row in self.rows if row.get("device_id") == device_id]
         return list(self.rows)
+
+    def device_rows(self, device_id, *, lookback_min):
+        self.device_filters.append(device_id)
+        self.lookbacks = [*getattr(self, "lookbacks", []), lookback_min]
+        if self.refuse_from_days and lookback_min >= self.refuse_from_days * 24 * 60:
+            raise ApiError("range too wide")
+        since = datetime.now(timezone.utc).timestamp() - lookback_min * 60
+        rows = self.rows if not self.honours_filter else [r for r in self.rows if r.get("device_id") == device_id]
+        return [
+            row for row in rows
+            if datetime.fromisoformat(str(row.get("time")).replace("Z", "+00:00")).timestamp() >= since
+        ]
 
 
 def _run_ztna_001(endpoint, configured_device_id=""):
@@ -2190,8 +2213,8 @@ def test_ztna_001_fails_when_this_endpoints_newest_row_is_a_disconnect():
     """세션이 맺어졌던 기록이 있어도 가장 최근 행이 연결 해제면 지금 연결돼 있다는 근거가 아니다."""
     rows = [
         *UNRELATED_AUTH_ROWS,
-        _auth_row(206, "AUTH_CONNECT_VPN", THIS_DEVICE, time="2026-10-13T06:00:00Z"),
-        _auth_row(202, "AUTH_DISCONNECT_VPN", THIS_DEVICE, time="2026-10-13T07:00:00Z"),
+        _auth_row(206, "AUTH_CONNECT_VPN", THIS_DEVICE, time=_ago(3)),
+        _auth_row(202, "AUTH_DISCONNECT_VPN", THIS_DEVICE, time=_ago(2)),
     ]
     status, reason, case = _run_ztna_001(_FakeConnectorEndpoint(rows))
     assert status is Status.FAIL, reason
@@ -2201,8 +2224,8 @@ def test_ztna_001_fails_when_this_endpoints_newest_row_is_a_disconnect():
 def test_ztna_001_a_reconnect_after_a_disconnect_passes():
     rows = [
         *UNRELATED_AUTH_ROWS,
-        _auth_row(202, "AUTH_DISCONNECT_VPN", THIS_DEVICE, time="2026-10-13T06:00:00Z"),
-        _auth_row(207, "AUTH_CONNECT_VPN", THIS_DEVICE, time="2026-10-13T07:00:00Z"),
+        _auth_row(202, "AUTH_DISCONNECT_VPN", THIS_DEVICE, time=_ago(3)),
+        _auth_row(207, "AUTH_CONNECT_VPN", THIS_DEVICE, time=_ago(2)),
     ]
     status, reason, case = _run_ztna_001(_FakeConnectorEndpoint(rows))
     assert status is Status.PASS, reason
@@ -3591,3 +3614,152 @@ def test_ztna_config_block_is_optional_and_partial():
     assert (partial.server_ip, partial.domain, partial.port) == ("", "", 8080)
     full = _build_ztna_target({"ztna": {"server_ip": "192.168.3.106", "domain": "d"}})
     assert full.port == 0, "no port in config means discover one"
+
+
+# --- BAT-ZTNA-001: 24시간보다 오래된 세션도 찾는다 ---
+
+def test_ztna_001_finds_a_connect_older_than_a_day():
+    """커넥터가 며칠 전에 연결한 뒤 다시 로그인하지 않았어도, 그 연결이 가장 최근 행이면 PASS다."""
+    own = _auth_row(301, "AUTH_CONNECT_VPN", THIS_DEVICE, time=_ago(4 * 24))
+    endpoint = _FakeConnectorEndpoint([*UNRELATED_AUTH_ROWS, own])
+    status, reason, case = _run_ztna_001(endpoint)
+    assert status is Status.PASS, reason
+    assert case.event_ids == ["301"]
+    assert endpoint.lookbacks == [24 * 60, 7 * 24 * 60], "widens 1 day -> 7 days and stops there"
+    evidence = " ".join(s.detail for s in case.steps if s.kind is Kind.EVIDENCE)
+    assert "4.0 day(s) ago" in evidence and "this run began at" in evidence
+
+
+def test_ztna_001_an_old_disconnect_as_the_newest_row_fails():
+    rows = [
+        *UNRELATED_AUTH_ROWS,
+        _auth_row(302, "AUTH_CONNECT_VPN", THIS_DEVICE, time=_ago(10 * 24)),
+        _auth_row(303, "AUTH_DISCONNECT_VPN", THIS_DEVICE, time=_ago(9 * 24)),
+    ]
+    status, reason, case = _run_ztna_001(_FakeConnectorEndpoint(rows))
+    assert status is Status.FAIL, reason
+    assert "AUTH_DISCONNECT_VPN" in reason
+
+
+def test_ztna_001_without_rows_in_30_days_is_unverified():
+    own = _auth_row(304, "AUTH_CONNECT_VPN", THIS_DEVICE, time=_ago(40 * 24))
+    endpoint = _FakeConnectorEndpoint([*UNRELATED_AUTH_ROWS, own])
+    status, reason, case = _run_ztna_001(endpoint)
+    assert status is Status.UNVERIFIED, reason
+    assert "30 day(s)" in reason
+    assert endpoint.lookbacks == [24 * 60, 7 * 24 * 60, 30 * 24 * 60]
+
+
+def test_ztna_001_stops_widening_when_the_server_refuses_the_range():
+    own = _auth_row(305, "AUTH_CONNECT_VPN", THIS_DEVICE, time=_ago(10 * 24))
+    endpoint = _FakeConnectorEndpoint([*UNRELATED_AUTH_ROWS, own])
+    endpoint.refuse_from_days = 30
+    status, reason, case = _run_ztna_001(endpoint)
+    assert status is Status.UNVERIFIED, reason
+    assert "7 day(s)" in reason
+    assert any("was refused" in s.detail for s in case.steps)
+
+
+class _AuthLogGql:
+    """auth_log 쿼리에 offset에 따라 페이지를 돌려주는 GraphQL."""
+
+    def __init__(self, total):
+        self.total, self.offsets = total, []
+
+    def execute(self, query, variables=None):
+        offset = variables["offset"]
+        self.offsets.append(offset)
+        ids = range(offset + 1, min(offset + variables["limit"], self.total) + 1)  # 행 id는 1부터
+        rows = [{"id": i, "time": f"t{i:04d}", "device_id": variables.get("device_id")} for i in ids]
+        return {"SIA": {"log": {"auth_log": {"log_count": self.total, "log_list": rows}}}}
+
+
+@pytest.mark.parametrize("total, offsets", [(30, [0]), (100, [0]), (250, [0, 150])])
+def test_auth_log_device_rows_reads_both_ends_of_a_long_result(total, offsets):
+    """서버 정렬 순서를 가정하지 않으려고, 한 페이지보다 많으면 마지막 페이지도 읽는다."""
+    from bat.events.auth_log import AuthLogReader
+
+    gql = _AuthLogGql(total)
+    rows = AuthLogReader(gql).device_rows("DEV", lookback_min=60)
+    assert gql.offsets == offsets
+    ids = {int(r.event_id) for r in rows}
+    assert 1 in ids and total in ids, "the first and the last row of the whole result"
+    assert len(ids) == len(rows), "no duplicate rows"
+
+
+# --- BAT-SWG-016: 업로드는 바이트 그대로, BOM 없이 ---
+
+EICAR_LIKE = "X5O!P%@AP[4" + chr(92) + "PZX54(P^)7CC)7}$TEST"
+BOM = chr(0xFEFF)
+CRLF = chr(13) + chr(10)
+
+
+def test_upload_script_writes_bytes_instead_of_piping_text():
+    """PowerShell 파이프로 넘기면 앞에 BOM, 뒤에 줄바꿈이 붙어 EICAR이 EICAR로 보이지 않는다."""
+    from bat.traffic.http import _b64, _upload_script
+
+    script = _upload_script("https://h/post", EICAR_LIKE, "eicar.txt", "file", 40, keep_body=True)
+    assert "WriteAllBytes" in script and _b64(EICAR_LIKE) in script
+    assert "| & curl" not in script and "$text" not in script and "@-" not in script
+    assert '-F "file=@$name;filename=eicar.txt"' in script
+    assert f"-ne {len(EICAR_LIKE.encode())}" in script, "checks the file is still there, unchanged, before sending"
+    assert script.count("Remove-Item") >= 2, "the file is removed after the upload and when it was tampered with"
+
+
+class _UploadEndpoint:
+    def __init__(self, stdout):
+        self.stdout, self.commands = stdout, []
+
+    def run(self, command, timeout_sec=None):
+        self.commands.append(command)
+        return SimpleNamespace(stdout=self.stdout, stderr="", returncode=0)
+
+
+@pytest.fixture
+def no_temp_files(monkeypatch):
+    from bat.traffic import http
+
+    monkeypatch.setattr(http, "write_temp_file", lambda executor, content, name: "C:/tmp/" + name)
+    monkeypatch.setattr(http, "remove_temp_file", lambda executor, path: None)
+
+
+def test_upload_reports_a_file_the_endpoint_removed(no_temp_files):
+    from bat.traffic.http import UploadFileRemoved, upload_content_echoed
+
+    endpoint = _UploadEndpoint("BAT_UPLOAD_FILE_MISSING the file was gone or changed right after writing")
+    with pytest.raises(UploadFileRemoved, match="gone or changed"):
+        upload_content_echoed(endpoint, "https://h/post", EICAR_LIKE, filename="eicar.txt")
+
+
+def test_upload_echo_must_match_byte_for_byte(no_temp_files):
+    from bat.traffic.http import upload_content_echoed
+
+    body = json.dumps({"files": {"file": EICAR_LIKE}})
+    traffic, intact, change = upload_content_echoed(
+        _UploadEndpoint(body.replace("}}", "}}" + CRLF) + "200"), "https://h/post", EICAR_LIKE, filename="eicar.txt"
+    )
+    assert traffic.status_code == 200 and traffic.delivered
+    assert (intact, change) == (True, "")
+
+    bom_body = json.dumps({"files": {"file": BOM + EICAR_LIKE}})
+    traffic, intact, change = upload_content_echoed(
+        _UploadEndpoint(bom_body + CRLF + "200"), "https://h/post", EICAR_LIKE, filename="eicar.txt"
+    )
+    assert intact is False
+    assert "byte order mark" in change
+
+
+def test_echo_with_a_bom_or_line_break_is_not_intact():
+    from bat.traffic.http import echo_change, echoed_file_intact
+
+    for received, note in [
+        (BOM + EICAR_LIKE, "byte order mark"),
+        (EICAR_LIKE + CRLF, "line break"),
+        (BOM + EICAR_LIKE + CRLF, "byte order mark"),
+        ("changed", "content differs"),
+    ]:
+        body = json.dumps({"files": {"file": received}})
+        assert echoed_file_intact(body, EICAR_LIKE) is False, received
+        assert note in echo_change(body, EICAR_LIKE), received
+    same = json.dumps({"files": {"file": EICAR_LIKE}})
+    assert echoed_file_intact(same, EICAR_LIKE) is True and echo_change(same, EICAR_LIKE) == ""

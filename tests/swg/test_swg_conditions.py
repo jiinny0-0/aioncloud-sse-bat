@@ -37,6 +37,7 @@ from bat.fixtures.testdata import (
 )
 from bat.models import Kind, Step
 from bat.traffic.http import (
+    UploadFileRemoved,
     curl_status,
     remove_temp_file,
     resolve_ip,
@@ -658,10 +659,12 @@ def test_anti_virus_signature_blocks_eicar(
 ):
     """ANTI_VIRUS 시그니처를 켜면 EICAR 테스트 파일 업로드가 차단된다.
 
-    EICAR은 실제 악성코드가 아닌 표준 테스트 문자열이다. 단말 백신이 디스크의 EICAR을
-    지우므로 디스크를 거치지 않고 보낸다. 차단되지 않은 업로드는 httpbin 에코로 내용이
-    그대로 전달됐는지 확인한다. 그대로 전달됐는데 막지 않았으면 FAIL이고, 업로드가 응답을
-    받지 못했거나 에코가 보낸 내용과 다르면 UNVERIFIED다.
+    EICAR은 실제 악성코드가 아닌 표준 테스트 문자열이고, 파일이 그 문자열로 시작해야 백신이
+    EICAR로 본다. 그래서 바이트 그대로(앞에 BOM, 뒤에 줄바꿈 없이) 단말 임시 파일에 쓰고 곧바로
+    올린 뒤 지운다. 단말 백신이 그 파일을 막거나 지워 올리지 못하면 요청을 보내지 못한 것이라
+    UNVERIFIED(환경)다. 차단되지 않은 업로드는 httpbin 에코가 보낸 바이트와 정확히 같은지 본다.
+    그대로 전달됐는데 막지 않았으면 ANTI_VIRUS 미동작으로 FAIL이고, 업로드가 응답을 받지 못했거나
+    전송 경로가 내용을 바꿨으면(에코가 다름) UNVERIFIED다.
     """
     policy_name = resource_name(case.case_id, run_context.run_id)
     rule = WebPolicyFactory.module_rule(Subject.ANTI_VIRUS)
@@ -677,27 +680,41 @@ def test_anti_virus_signature_blocks_eicar(
             last: dict = {}
 
             def probe():
-                last["value"] = upload_content_echoed(
-                    executor, POST_TARGET_URL, EICAR_STRING, filename="eicar.txt"
-                )
+                try:
+                    last["value"] = upload_content_echoed(
+                        executor, POST_TARGET_URL, EICAR_STRING, filename="eicar.txt"
+                    )
+                except UploadFileRemoved as exc:
+                    last["removed"] = str(exc)
+                    return "removed"  # 다시 써도 같은 백신이 지운다
                 return last["value"] if last["value"][0].blocked else None
 
             try:
-                traffic, intact = poll_until(
+                poll_until(
                     probe,
                     timeout_sec=run_context.policy_propagation_timeout_sec,
                     description="EICAR upload to be refused",
                     initial_interval=2.0,
                 )
             except PollTimeout:
-                traffic, intact = last["value"]  # 전파 예산이 지난 뒤의 마지막 업로드로 판정한다
+                pass  # 전파 예산이 지난 뒤의 마지막 업로드로 판정한다
+            if "removed" in last:
+                unverified(
+                    case,
+                    Step.ACTION,
+                    f"The endpoint could not send the EICAR file, so whether SSE blocks it was not "
+                    f"tested (environment: the endpoint's antivirus likely removed or blocked the file): "
+                    f"{last['removed']}",
+                )
+            traffic, intact, change = last["value"]
             outcome = eicar_outcome(traffic, intact)
             if outcome == "unknown":
                 unverified(
                     case,
                     Step.USER_RESULT,
                     f"EICAR upload was neither blocked nor confirmed delivered intact "
-                    f"({describe(traffic)}, echo intact={intact})",
+                    f"({describe(traffic)}, echo intact={intact}"
+                    f"{f'; {change}' if change else ''})",
                 )
             case.record(
                 Step.USER_RESULT,

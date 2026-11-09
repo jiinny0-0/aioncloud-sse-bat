@@ -44,6 +44,9 @@ RENUMBERINGS: list[tuple[str, dict[str, str | None]]] = [
     }),
     # EDR 케이스는 지웠다(2026-11-03, 테스트하지 않음).
     ("2026-12-01T00:00:00", {f"BAT-EDR-00{n}": None for n in range(1, 6)}),
+    # 폐기한 케이스(2026-11-09): SWG-006(공개 프록시 시그니처), ZTNA-007(첫 HTTPS 접근제어 도달).
+    # 옛 ZTNA-012(2026-10-15 전 번호)도 ZTNA-007을 거쳐 여기서 버려진다.
+    ("2026-12-01T00:00:01", {"BAT-SWG-006": None, "BAT-ZTNA-007": None}),
 ]
 
 

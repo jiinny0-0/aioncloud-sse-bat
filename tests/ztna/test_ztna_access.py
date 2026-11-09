@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import timezone
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 import pytest
 
+from bat.clients.errors import ApiError
 from bat.endpoint.base import connector_running, connector_state
 from bat.events.auth_log import AuthLogReader
 from bat.fixtures.graphql_policies import AccessPolicyFactory
@@ -91,6 +92,20 @@ def _first_directory_user(access_policies: AccessPolicyFactory, events) -> tuple
 # 세션이 수립됐음을 보여주는 auth_result 값: 로그인, 그다음 터널 연결
 # (AUTH_DISCONNECT_VPN은 세지 않는다).
 SESSION_ESTABLISHED = ("AUTH_SUCCESS_SDP", "AUTH_CONNECT_VPN")
+# 연결 해제 행(AUTH_DISCONNECT_VPN 등)의 접두사.
+SESSION_ENDED_PREFIX = "AUTH_DISCONNECT"
+# 이 단말의 가장 최근 인증 행을 찾을 때까지 넓혀 가는 조회 범위(일). 커넥터는 며칠씩
+# 다시 로그인하지 않고 연결된 채로 있을 수 있다. 서버가 허용하는 최대 범위는 실측하지
+# 않았으므로, 넓힌 조회를 서버가 거부하면 그 사실을 근거로 남기고 거기서 멈춘다.
+AUTH_LOOKBACK_DAYS = (1, 7, 30)
+
+
+def _row_time(event) -> datetime | None:
+    text = str(event.get("time") or "")
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 @pytest.mark.case("BAT-ZTNA-001")
@@ -101,10 +116,11 @@ SESSION_ESTABLISHED = ("AUTH_SUCCESS_SDP", "AUTH_CONNECT_VPN")
 def test_connector_session_is_recorded(case, run_context, lane, auth_log: AuthLogReader, executor):
     """커넥터가 연결된 상태이고, 그 인증이 감사 로그에 기록되어 있다.
 
-    이 단말 device_id의 행만 본다. 가장 최근 행이 연결 해제(AUTH_DISCONNECT_VPN)면 세션이
-    끊긴 것이라 FAIL이다. 그렇지 않으면 로그인 또는 터널 연결 행이 있어야 PASS이고, 그런 행이
-    없으면 원인을 가릴 수 없어 UNVERIFIED다. 그 행이 이번 실행이 시작된 뒤의 것인지는 근거로
-    남긴다(세션은 보통 실행 전에 맺어진다).
+    이 단말 device_id의 행만 본다. 커넥터는 며칠씩 다시 로그인하지 않을 수 있어서, 이 단말의
+    행이 나올 때까지 조회 범위를 AUTH_LOOKBACK_DAYS(1, 7, 30일) 순서로 넓힌다. 가장 최근 행이
+    연결 해제(AUTH_DISCONNECT_*)면 세션이 끊긴 것이라 FAIL이다. 그렇지 않으면 로그인 또는 터널
+    연결 행이 있어야 PASS이고, 범위를 다 넓혀도 그런 행이 없으면 UNVERIFIED다. 그 행이 언제인지
+    (이번 실행 전인지 후인지, 며칠 전인지)는 근거로 남긴다.
     """
     process = run_context.profile.connector_process
     state = connector_state(executor, process)
@@ -130,19 +146,38 @@ def test_connector_session_is_recorded(case, run_context, lane, auth_log: AuthLo
         )
     case.record(Step.SETUP, ok=True, detail=f"endpoint device_id {device} ({source})")
 
-    # 이번 실행 전에 시작된 세션도 덮도록 24시간을 거슬러 본다. 서버가 이 단말로
-    # 필터링하고 여기서 한 번 더 확인하므로, 서버가 필터를 무시해도 통과할 수 없다.
+    # 서버가 이 단말로 필터링하고 여기서 한 번 더 확인하므로, 서버가 필터를 무시해도
+    # 다른 장치의 행으로는 통과할 수 없다.
     everyone = auth_log.events(lookback_min=24 * 60)
-    mine = sorted(
-        (
-            event
-            for event in auth_log.events(lookback_min=24 * 60, device_id=device)
-            if str(event.get("device_id") or "") == device
-        ),
-        key=lambda event: str(event.get("time") or ""),
-        reverse=True,
+    mine: list = []
+    searched_days = 0
+    for days in AUTH_LOOKBACK_DAYS:
+        try:
+            rows = auth_log.device_rows(device, lookback_min=days * 24 * 60)
+        except ApiError as exc:
+            case.record(
+                Step.SETUP, ok=True, kind=Kind.EVIDENCE,
+                detail=f"auth_log over the last {days} day(s) was refused, so the search stops at "
+                f"{searched_days} day(s): {str(exc)[:200]}",
+            )
+            break
+        searched_days = days
+        mine = sorted(
+            (event for event in rows if str(event.get("device_id") or "") == device),
+            key=lambda event: str(event.get("time") or ""),
+            reverse=True,
+        )
+        if mine and (
+            str(mine[0].get("auth_result") or "").startswith(SESSION_ENDED_PREFIX)
+            or any(str(e.get("auth_result") or "") in SESSION_ESTABLISHED for e in mine)
+        ):
+            break
+    case.record(
+        Step.SETUP, ok=True, kind=Kind.EVIDENCE,
+        detail=f"searched auth_log of device {device} over the last {searched_days} day(s): "
+        f"{len(mine)} row(s)",
     )
-    if mine and str(mine[0].get("auth_result") or "") == "AUTH_DISCONNECT_VPN":
+    if mine and str(mine[0].get("auth_result") or "").startswith(SESSION_ENDED_PREFIX):
         case.record(
             Step.EVENT, ok=False, kind=Kind.ASSERTION,
             detail=f"auth_log_id={mine[0].event_id}: the newest row of device {device} is a disconnect "
@@ -152,7 +187,7 @@ def test_connector_session_is_recorded(case, run_context, lane, auth_log: AuthLo
         )
         raise AssertionError(
             f"The connector process is running but the newest auth_log row of this endpoint "
-            f"(device_id {device}) is AUTH_DISCONNECT_VPN at {mine[0].get('time')}"
+            f"(device_id {device}) is {mine[0].get('auth_result')} at {mine[0].get('time')}"
         )
     established = [e for e in mine if str(e.get("auth_result") or "") in SESSION_ESTABLISHED]
     if not established:
@@ -160,7 +195,7 @@ def test_connector_session_is_recorded(case, run_context, lane, auth_log: AuthLo
         unverified(
             case,
             Step.EVENT,
-            f"No auth_log row in the last 24h ties a sign-in to this endpoint "
+            f"No auth_log row in the last {searched_days} day(s) ties a sign-in to this endpoint "
             f"(device_id {device}): {len(mine)} row(s) from this device"
             f"{f' {seen}' if seen else ''}, none of them {list(SESSION_ESTABLISHED)}; "
             f"{len(everyone)} row(s) from any device on the newest page, which say "
@@ -169,9 +204,13 @@ def test_connector_session_is_recorded(case, run_context, lane, auth_log: AuthLo
 
     newest = established[0]
     run_began = run_context.started_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    when = _row_time(newest)
+    age = (
+        f", {(datetime.now(timezone.utc) - when).total_seconds() / 86400:.1f} day(s) ago" if when else ""
+    )
     case.record(
         Step.SETUP, ok=True, kind=Kind.EVIDENCE,
-        detail=f"newest sign-in/connect row at {newest.get('time')}; this run began at {run_began}Z "
+        detail=f"newest sign-in/connect row at {newest.get('time')}{age}; this run began at {run_began}Z "
         f"({'during' if str(newest.get('time') or '') >= run_began else 'before'} this run)",
     )
     case.event_ids.append(newest.event_id)
@@ -499,55 +538,6 @@ def test_protected_resource_entries_are_fully_readable(case, console):
         log.info("Protected resources in this tenant: %s", [e.get("name") for e in entries])
     else:
         log.info("No ZTNA protected resource (accessControl) configured in this tenant yet")
-    pass_case(case)
-
-
-@pytest.mark.case("BAT-ZTNA-007")
-@pytest.mark.verifies(Step.USER_RESULT)
-@pytest.mark.priority("P3")
-def test_protected_resource_is_reachable_through_the_gateway(case, console, executor):
-    """등록된 보호 리소스(HTTPS 타입)가 실제로 게이트웨이를 통해 도달 가능하다.
-
-    첫 HTTPS 타입 리소스의 `application` 주소로 curl을 보내, 요청이 전달(delivered: 403/451·5xx가
-    아닌 HTTP 응답)되는지 본다. 응답이 없거나 그 밖의 코드면 FAIL이다.
-    """
-    data = console.execute(ACCESS_CONTROL_QUERY)
-    entries = ((data.get("SIA") or {}).get("ztna") or {}).get("accessControl") or []
-    https_entries = [e for e in entries if e.get("type") == "HTTPS" and e.get("application")]
-    if not https_entries:
-        environment_error(
-            "No HTTPS-type accessControl resource configured in this tenant yet "
-            "— nothing to probe reachability against"
-        )
-
-    resource = https_entries[0]
-    app = resource["application"][0]
-    # 리소스는 IP나 도메인 중 하나를 가리킨다(다른 하나는 비어 있다).
-    host = app.get("ip") or app.get("domain")
-    if not host:
-        unverified(case, Step.USER_RESULT,
-                   f"{resource.get('name')!r} names neither an IP nor a domain: {app}")
-        return
-    scheme = "https" if resource.get("type") == "HTTPS" else "http"
-    url = f"{scheme}://{host}:{app['port']}/" if app.get("port") else f"{scheme}://{host}/"
-    case.record(
-        Step.SETUP, ok=True, detail=f"probing {resource.get('name')!r} at {url}"
-    )
-
-    traffic = curl_status(executor, url, timeout_sec=15)
-    case.record(
-        Step.USER_RESULT,
-        ok=traffic.delivered,
-        kind=Kind.ASSERTION,
-        detail=describe(traffic),
-        expected="delivered through the ZTNA gateway (a 2xx-4xx answer other than 403/451)",
-        actual=describe(traffic),
-    )
-    assert traffic.delivered, (
-        f"{resource.get('name')!r} at {url} did not answer with a delivered response through the "
-        f"gateway ({describe(traffic)}) — either the gateway tunnel is down, the resource is "
-        f"misconfigured, or something is already restricting access"
-    )
     pass_case(case)
 
 

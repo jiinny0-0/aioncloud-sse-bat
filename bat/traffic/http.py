@@ -213,6 +213,17 @@ def upload_file(
     )
 
 
+class UploadFileRemoved(EndpointError):
+    """업로드할 파일을 단말에 쓰지 못했거나, 쓴 직후 사라졌다(단말 백신이 지우거나 막음).
+
+    요청을 보내지 못한 것이므로 제품이 막았는지 아닌지와 무관하다.
+    """
+
+
+# 업로드 스크립트가 파일을 쓰지 못했을 때 맨 앞에 출력하는 표지.
+_UPLOAD_FILE_MISSING = "BAT_UPLOAD_FILE_MISSING"
+
+
 def upload_content(
     executor,
     url: str,
@@ -222,14 +233,14 @@ def upload_content(
     field: str = "file",
     timeout_sec: int = 40,
 ) -> TrafficResult:
-    """upload_file()과 같지만, 디코딩한 내용을 디스크에 쓰지 않는다.
+    """content를 바이트 그대로 multipart/form-data로 POST한다.
 
-    단말의 실시간 백신은 EICAR이 든 파일을 쓰는 시점에 조용히 비우므로, 내용을
-    base64에서 디코딩해 대신 curl의 stdin으로 흘려보낸다. 명령의 따옴표와 세미콜론이
-    cmd.exe 아래의 인라인 `-Command` 인용을 견디지 못해, 명령은 .ps1 스크립트를
-    `-File`로 실행한다.
+    단말의 실시간 백신이 EICAR이 든 파일을 지울 수 있어서, 파일 쓰기·확인·업로드·삭제를
+    스크립트 하나에서 곧바로 한다. 파일을 쓰지 못했거나 쓴 직후 사라졌으면
+    UploadFileRemoved를 낸다. 명령의 따옴표와 세미콜론이 cmd.exe 아래의 인라인
+    `-Command` 인용을 견디지 못해, 명령은 .ps1 스크립트를 `-File`로 실행한다.
     """
-    traffic, _ = _upload_in_memory(executor, url, content, filename, field, timeout_sec, keep_body=False)
+    traffic, _ = _upload_bytes(executor, url, content, filename, field, timeout_sec, keep_body=False)
     return traffic
 
 
@@ -241,20 +252,19 @@ def upload_content_echoed(
     filename: str,
     field: str = "file",
     timeout_sec: int = 40,
-) -> tuple[TrafficResult, bool | None]:
+) -> tuple[TrafficResult, bool | None, str]:
     """upload_content()처럼 보내고, 에코 서버(httpbin /post)가 받은 파일 내용이 보낸 것과
-    같은지도 돌려준다. True면 내용이 그대로 전달됐고, False면 바뀌었고, None이면 확인할 수
-    없다(에코 JSON이 아님). 응답 본문은 돌려주지도 기록하지도 않는다(EICAR가 들어 있다).
+    바이트까지 같은지도 돌려준다: (결과, intact, 바뀐 내용 설명). intact가 True면 그대로
+    전달됐고, False면 바뀌었고(설명에 어떻게), None이면 확인할 수 없다(에코 JSON이 아님).
+    응답 본문은 돌려주지도 기록하지도 않는다(EICAR가 들어 있다).
     """
-    traffic, body = _upload_in_memory(executor, url, content, filename, field, timeout_sec, keep_body=True)
-    return traffic, echoed_file_intact(body, content, field) if traffic.delivered else None
+    traffic, body = _upload_bytes(executor, url, content, filename, field, timeout_sec, keep_body=True)
+    if not traffic.delivered:
+        return traffic, None, ""
+    return traffic, echoed_file_intact(body, content, field), echo_change(body, content, field)
 
 
-def echoed_file_intact(body: str, content: str, field: str = "file") -> bool | None:
-    """httpbin /post 응답의 files[field]가 보낸 content와 같은가.
-
-    PowerShell이 stdin으로 넘길 때 줄바꿈을 붙이므로 끝 공백은 비교하지 않는다.
-    """
+def _echoed_file(body: str, field: str) -> str | None:
     import json
 
     try:
@@ -263,21 +273,73 @@ def echoed_file_intact(body: str, content: str, field: str = "file") -> bool | N
         return None
     if not isinstance(files, dict) or field not in files:
         return None
-    return str(files[field]).rstrip() == content.rstrip()
+    return str(files[field])
 
 
-def _upload_in_memory(
+def echoed_file_intact(body: str, content: str, field: str = "file") -> bool | None:
+    """httpbin /post 응답의 files[field]가 보낸 content와 정확히 같은가(앞뒤 공백·BOM 포함)."""
+    received = _echoed_file(body, field)
+    return None if received is None else received == content
+
+
+def echo_change(body: str, content: str, field: str = "file") -> str:
+    """에코가 보낸 내용과 다를 때 어떻게 다른지. 같거나 읽을 수 없으면 빈 문자열."""
+    received = _echoed_file(body, field)
+    if received is None or received == content:
+        return ""
+    notes = []
+    if received.startswith("\ufeff"):
+        notes.append("a byte order mark (U+FEFF) was prepended")
+        received = received[1:]
+    if received != content and received.rstrip("\r\n") == content:
+        notes.append("a line break was appended")
+        received = content
+    if received != content:
+        notes.append(f"the content differs ({len(received)} characters received, {len(content)} sent)")
+    return "the transport changed the file: " + "; ".join(notes)
+
+
+def _upload_script(url: str, content: str, filename: str, field: str, timeout_sec: int, *, keep_body: bool) -> str:
+    """파일을 바이트로 쓰고, 그대로 있는지 확인하고, curl로 올리고, 지우는 PowerShell 스크립트.
+
+    내용은 파이프로 넘기지 않는다(PowerShell이 앞에 BOM을, 뒤에 줄바꿈을 붙인다). 임시 폴더
+    경로에 ASCII가 아닌 문자(사용자 이름)가 있을 수 있어, 그 폴더로 옮겨 가 파일 이름만 넘긴다.
+    """
+    safe = "".join(ch if ch.isalnum() or ch in "-._" else "-" for ch in filename)
+    local = f"bat-upload-{safe}"
+    size = len(content.encode("utf-8"))
+    output = '-w "`n%{http_code}"' if keep_body else '-o NUL -w "%{http_code}"'
+    lines = [
+        "Set-Location -LiteralPath ([IO.Path]::GetTempPath())",
+        f"$name = '{local}'",
+        "try {",
+        f"    [IO.File]::WriteAllBytes((Join-Path (Get-Location) $name), [Convert]::FromBase64String('{_b64(content)}'))",
+        "} catch {",
+        f'    Write-Output "{_UPLOAD_FILE_MISSING} could not write the file: $($_.Exception.Message)"',
+        "    exit 0",
+        "}",
+        "$item = Get-Item -LiteralPath $name -ErrorAction SilentlyContinue",
+        f"if (-not $item -or $item.Length -ne {size}) {{",
+        "    $found = if ($item) { \"$($item.Length) bytes\" } else { 'no file' }",
+        f'    Write-Output "{_UPLOAD_FILE_MISSING} the file was gone or changed right after writing '
+        f'({size} bytes written, $found)"',
+        "    Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $name",
+        "    exit 0",
+        "}",
+        "try {",
+        f'    & curl.exe -k -s {output} -X POST -F "{field}=@$name;filename={filename}" '
+        f'--max-time {timeout_sec} "{url}"',
+        "} finally {",
+        "    Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $name",
+        "}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _upload_bytes(
     executor, url: str, content: str, filename: str, field: str, timeout_sec: int, *, keep_body: bool
 ) -> tuple[TrafficResult, str]:
-    # PowerShell은 [byte[]]를 네이티브 exe에 파이프할 때 줄마다 10진수 값 하나씩
-    # 보내므로, 먼저 문자열로 디코딩한다. 여기서 보내는 페이로드는 ASCII 텍스트다.
-    output = '-w "`n%{http_code}"' if keep_body else '-o NUL -w "%{http_code}"'
-    script = (
-        f"$bytes = [Convert]::FromBase64String('{_b64(content)}')\n"
-        f"$text = [System.Text.Encoding]::UTF8.GetString($bytes)\n"
-        f'$text | & curl.exe -k -s {output} -X POST '
-        f'-F "{field}=@-;filename={filename}" --max-time {timeout_sec} "{url}"\n'
-    )
+    script = _upload_script(url, content, filename, field, timeout_sec, keep_body=keep_body)
     script_path = write_temp_file(executor, script, f"upload-{filename}.ps1")
     try:
         command = f'powershell -NoProfile -NonInteractive -File "{script_path}"'
@@ -286,12 +348,17 @@ def _upload_in_memory(
         remove_temp_file(executor, script_path)
 
     stdout = result.stdout.strip()
+    if stdout.startswith(_UPLOAD_FILE_MISSING):
+        raise UploadFileRemoved(
+            f"Upload of {filename} to {url} was not sent: "
+            f"{stdout[len(_UPLOAD_FILE_MISSING):].strip()[:200]}"
+        )
     body, _, code = stdout.rpartition("\n") if keep_body else ("", "", stdout)
     match = _STATUS_RE.search(code.strip().strip('"'))
     status_code = int(match.group(1)) if match else None
     blocked = status_code in BLOCK_STATUS_CODES if status_code else False
 
-    log.info("upload (in-memory) %s -> %s (blocked=%s)", url, status_code, blocked)
+    log.info("upload (bytes) %s -> %s (blocked=%s)", url, status_code, blocked)
     traffic = TrafficResult(
         url=url,
         status_code=status_code,
@@ -300,7 +367,8 @@ def _upload_in_memory(
         detail=result.stderr.strip()[:200],
         delivered=is_delivered_status(status_code),
     )
-    return traffic, body
+    # PowerShell이 curl 출력의 줄을 CRLF로 이어 붙이므로, 상태 코드 줄 앞의 \r만 뗀다.
+    return traffic, body.rstrip("\r")
 
 
 def _b64(content: str) -> str:

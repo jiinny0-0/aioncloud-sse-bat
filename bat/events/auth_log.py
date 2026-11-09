@@ -119,10 +119,14 @@ class AuthLogReader:
         if user_ids:
             variables["user_ids"] = user_ids
 
+        return self._page(variables)[0]
+
+    def _page(self, variables: dict[str, Any]) -> tuple[list[SecurityEvent], int]:
+        """한 페이지의 행과 조건 전체의 행 수(log_count, 없으면 받은 행 수)."""
         data = self._execute(variables)
         node = ((data.get("SIA") or {}).get("log") or {}).get("auth_log") or {}
         rows = node.get("log_list") or []
-        return [
+        events = [
             SecurityEvent(
                 event_id=str(row.get("id") or row.get("log_id") or ""),
                 source="auth-log",
@@ -131,6 +135,31 @@ class AuthLogReader:
             for row in rows
             if isinstance(row, dict)
         ]
+        count = node.get("log_count")
+        total = int(count) if isinstance(count, int) or str(count or "").isdigit() else len(events)
+        return events, total
+
+    def device_rows(self, device_id: str, *, lookback_min: int) -> list[SecurityEvent]:
+        """그 단말(device_id 서버 필터)의 최근 lookback_min분 행.
+
+        서버가 어느 쪽 끝부터 돌려주는지 가정하지 않는다. 행이 한 페이지(PAGE_LIMIT)보다
+        많으면 log_count로 마지막 페이지도 읽어 합친다. 그래서 가장 최근 행은 어느 정렬에서도
+        들어 있다. 순서는 정하지 않으므로 호출자가 time으로 정렬한다.
+        """
+        now = datetime.now(timezone.utc)
+        variables: dict[str, Any] = {
+            "begin_time": _iso(now - timedelta(minutes=lookback_min)),
+            "end_time": _iso(now + timedelta(minutes=1)),
+            "offset": 0,
+            "limit": PAGE_LIMIT,
+            "device_id": device_id,
+        }
+        rows, total = self._page(variables)
+        if total > len(rows) and total > PAGE_LIMIT:
+            last, _ = self._page({**variables, "offset": total - PAGE_LIMIT})
+            seen = {row.event_id for row in rows}
+            rows += [row for row in last if row.event_id not in seen]
+        return rows
 
     def wait_for(
         self,
