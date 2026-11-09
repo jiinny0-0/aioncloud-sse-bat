@@ -2789,3 +2789,75 @@ def test_dns_answer_pointing_at_a_block_page_is_blocked(monkeypatch):
     assert blocked.blocked and not blocked.delivered
     resolved = lookup("54.174.189.226\n\t  35.170.125.171")
     assert resolved.delivered and not resolved.blocked
+
+# -- 콘솔 로그인: GraphQL이 실패하면 Auth Server로 (bat/clients/graphql.py) ----
+
+
+def _login_client(monkeypatch, issuance_error):
+    from bat.clients import auth_server
+    from bat.clients.graphql import GraphQLClient
+    from bat.settings import Profile
+
+    profile = Profile(name="t", console_url="https://console.invalid", graphql_url="https://gql.invalid",
+                      rest_base_url="https://rest.invalid", block_page_marker="x")
+    client = GraphQLClient(profile, "ws1")
+    calls = []
+
+    def execute(*args, **kwargs):
+        if issuance_error:
+            raise issuance_error
+        client._client.cookies.set("sia_t_console", "a.eyJyb2xlIjoiTUFOQUdFUiJ9.c")
+        return {"authorization": {"session": {"issuance": {"expire_at": 1}}}}
+
+    def fallback(profile_, workspace, login_id, password):
+        calls.append((workspace, login_id, password))
+        return "h.eyJyb2xlIjoiTUFOQUdFUiJ9.s", {"session_expire_at": 2}
+
+    monkeypatch.setattr(client, "execute", execute)
+    monkeypatch.setattr(auth_server, "login_via_auth_server", fallback)
+    return client, calls
+
+
+def test_console_login_falls_back_to_the_auth_server_only_when_graphql_fails(monkeypatch):
+    from bat.clients.errors import ApiError
+
+    client, calls = _login_client(monkeypatch, None)
+    assert client.login("u", "pw")["via"] == "graphql" and not calls
+
+    client, calls = _login_client(monkeypatch, ApiError("GraphQL errors: Database Error"))
+    session = client.login("u", "pw")
+    assert session["via"] == "auth-server" and session["expire_at"] == 2
+    assert calls == [("ws1", "u", "pw")]  # 평문 비밀번호를 넘긴다
+    assert client.token.startswith("h.")
+
+    client, calls = _login_client(monkeypatch, ApiError("GraphQL errors: Database Error"))
+    with pytest.raises(ApiError):
+        client.login("u", "hashed", pre_hashed=True)  # 평문이 없으면 대체하지 않는다
+    assert not calls
+
+
+def test_auth_server_password_encryption_fits_the_key():
+    """RSA-OAEP(SHA-256) 패딩 길이와 키 파싱: 2048비트 키로 256바이트 암호문이 나와야 한다."""
+    from bat.clients.auth_server import _rsa_public_numbers, rsa_oaep_encrypt
+
+    # 공개키만 있으면 되므로 고정 모듈러스(2048비트, 아무 홀수)로 SPKI를 만든다.
+    n = (1 << 2047) | 0xF1
+    e = 65537
+
+    def tlv(tag, value):
+        length = len(value)
+        head = bytes([length]) if length < 0x80 else bytes([0x82]) + length.to_bytes(2, "big")
+        return bytes([tag]) + head + value
+
+    def integer(v):
+        raw = v.to_bytes((v.bit_length() + 8) // 8, "big")
+        return tlv(0x02, raw)
+
+    rsa_key = tlv(0x30, integer(n) + integer(e))
+    algorithm = tlv(0x30, bytes.fromhex("06092a864886f70d0101010500"))
+    spki = tlv(0x30, algorithm + tlv(0x03, b"\x00" + rsa_key))
+    import base64 as b64
+
+    pem = "-----BEGIN PUBLIC KEY-----\n" + b64.b64encode(spki).decode() + "\n-----END PUBLIC KEY-----"
+    assert _rsa_public_numbers(pem) == (n, e)
+    assert len(rsa_oaep_encrypt(pem, b"user@example.com#_password")) == 256

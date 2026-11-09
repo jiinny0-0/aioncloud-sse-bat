@@ -207,7 +207,9 @@ def cmd_doctor(profile: str) -> int:
                 save_console_token(workspace.name, console_token, session.get("expire_at"))
                 print(
                     f"Console login: OK ({workspace.name}, "
-                    f"user={session.get('user_name')}, role={session.get('user_role')})"
+                    f"user={session.get('user_name')}, role={session.get('user_role')}"
+                    + (", via auth server: GraphQL login failed" if session.get("via") == "auth-server" else "")
+                    + ")"
                 )
         except Exception as exc:
             print(f"Console login: FAILED - {exc}")
@@ -701,6 +703,7 @@ def cmd_login(args: argparse.Namespace) -> int:
             print(
                 f"{workspace.name}: signed in as {session.get('user_name')} "
                 f"({session.get('user_role')}), session cached in {path.name}"
+                + (" [via auth server: GraphQL login failed]" if session.get("via") == "auth-server" else "")
             )
         except Exception as exc:
             print(f"{workspace.name}: {str(exc)[:300]}")

@@ -82,19 +82,45 @@ class GraphQLClient:
         return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
     def login(self, login_id: str, password: str, *, pre_hashed: bool = False) -> dict[str, Any]:
-        payload = self.execute(
-            CONSOLE_LOGIN,
-            {
-                "email": login_id,
-                "password": password if pre_hashed else self.hash_password(password),
-                "workspace": self.workspace,
-            },
-            authenticated=False,
-        )
-        issuance = ((payload.get("authorization") or {}).get("session") or {}).get("issuance") or {}
-        token = _session_cookie(self._client.cookies)
-        if not token:
-            raise AuthError(f"Console login returned no session cookie for workspace {self.workspace}")
+        """GraphQL issuance로 로그인하고, 실패하면 Auth Server(웹 로그인 화면)로 다시 로그인한다.
+
+        Auth Server 경로는 issuance가 서버 쪽 사용자 검증 오류로 실패하는 동안 쓰는 임시
+        수단이다(real, 2026-11). 평문 비밀번호가 필요해서 pre_hashed면 쓰지 않는다.
+        `session["via"]`가 어느 쪽으로 로그인했는지 알려 준다.
+        """
+        try:
+            payload = self.execute(
+                CONSOLE_LOGIN,
+                {
+                    "email": login_id,
+                    "password": password if pre_hashed else self.hash_password(password),
+                    "workspace": self.workspace,
+                },
+                authenticated=False,
+            )
+            issuance = ((payload.get("authorization") or {}).get("session") or {}).get("issuance") or {}
+            token = _session_cookie(self._client.cookies)
+            if not token:
+                raise AuthError(f"Console login returned no session cookie for workspace {self.workspace}")
+            expire_at, via = issuance.get("expire_at"), "graphql"
+        except (ApiError, AuthError) as exc:
+            if pre_hashed:
+                raise
+            from bat.clients.auth_server import login_via_auth_server
+
+            log.warning(
+                "Console login through GraphQL failed for workspace %s (%s); trying the auth server",
+                self.workspace, str(exc)[:200],
+            )
+            try:
+                token, summary = login_via_auth_server(self.profile, self.workspace, login_id, password)
+            except AuthError as fallback:
+                raise AuthError(
+                    f"Console login failed both ways for workspace {self.workspace}: "
+                    f"GraphQL: {str(exc)[:200]} / auth server: {fallback}"
+                ) from fallback
+            expire_at, via = summary.get("session_expire_at"), "auth-server"
+
         self._token = token
         claims = _jwt_claims(token)
         session = {
@@ -102,9 +128,13 @@ class GraphQLClient:
             "user_name": claims.get("user_name") or login_id,
             "user_role": claims.get("role"),
             "workspace": self.workspace,
-            "expire_at": issuance.get("expire_at") or claims.get("exp"),
+            "expire_at": expire_at or claims.get("exp"),
+            "via": via,
         }
-        log.info("Console session established: workspace=%s role=%s", self.workspace, session["user_role"])
+        log.info(
+            "Console session established: workspace=%s role=%s via=%s",
+            self.workspace, session["user_role"], via,
+        )
         return session
 
     def make_openapi_token(self, expiration_sec: int | None = None) -> str:
