@@ -35,7 +35,7 @@ from bat.report import progress
 from bat.scheduler import build_lanes, concurrency_group, lane_for_product
 from bat.settings import build_run_context, env
 from bat.traffic.browser import BrowserSession
-from bat.verdict import Raised, classify
+from bat.verdict import Raised, apply_known_issue, classify
 from tests.support import VerificationUnavailable, environment_error
 
 log = logging.getLogger(__name__)
@@ -401,11 +401,14 @@ def pytest_runtest_makereport(item, call):
     raised, message = _how_it_ended(call)
     status, reason = classify(case_result, raised, message)
     known = item.get_closest_marker("known_issue")
-    if known and status is Status.FAIL:
-        # 사용자가 버그로 보지 않기로 한 실패: FAIL 대신 SKIP으로 기록하고, 원래 실패 이유는 그대로 남긴다.
-        status, reason = Status.SKIP, f"known issue ({known.args[0] if known.args else ''}): {reason}"
-        report.outcome = "skipped"
-        report.longrepr = (str(item.path), item.location[1] or 0, reason)
+    if known:
+        # 사용자가 버그로 보지 않기로 한 증상(match)과 일치하는 FAIL만 SKIP이 된다.
+        status, reason = apply_known_issue(
+            status, reason, str(known.args[0]) if known.args else "", known.kwargs.get("match")
+        )
+        if status is Status.SKIP:
+            report.outcome = "skipped"
+            report.longrepr = (str(item.path), item.location[1] or 0, reason)
     case_result.status = status
     case_result.verdict_reason = reason
     if status in (Status.FAIL, Status.ERROR):

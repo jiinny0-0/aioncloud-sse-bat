@@ -1008,8 +1008,10 @@ class _FakeHostCaseTenant:
     보내고, 브라우저는 먼저 소문자로 바꾼다(Chromium처럼). 제품은 Host를 대소문자를
     구분해 비교하거나 구분하지 않고 비교한다."""
 
-    def __init__(self, *, case_sensitive):
+    def __init__(self, *, case_sensitive, curl_answers=True, browser_blocks=None):
         self.case_sensitive = case_sensitive
+        self.curl_answers = curl_answers
+        self.browser_blocks = browser_blocks
         self.hosts: list[str] = []
 
     @contextlib.contextmanager
@@ -1025,31 +1027,136 @@ class _FakeHostCaseTenant:
         from urllib.parse import urlparse
 
         url = command.rsplit(" ", 1)[-1].strip('"')
-        return SimpleNamespace(stdout="403" if self._blocks(urlparse(url).netloc) else "200", stderr="")
+        if self._blocks(urlparse(url).netloc):
+            return SimpleNamespace(stdout="403", stderr="")
+        return SimpleNamespace(stdout="200" if self.curl_answers else "000", stderr="")
 
     def visit(self, url, case_id=""):
         from urllib.parse import urlparse
 
         host = urlparse(url).netloc.lower()
         landed = url.replace(urlparse(url).netloc, host)
-        if self._blocks(host):
+        if self._blocks(host) if self.browser_blocks is None else self.browser_blocks:
             return TrafficResult(url=landed, status_code=403, blocked=True, via="browser", detail="block page")
         return TrafficResult(url=landed, status_code=200, blocked=False, via="browser", delivered=True)
 
 
-@pytest.mark.parametrize("case_sensitive, expected", [(True, Status.SKIP), (False, Status.PASS)])
-def test_swg_023_judges_the_uppercase_host_curl_sends_not_the_browser(instant_polling, case_sensitive, expected):
-    """BAT-SWG-023: curl이 차단되면 PASS, curl은 통과했지만 (소문자로 바꾸는) 브라우저가 차단되면 UNVERIFIED다."""
-    tenant = _FakeHostCaseTenant(case_sensitive=case_sensitive)
+def _known_issue_of(module: str, function: str):
+    import importlib
+
+    test = getattr(importlib.import_module(module), function)
+    return next(m for m in getattr(test, "pytestmark", []) if m.name == "known_issue")
+
+
+@pytest.mark.parametrize(
+    "tenant_args, body_status, final_status",
+    [
+        # 대소문자 무관 매칭: curl도 막힌다.
+        (dict(case_sensitive=False), Status.PASS, Status.PASS),
+        # curl만 우회하고 브라우저는 막힌다: 우회가 확인된 FAIL이고, 그 증상만 known_issue로 SKIP.
+        (dict(case_sensitive=True), Status.FAIL, Status.SKIP),
+        # curl도 브라우저도 통과: known_issue 증상이 아니므로 FAIL 그대로.
+        (dict(case_sensitive=True, browser_blocks=False), Status.FAIL, Status.FAIL),
+        # curl이 응답을 받지 못함(000): 우회인지 알 수 없다.
+        (dict(case_sensitive=True, curl_answers=False), Status.UNVERIFIED, Status.UNVERIFIED),
+    ],
+)
+def test_swg_023_counts_a_bypass_only_when_curl_was_delivered(instant_polling, tenant_args, body_status, final_status):
+    """BAT-SWG-023: curl이 막히면 PASS, curl이 응답을 받으면 FAIL(known_issue 증상과 일치할 때만 SKIP), 응답이 없으면 UNVERIFIED."""
+    from bat.verdict import apply_known_issue
+
+    tenant = _FakeHostCaseTenant(**tenant_args)
     status, reason, case = _run_case_body(
         "tests.swg.test_swg_http_host", "test_host_block_is_case_insensitive", "BAT-SWG-023",
         web_policies=tenant, executor=tenant, browser_session=tenant,
     )
-    assert status is expected, reason
+    assert status is body_status, reason
     browser = [s for s in case.steps if s.detail.startswith("browser ")]
-    assert len(browser) == 1 and browser[0].kind is Kind.EVIDENCE and browser[0].ok
-    if expected is Status.UNVERIFIED:
-        assert "curl" in reason and "lowercases" in reason
+    assert len(browser) == 1 and browser[0].kind is Kind.EVIDENCE
+    known = _known_issue_of("tests.swg.test_swg_http_host", "test_host_block_is_case_insensitive")
+    final, final_reason = apply_known_issue(status, reason, known.args[0], known.kwargs.get("match"))
+    assert final is final_status, final_reason
+
+
+def test_known_issue_skips_only_its_own_symptom():
+    """known_issue는 match와 일치하는 FAIL만 SKIP으로 바꾸고, 그 밖의 FAIL은 FAIL로 둔다. PASS면 해제 검토를 남긴다."""
+    from bat.verdict import apply_known_issue
+
+    match = r"second rule was delivered"
+    skipped = apply_known_issue(Status.FAIL, "A payload matching only the second rule was delivered", "d", match)
+    assert skipped[0] is Status.SKIP and skipped[1].startswith("known issue (d): ")
+    status, reason = apply_known_issue(Status.FAIL, "The keyword rule did not block its own payload", "d", match)
+    assert status is Status.FAIL and "does not match" in reason
+    status, reason = apply_known_issue(Status.FAIL, "anything", "d", None)
+    assert status is Status.FAIL and "no match pattern" in reason
+    status, reason = apply_known_issue(Status.PASS, "all mandatory criteria passed", "d", match)
+    assert status is Status.PASS and "해제 검토 필요" in reason
+    for other in (Status.UNVERIFIED, Status.ERROR, Status.SKIP):
+        assert apply_known_issue(other, "r", "d", match) == (other, "r")
+
+
+def test_every_known_issue_marker_names_its_symptom():
+    """known_issue 마커마다 match가 있고 그 정규식이 컴파일된다(match가 없으면 어떤 FAIL도 SKIP이 되지 않는다)."""
+    import importlib
+    import re
+
+    found = []
+    for path in sorted(TESTS_DIR.rglob("test_*.py")):
+        if path.name == "test_selfcheck.py":
+            continue
+        module = importlib.import_module(".".join(path.relative_to(TESTS_DIR.parent).with_suffix("").parts))
+        for name in dir(module):
+            if not name.startswith("test_"):
+                continue
+            for mark in getattr(getattr(module, name), "pytestmark", []):
+                if mark.name == "known_issue":
+                    found.append(name)
+                    assert mark.kwargs.get("match"), f"{name}: known_issue without match="
+                    re.compile(mark.kwargs["match"])
+    assert len(found) >= 4, found
+
+
+def test_known_issue_patterns_match_the_failures_they_describe():
+    """세 결함 케이스의 match가 그 케이스가 실제로 내는 실패 문구와 일치한다(문구를 바꾸면 여기서 드러난다)."""
+    import re
+
+    samples = {
+        ("tests.cross.test_cross_swg_dlp", "test_dlp_block_survives_a_higher_priority_allow"):
+            "A higher-priority ALLOW policy on httpbin.org let the DLP-flagged payload through (HTTP 200)",
+        ("tests.dlp.test_dlp_detection", "test_one_policy_with_two_rules_catches_either_of_them"):
+            "A payload matching only the second rule was delivered (HTTP 200); rules in one policy",
+        ("tests.fwaas.test_fwaas_firewall", "test_protocol_scope_limits_what_is_blocked"):
+            "A policy scoped to protocol 1 (ICMP) also cut off HTTP to 98.88.155.171, so the protocol",
+    }
+    for (module, function), message in samples.items():
+        known = _known_issue_of(module, function)
+        assert re.search(known.kwargs["match"], message), function
+        # 같은 케이스의 다른 실패(사전 조건 실패, 이벤트 없음)는 일치하지 않는다.
+        assert not re.search(known.kwargs["match"], "The DLP-linked policy never took effect on its own"), function
+        assert not re.search(known.kwargs["match"], "No security event for BAT-X within 90s"), function
+
+
+def test_eicar_counts_as_missed_only_when_delivered_intact():
+    """BAT-SWG-016: 차단되지 않은 업로드는 응답을 받고 에코가 내용을 그대로 받았을 때만 놓친 것(FAIL)이다."""
+    from bat.traffic.http import echoed_file_intact
+    from tests.swg.test_swg_conditions import eicar_outcome
+
+    def traffic(status):
+        return TrafficResult(url="u", status_code=status, blocked=status in (403, 451), via="curl",
+                             delivered=status == 200)
+
+    assert eicar_outcome(traffic(403), None) == "blocked"
+    assert eicar_outcome(traffic(200), True) == "missed"
+    assert eicar_outcome(traffic(200), False) == "unknown"   # 전달 중 내용이 바뀜
+    assert eicar_outcome(traffic(200), None) == "unknown"    # 에코를 읽지 못함
+    assert eicar_outcome(traffic(0), None) == "unknown"      # 업로드가 응답을 받지 못함
+
+    content = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$TEST"
+    body = json.dumps({"files": {"file": content + "\r\n"}, "form": {}})
+    assert echoed_file_intact(body, content) is True
+    assert echoed_file_intact(json.dumps({"files": {"file": "changed"}}), content) is False
+    assert echoed_file_intact("<html>block page</html>", content) is None
+    assert echoed_file_intact(json.dumps({"files": {}}), content) is None
 
 
 class _FakeDnsTenant:
@@ -2671,7 +2778,7 @@ def test_result_book_has_only_the_published_columns(tmp_path):
 
 
 def test_results_across_targets_are_pass_fail_or_unverified():
-    """대상 여러 개: 전부 기대대로면 통과, 전부 어긋나면 FAIL, 섞이거나 확인 못 한 대상이 있으면 UNVERIFIED."""
+    """대상 여러 개: 전부 기대대로면 통과, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED."""
     from bat.verdict import Raised, classify
     from tests.support import VerificationUnavailable, across_targets, unverified
 
@@ -2698,10 +2805,15 @@ def test_results_across_targets_are_pass_fail_or_unverified():
 
     assert run({"a": "pass", "b": "pass", "c": "pass"})[0] is Status.PASS
     status, reason = run({"a": "fail", "b": "fail", "c": "fail"})
-    assert status is Status.FAIL and "every target" in reason
+    assert status is Status.FAIL and "failed on ['a', 'b', 'c']" in reason
+    # 하나라도 어긋나면 FAIL이고, 어긋난 대상과 통과한 대상을 둘 다 적는다.
     status, reason = run({"a": "pass", "b": "fail", "c": "pass"})
+    assert status is Status.FAIL and "failed on ['b']" in reason and "held on ['a', 'c']" in reason
+    status, reason = run({"a": "fail", "b": "unknown", "c": "pass"})
+    assert status is Status.FAIL and "could not be checked on ['b']" in reason
+    # 어긋난 대상 없이 확인 못 한 대상만 있을 때만 UNVERIFIED다.
+    status, reason = run({"a": "pass", "b": "unknown", "c": "pass"})
     assert status is Status.UNVERIFIED and "['b']" in reason
-    assert run({"a": "fail", "b": "unknown", "c": "fail"})[0] is Status.UNVERIFIED
 
 
 def test_multi_target_hosts_are_distinct_and_aaaa_hosts_exclude_httpbin():
@@ -2716,7 +2828,7 @@ def test_multi_target_hosts_are_distinct_and_aaaa_hosts_exclude_httpbin():
 
 
 def test_skip_is_only_for_user_accepted_results():
-    """SKIP은 사용자가 버그로 보지 않기로 한 결과(known_issue, accepted_issue)에만 쓴다.
+    """SKIP은 사용자가 버그로 보지 않기로 한 증상(known_issue의 match와 일치하는 FAIL)에만 쓴다.
 
     실행 조건 미비는 environment_error(ERROR), 확인 불가는 unverified(UNVERIFIED)다.
     보류(parked) 제품 파일은 검사하지 않는다.
@@ -2789,6 +2901,7 @@ def test_dns_answer_pointing_at_a_block_page_is_blocked(monkeypatch):
     assert blocked.blocked and not blocked.delivered
     resolved = lookup("54.174.189.226\n\t  35.170.125.171")
     assert resolved.delivered and not resolved.blocked
+
 
 # -- 콘솔 로그인: GraphQL이 실패하면 Auth Server로 (bat/clients/graphql.py) ----
 

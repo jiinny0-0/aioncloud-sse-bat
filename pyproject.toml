@@ -42,7 +42,7 @@ markers = [
     "parked: held back (RBI) — excluded from the default run and the status book; run with --tag parked",
     "crud: only creates/reads/deletes through the API (no traffic, no events) — API-suite territory, excluded from the default run",
     "verifies(*steps): mandatory criteria (user_visible_result, event_validation) — PASS needs a passing assertion on each",
-    "known_issue(reason): a failure the user does not treat as a bug — reported as SKIP with the reason",
+    "known_issue(reason, match=regex): a symptom the user does not treat as a bug — a FAIL whose reason matches `match` is reported as SKIP; other failures stay FAIL",
     "diagnostic: environment/preflight check; runs by default but never reports PASS (no security-behaviour criterion)",
     "discovery: requires runtime policy-schema discovery",
 ]

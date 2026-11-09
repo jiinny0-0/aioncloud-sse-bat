@@ -53,11 +53,6 @@ def environment_error(reason: str) -> NoReturn:
     raise EnvironmentNotReady(reason)
 
 
-def accepted_issue(reason: str) -> NoReturn:
-    """중단한다: 사용자가 버그로 보지 않기로 한 결과다(SKIP). known_issue 마커와 같은 표시를 쓴다."""
-    pytest.skip(f"known issue ({reason})")
-
-
 def visit_until_blocked(browser_session, url: str, case_id: str, timeout_sec: int) -> TrafficResult:
     """정책이 전파되는 동안 방문을 재시도한다.
 
@@ -1197,8 +1192,9 @@ def across_targets(case: CaseResult, targets, check: Callable[[str], None], *, w
     """같은 확인을 대상 여러 개에 돌리고 결과를 합친다.
 
     check(target)는 기대와 다르면 AssertionError를, 확인할 수 없으면 VerificationUnavailable을
-    던진다. 전부 기대대로면 그냥 돌아오고, 전부 어긋나면 FAIL이다. 일부만 어긋나거나 확인하지
-    못한 대상이 있으면, 대상의 특이성인지 제품 문제인지 가릴 수 없으므로 UNVERIFIED다.
+    던진다. 전부 기대대로면 그냥 돌아온다. 하나라도 어긋나면 FAIL이다(어긋난 대상과 통과한
+    대상, 확인 못 한 대상을 메시지에 적는다). 어긋난 대상 없이 확인 못 한 대상만 있을 때만
+    UNVERIFIED다.
     """
     failed: dict[str, str] = {}
     unknown: dict[str, str] = {}
@@ -1212,15 +1208,19 @@ def across_targets(case: CaseResult, targets, check: Callable[[str], None], *, w
     if not failed and not unknown:
         return
     passed = [t for t in targets if t not in failed and t not in unknown]
-    summary = "; ".join(f"{t}: {m}" for t, m in {**failed, **unknown}.items())
-    if failed and not passed and not unknown:
-        raise AssertionError(f"{what} failed on every target {list(targets)} — {summary}")
+    if failed:
+        raise AssertionError(
+            f"{what} failed on {list(failed)}"
+            + (f", held on {passed}" if passed else "")
+            + (f", could not be checked on {list(unknown)}" if unknown else "")
+            + " — " + "; ".join(f"{t}: {m}" for t, m in {**failed, **unknown}.items())
+        )
     unverified(
         case,
         step,
-        f"{what} held on {passed} but not on {list(failed)}"
-        + (f" and could not be checked on {list(unknown)}" if unknown else "")
-        + f" — target-specific or a product issue: {summary}",
+        f"{what} could not be checked on {list(unknown)}"
+        + (f" (held on {passed})" if passed else "")
+        + " — " + "; ".join(f"{t}: {m}" for t, m in unknown.items()),
     )
 
 

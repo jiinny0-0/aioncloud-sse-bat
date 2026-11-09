@@ -257,12 +257,53 @@ def upload_content(
     cmd.exe 아래의 인라인 `-Command` 인용을 견디지 못해, 명령은 .ps1 스크립트를
     `-File`로 실행한다.
     """
+    traffic, _ = _upload_in_memory(executor, url, content, filename, field, timeout_sec, keep_body=False)
+    return traffic
+
+
+def upload_content_echoed(
+    executor,
+    url: str,
+    content: str,
+    *,
+    filename: str,
+    field: str = "file",
+    timeout_sec: int = 40,
+) -> tuple[TrafficResult, bool | None]:
+    """upload_content()처럼 보내고, 에코 서버(httpbin /post)가 받은 파일 내용이 보낸 것과
+    같은지도 돌려준다. True면 내용이 그대로 전달됐고, False면 바뀌었고, None이면 확인할 수
+    없다(에코 JSON이 아님). 응답 본문은 돌려주지도 기록하지도 않는다(EICAR가 들어 있다).
+    """
+    traffic, body = _upload_in_memory(executor, url, content, filename, field, timeout_sec, keep_body=True)
+    return traffic, echoed_file_intact(body, content, field) if traffic.delivered else None
+
+
+def echoed_file_intact(body: str, content: str, field: str = "file") -> bool | None:
+    """httpbin /post 응답의 files[field]가 보낸 content와 같은가.
+
+    PowerShell이 stdin으로 넘길 때 줄바꿈을 붙이므로 끝 공백은 비교하지 않는다.
+    """
+    import json
+
+    try:
+        files = json.loads(body).get("files")
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(files, dict) or field not in files:
+        return None
+    return str(files[field]).rstrip() == content.rstrip()
+
+
+def _upload_in_memory(
+    executor, url: str, content: str, filename: str, field: str, timeout_sec: int, *, keep_body: bool
+) -> tuple[TrafficResult, str]:
     # PowerShell은 [byte[]]를 네이티브 exe에 파이프할 때 줄마다 10진수 값 하나씩
     # 보내므로, 먼저 문자열로 디코딩한다. 여기서 보내는 페이로드는 ASCII 텍스트다.
+    output = '-w "`n%{http_code}"' if keep_body else '-o NUL -w "%{http_code}"'
     script = (
         f"$bytes = [Convert]::FromBase64String('{_b64(content)}')\n"
         f"$text = [System.Text.Encoding]::UTF8.GetString($bytes)\n"
-        f'$text | & curl.exe -k -s -o NUL -w "%{{http_code}}" -X POST '
+        f'$text | & curl.exe -k -s {output} -X POST '
         f'-F "{field}=@-;filename={filename}" --max-time {timeout_sec} "{url}"\n'
     )
     script_path = write_temp_file(executor, script, f"upload-{filename}.ps1")
@@ -272,12 +313,14 @@ def upload_content(
     finally:
         remove_temp_file(executor, script_path)
 
-    match = _STATUS_RE.search(result.stdout.strip().strip('"'))
+    stdout = result.stdout.strip()
+    body, _, code = stdout.rpartition("\n") if keep_body else ("", "", stdout)
+    match = _STATUS_RE.search(code.strip().strip('"'))
     status_code = int(match.group(1)) if match else None
     blocked = status_code in BLOCK_STATUS_CODES if status_code else False
 
     log.info("upload (in-memory) %s -> %s (blocked=%s)", url, status_code, blocked)
-    return TrafficResult(
+    traffic = TrafficResult(
         url=url,
         status_code=status_code,
         blocked=blocked,
@@ -285,6 +328,7 @@ def upload_content(
         detail=result.stderr.strip()[:200],
         delivered=is_delivered_status(status_code),
     )
+    return traffic, body
 
 
 def _b64(content: str) -> str:

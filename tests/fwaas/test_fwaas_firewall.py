@@ -231,7 +231,10 @@ def test_application_firewall_removal_restores_connectivity(
 
 
 @pytest.mark.case("BAT-FW-005")
-@pytest.mark.known_issue("protocol 조건이 적용되지 않아 다른 프로토콜까지 끊김")
+@pytest.mark.known_issue(
+    "protocol 조건이 적용되지 않아 다른 프로토콜까지 끊김",
+    match=r"A policy scoped to protocol 1 \(ICMP\) also cut off HTTP",
+)
 @pytest.mark.verifies(Step.USER_RESULT)
 @pytest.mark.priority("P2")
 def test_protocol_scope_limits_what_is_blocked(

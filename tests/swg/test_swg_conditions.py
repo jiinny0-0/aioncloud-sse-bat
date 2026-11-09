@@ -39,7 +39,7 @@ from bat.models import Kind, Step
 from bat.traffic.http import (
     remove_temp_file,
     resolve_ip,
-    upload_content,
+    upload_content_echoed,
     upload_file,
     write_temp_file,
 )
@@ -630,17 +630,31 @@ def test_upload_file_extension_block_is_extension_specific(
             remove_temp_file(executor, allowed_path)
 
 
+def eicar_outcome(traffic, intact: bool | None) -> str:
+    """EICAR 업로드 한 번의 결과: "blocked"(차단), "missed"(내용 그대로 전달됨), "unknown".
+
+    차단되지 않았다는 것만으로는 놓쳤다고 보지 않는다. 응답을 받았고(delivered) 에코 서버가
+    보낸 내용을 그대로 받았을 때만 "missed"다.
+    """
+    if traffic.blocked:
+        return "blocked"
+    if traffic.delivered and intact is True:
+        return "missed"
+    return "unknown"
+
+
 @pytest.mark.case("BAT-SWG-016")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P2")
 def test_anti_virus_signature_blocks_eicar(
     case, run_context, web_policies, executor, web_log, audit_log: AuditLogReader
 ):
-    """ANTI_VIRUS 시그니처를 켜면 EICAR 테스트 파일 업로드가 차단될 수 있다.
+    """ANTI_VIRUS 시그니처를 켜면 EICAR 테스트 파일 업로드가 차단된다.
 
     EICAR은 실제 악성코드가 아닌 표준 테스트 문자열이다. 단말 백신이 디스크의 EICAR을
-    지우므로 `upload_content()`로 디스크를 거치지 않고 보낸다. 엔진이 인식하지 않으면
-    FAIL이 아니라 SKIP이다.
+    지우므로 디스크를 거치지 않고 보낸다. 차단되지 않은 업로드는 httpbin 에코로 내용이
+    그대로 전달됐는지 확인한다. 그대로 전달됐는데 막지 않았으면 FAIL이고, 업로드가 응답을
+    받지 못했거나 에코가 보낸 내용과 다르면 UNVERIFIED다.
     """
     policy_name = resource_name(case.case_id, run_context.run_id)
     rule = WebPolicyFactory.module_rule(Subject.ANTI_VIRUS)
@@ -653,33 +667,42 @@ def test_anti_virus_signature_blocks_eicar(
             case.policy_ids.append(policy.policy_id)
             case.record(Step.SETUP, ok=True, detail="ANTI_VIRUS module BLOCK enabled")
 
+            last: dict = {}
+
             def probe():
-                result = upload_content(
+                last["value"] = upload_content_echoed(
                     executor, POST_TARGET_URL, EICAR_STRING, filename="eicar.txt"
                 )
-                return result if result.blocked else None
+                return last["value"] if last["value"][0].blocked else None
 
             try:
-                traffic = poll_until(
+                traffic, intact = poll_until(
                     probe,
                     timeout_sec=run_context.policy_propagation_timeout_sec,
                     description="EICAR upload to be refused",
                     initial_interval=2.0,
                 )
-            except PollTimeout as timeout:
+            except PollTimeout:
+                traffic, intact = last["value"]  # 전파 예산이 지난 뒤의 마지막 업로드로 판정한다
+            outcome = eicar_outcome(traffic, intact)
+            if outcome == "unknown":
                 unverified(
                     case,
                     Step.USER_RESULT,
-                    f"EICAR upload was not recognised by ANTI_VIRUS this time: {timeout} "
-                    f"— content delivery was independently confirmed intact (httpbin echo), "
-                    f"so this depends on the product's own engine, not a transport problem"
+                    f"EICAR upload was neither blocked nor confirmed delivered intact "
+                    f"({describe(traffic)}, echo intact={intact})",
                 )
             case.record(
                 Step.USER_RESULT,
-                ok=traffic.blocked,
-                detail=f"HTTP {traffic.status_code}",
+                ok=outcome == "blocked",
+                detail=f"HTTP {traffic.status_code}, echo intact={intact}",
                 expected="blocked",
-                actual=f"HTTP {traffic.status_code}",
+                actual=f"HTTP {traffic.status_code}"
+                + (" (the echo server received the EICAR string unchanged)" if outcome == "missed" else ""),
+            )
+            assert outcome == "blocked", (
+                f"ANTI_VIRUS BLOCK did not stop the EICAR upload: HTTP {traffic.status_code} and the "
+                f"echo server received the content unchanged"
             )
 
             await_security_event(

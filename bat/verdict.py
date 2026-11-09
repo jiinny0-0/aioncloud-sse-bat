@@ -83,6 +83,25 @@ def classify(case: CaseResult, raised: Raised, message: str = "") -> tuple[Statu
     return Status.PASS, f"all mandatory criteria passed: {list(case.criteria)}"
 
 
+def apply_known_issue(status: Status, reason: str, description: str, match: str | None) -> tuple[Status, str]:
+    """`@pytest.mark.known_issue(description, match=<정규식>)`가 붙은 케이스의 상태를 정한다.
+
+    사용자가 버그로 보지 않기로 한 것은 그 증상이다. 그래서 FAIL 사유가 match와 일치할 때만
+    SKIP으로 바꾸고, 다른 이유의 FAIL(그리고 match가 없는 마커)은 FAIL로 둔다. PASS하면
+    결함이 재현되지 않은 것이라 마커를 뗄지 보라고 사유에 남긴다.
+    """
+    import re
+
+    if status is Status.FAIL:
+        if match and re.search(match, reason, re.DOTALL):
+            return Status.SKIP, f"known issue ({description}): {reason}"
+        why = "has no match pattern" if not match else f"pattern {match!r} does not match this failure"
+        return Status.FAIL, f"{reason} [known_issue ({description}) {why}, so this stays a failure]"
+    if status is Status.PASS:
+        return Status.PASS, f"{reason} — known_issue ({description}) did not reproduce: 해제 검토 필요"
+    return status, reason
+
+
 def counts_against_run(case: dict) -> bool:
     """UNVERIFIED 결과 때문에 실행이 성공으로 보고되지 않아야 하는지 판단한다.
 

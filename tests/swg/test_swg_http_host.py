@@ -25,7 +25,6 @@ from bat.fixtures.testdata import (
 from bat.events.web_log import matches_policy
 from bat.models import Kind, Step
 from tests.support import (
-    accepted_issue,
     across_targets,
     await_security_event,
     cleanup_failed,
@@ -35,6 +34,7 @@ from tests.support import (
     marker_of,
     pass_case,
     record_identity,
+    unverified,
     visit_until_blocked,
 )
 
@@ -348,14 +348,19 @@ def test_host_block_matches_the_hostname_not_the_raw_ip(
 
 
 @pytest.mark.case("BAT-SWG-023")
+@pytest.mark.known_issue(
+    "대문자 Host를 그대로 보내는 클라이언트(curl)만 HTTP_HOST 차단을 비켜 감, 브라우저는 차단됨",
+    match=r"HTTP_HOST matching is case-sensitive: curl with the uppercase Host",
+)
 @pytest.mark.verifies(Step.USER_RESULT)
 @pytest.mark.priority("P2")
 def test_host_block_is_case_insensitive(case, run_context, web_policies, executor, browser_session):
     """HTTP_HOST 조건은 대소문자와 무관하게 매칭된다 — 호스트를 대문자 그대로 보내는 클라이언트(curl 등)도 막혀야 한다.
 
-    브라우저는 호스트를 소문자로 정규화해 보내고 curl은 입력한 그대로 보낸다. curl이 막히면 PASS,
-    curl은 통과했지만 브라우저가 막히면 UNVERIFIED(정규화하지 않는 클라이언트만 비켜 감), 둘 다
-    통과하면 FAIL이다.
+    브라우저는 호스트를 소문자로 정규화해 보내고 curl은 입력한 그대로 보낸다. curl이 막히면 PASS다.
+    curl이 응답을 받으면(delivered) 우회가 확인된 것이라 FAIL이고, curl이 응답을 받지 못하면(000,
+    타임아웃) UNVERIFIED다. 브라우저 결과는 근거로만 남긴다. known_issue는 "curl만 우회하고
+    브라우저는 차단됨" 증상일 때만 SKIP으로 바꾼다.
     """
     from tests.support import curl_until_blocked
 
@@ -377,15 +382,7 @@ def test_host_block_is_case_insensitive(case, run_context, web_policies, executo
             traffic = curl_until_blocked(
                 executor, uppercase_url, run_context.policy_propagation_timeout_sec
             )
-            case.record(
-                Step.USER_RESULT,
-                ok=traffic.blocked,
-                detail=f"curl {uppercase_url} -> HTTP {traffic.status_code}",
-                expected="blocked despite the uppercase host",
-                actual=f"HTTP {traffic.status_code}",
-                kind=Kind.ASSERTION if traffic.blocked else Kind.EVIDENCE,
-            )
-            # curl 단계가 끝나면 어느 쪽이든 전파 예산은 이미 다 썼다.
+            # curl 단계가 끝나면 어느 쪽이든 전파 예산은 이미 다 썼다. 브라우저 결과는 근거로만 남긴다.
             browser = visit_until_blocked(
                 browser_session, uppercase_url, case.case_id, run_context.policy_propagation_timeout_sec
             )
@@ -396,18 +393,32 @@ def test_host_block_is_case_insensitive(case, run_context, web_policies, executo
                 f"the browser lowercases the host before sending",
                 expected="blocked",
                 actual=describe(browser),
-                kind=Kind.EVIDENCE if traffic.blocked or browser.blocked else Kind.ASSERTION,
+                kind=Kind.EVIDENCE,
             )
-            assert traffic.blocked or browser.blocked, (
-                f"A policy blocking {BLOCK_TARGET_HOST!r} blocked neither curl nor the browser "
-                f"for {uppercase_url}"
+            if not traffic.blocked and not traffic.delivered:
+                unverified(
+                    case,
+                    Step.USER_RESULT,
+                    f"curl {uppercase_url} got no answer ({describe(traffic)}), so whether the "
+                    f"uppercase Host gets past HTTP_HOST is unknown",
+                )
+            case.record(
+                Step.USER_RESULT,
+                ok=traffic.blocked,
+                detail=f"curl {uppercase_url} -> HTTP {traffic.status_code}",
+                expected="blocked despite the uppercase host",
+                actual=f"HTTP {traffic.status_code}",
             )
             if not traffic.blocked:
-                # 사용자 지정(2026-10-26): 브라우저가 막히면 버그로 보지 않는다.
-                accepted_issue(
-                    f"curl with the uppercase Host ({uppercase_url}) got HTTP {traffic.status_code}; "
-                    f"the browser, which lowercases the host, was blocked — only clients that "
-                    f"do not normalise the host get past HTTP_HOST",
+                if browser.blocked:
+                    raise AssertionError(
+                        f"HTTP_HOST matching is case-sensitive: curl with the uppercase Host "
+                        f"({uppercase_url}) was delivered (HTTP {traffic.status_code}) while the browser, "
+                        f"which lowercases the host, was blocked"
+                    )
+                raise AssertionError(
+                    f"A policy blocking {BLOCK_TARGET_HOST!r} blocked neither curl (HTTP "
+                    f"{traffic.status_code}) nor the browser ({describe(browser)}) for {uppercase_url}"
                 )
             pass_case(case)
 
