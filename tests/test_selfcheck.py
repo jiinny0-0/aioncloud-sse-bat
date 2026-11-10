@@ -4262,3 +4262,64 @@ def test_old_error_results_read_as_bat_error(tmp_path):
     assert row["qa_status"] == "BAT_ERROR"
 
 
+
+
+# -- 단말 명령의 줄바꿈 ----------------------------------------------------------
+
+
+def test_executors_refuse_a_command_with_a_real_line_break():
+    """cmd.exe가 줄바꿈에서 명령을 끊어 curl이 'no URL specified'로 실패한 적이 있다(fetch_page)."""
+    from bat.clients.errors import EndpointError
+    from bat.endpoint.base import LocalExecutor
+    from bat.settings import Endpoint
+
+    executor = LocalExecutor(Endpoint(name="local-pc", lane="b", transport="local"))
+    for command in ('curl -w "\n%{http_code}" "https://x"', "echo a\recho b"):
+        with pytest.raises(EndpointError, match="line break"):
+            executor.run(command)
+
+
+class _CurlRun:
+    def __init__(self, exit_code=0, stdout="", stderr=""):
+        self.sent = []
+        self.answer = SimpleNamespace(exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+    def run(self, command, timeout_sec=None):
+        self.sent.append(command)
+        return self.answer
+
+
+def test_fetch_page_sends_one_line_and_reads_the_status():
+    from tests.support import fetch_page
+
+    endpoint = _CurlRun(stdout="<title>Browsing blocked by tt</title>\n403")
+    traffic, body = fetch_page(endpoint, "https://httpbin.org/get")
+    assert "\n" not in endpoint.sent[0] and "\r" not in endpoint.sent[0]
+    assert '-w "\\n%{http_code}"' in endpoint.sent[0]
+    assert traffic.status_code == 403 and traffic.blocked and "tt" in body
+
+
+@pytest.mark.parametrize("exit_code, stderr", [
+    (2, "curl: (2) no URL specified"),
+    (9009, "'curl' is not recognized as an internal or external command"),
+])
+def test_fetch_page_raises_when_curl_never_sent_the_request(exit_code, stderr):
+    from tests.support import CurlToolError, fetch_page
+
+    with pytest.raises(CurlToolError, match=f"exit {exit_code}"):
+        fetch_page(_CurlRun(exit_code=exit_code, stderr=stderr), "https://httpbin.org/get")
+    # 연결 실패(curl 7, 000)는 제품 쪽 결과라 그대로 돌려준다.
+    traffic, _ = fetch_page(_CurlRun(exit_code=7, stdout="\n000"), "https://httpbin.org/get")
+    assert traffic.status_code == 0 and not traffic.delivered
+
+
+def test_a_baseline_whose_curl_never_ran_is_a_bat_error(monkeypatch):
+    import tests.basic.test_service as service
+    from tests.support import EnvironmentNotReady
+
+    monkeypatch.setattr(service, "connector_state", lambda executor, process: "Running")
+    context = SimpleNamespace(profile=SimpleNamespace(connector_process="U+SASE"), run_id=RUN_ID)
+    case = CaseResult(case_id="BAT-BASIC-008", product="basic", scenario="s", criteria=["user_visible_result"])
+    with pytest.raises(EnvironmentNotReady, match="never sent"):
+        service._check_targets(case, context, _CurlRun(exit_code=2, stderr="curl: (2) no URL specified"),
+                               "start", 0)

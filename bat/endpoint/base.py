@@ -63,6 +63,18 @@ class Executor(Protocol):
     def run_powershell(self, script: str, timeout_sec: int = 60) -> CommandResult: ...
 
 
+def _single_line(command: str) -> str:
+    """cmd.exe는 줄바꿈에서 명령을 끊는다. 실제 줄바꿈이 든 명령은 보내지 않는다.
+
+    파이썬 문자열의 "\n"이 curl의 -w 형식 같은 곳에 실제 줄바꿈으로 들어가면 뒤쪽 인자가
+    잘려 엉뚱한 오류(curl: no URL specified)가 제품 결과처럼 보인다. 여러 줄 스크립트는
+    write_temp_file로 파일을 만들어 실행한다.
+    """
+    if isinstance(command, str) and ("\n" in command or "\r" in command):
+        raise EndpointError(f"Command contains a line break and would be cut by the shell: {command!r}")
+    return command
+
+
 class LocalExecutor:
     """테스트 러너가 도는 머신에서 명령을 실행한다."""
 
@@ -71,6 +83,7 @@ class LocalExecutor:
 
     def run(self, command: str, timeout_sec: int = 60) -> CommandResult:
         log.debug("[%s] local: %s", self.endpoint.name, command)
+        _single_line(command)
         try:
             # 바이트로 받아 여기서 디코딩한다. subprocess의 UTF-8 디코딩은
             # 현지화된 콘솔의 코드 페이지에서 실패한다.
@@ -119,7 +132,7 @@ class WinRmExecutor:
 
     def run(self, command: str, timeout_sec: int = 60) -> CommandResult:
         log.debug("[%s] winrm: %s", self.endpoint.name, command)
-        response = self._session.run_cmd(command)
+        response = self._session.run_cmd(_single_line(command))
         return CommandResult(
             command,
             response.status_code,

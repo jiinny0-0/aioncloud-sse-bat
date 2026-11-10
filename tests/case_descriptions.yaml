@@ -191,7 +191,7 @@ BAT-BASIC-007:
     actual_result: The console / management API servers do not answer (server down)
 BAT-BASIC-008:
   test_steps: |-
-    1. 커넥터가 실행 중인지 확인(아니면 BAT_ERROR)
+    1. 커넥터가 실행 중인지 확인(아니면 BAT_ERROR). curl이 요청을 보내지도 못하면(사용법 오류, 실행 파일 없음) 제품 응답이 없어 BAT_ERROR
     2. BAT 정책을 만들기 전에 ECHO_HOSTS 세 곳(https://<host>/get)에 curl 요청, 정상 응답이 올 때까지 최대 10초 재시도
     3. 막히면 차단 페이지가 밝힌 규칙 이름을 기록
     4. 전부 정상이면 PASS, 일부만 막히거나 닿지 않으면 WARN, 전부 막히거나 닿지 않으면 FAIL(다 막아버림)
@@ -206,7 +206,7 @@ BAT-BASIC-008:
   en:
     scenario: At the start of the run, with no BAT policy in place, requests to ordinary targets answer normally (detects everything being blocked).
     test_steps: |-
-      1. Check that the connector is running (BAT_ERROR if not)
+      1. Check that the connector is running (BAT_ERROR if not). If curl cannot even send the request (usage error, executable missing), there is no product answer, so BAT_ERROR
       2. Before creating any BAT policy, send curl requests to the three ECHO_HOSTS (https://<host>/get), retrying for up to 10 seconds until a normal answer comes back
       3. If blocked, record the rule name the block page gives
       4. PASS if all answer normally, WARN if only some are blocked or unreachable, FAIL if all are blocked or unreachable (everything blocked)
@@ -220,7 +220,7 @@ BAT-BASIC-008:
     actual_result: Requests to ordinary targets are blocked or unreachable even with no BAT policy
 BAT-BASIC-009:
   test_steps: |-
-    1. 커넥터가 실행 중인지 확인(아니면 BAT_ERROR)
+    1. 커넥터가 실행 중인지 확인(아니면 BAT_ERROR). curl이 요청을 보내지도 못하면(사용법 오류, 실행 파일 없음) 제품 응답이 없어 BAT_ERROR
     2. 모든 케이스와 정책 정리가 끝난 뒤 ECHO_HOSTS 세 곳(https://<host>/get)에 curl 요청, 정상 응답이 올 때까지 정책 전파 시간(BAT_POLICY_TIMEOUT_SEC)+10초까지 재시도
     3. 막히면 차단 페이지가 밝힌 규칙 이름을 기록
     4. 전부 정상이면 PASS, 일부만 막히거나 닿지 않으면 WARN, 전부 막히거나 닿지 않으면 FAIL(정책 삭제 미반영)
@@ -234,7 +234,7 @@ BAT-BASIC-009:
   en:
     scenario: At the end of the run, after every BAT policy is deleted, requests to ordinary targets still answer normally (detects policy deletion not taking effect).
     test_steps: |-
-      1. Check that the connector is running (BAT_ERROR if not)
+      1. Check that the connector is running (BAT_ERROR if not). If curl cannot even send the request (usage error, executable missing), there is no product answer, so BAT_ERROR
       2. After every case and policy cleanup, send curl requests to the three ECHO_HOSTS (https://<host>/get), retrying until a normal answer comes back for up to the policy propagation time (BAT_POLICY_TIMEOUT_SEC) + 10 seconds
       3. If blocked, record the rule name the block page gives
       4. PASS if all answer normally, WARN if only some are blocked or unreachable, FAIL if all are blocked or unreachable (policy deletion not applied)

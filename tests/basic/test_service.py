@@ -9,7 +9,8 @@ BAT-BASIC-007  콘솔 웹·REST·GraphQL이 응답하는가. 연결 실패·타�
 BAT-BASIC-008  실행 처음, BAT 정책이 없는 상태에서 일반 대상이 정상 응답하는가.
 BAT-BASIC-009  실행 마지막, 모든 BAT 정책을 지운 뒤에도 일반 대상이 정상 응답하는가.
                정리 뒤에도 막혀 있으면 정책 삭제가 반영되지 않은 것이다.
-기준선은 전부 막히면 FAIL, 일부만 막히면 WARN, 커넥터가 꺼져 있으면 BAT_ERROR다.
+기준선은 전부 막히면 FAIL, 일부만 막히면 WARN, 커넥터가 꺼져 있거나 curl이 요청을 보내지 못했으면
+(사용법 오류, 실행 파일 없음) BAT_ERROR다.
 """
 from __future__ import annotations
 
@@ -34,7 +35,14 @@ from bat.health import (
 )
 from bat.models import Kind, Step
 from bat.verdict import MinorFailure
-from tests.support import block_page_rule, environment_error, fetch_page, pass_case, unverified
+from tests.support import (
+    CurlToolError,
+    block_page_rule,
+    environment_error,
+    fetch_page,
+    pass_case,
+    unverified,
+)
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +94,11 @@ def _check_targets(case, run_context, executor, phase: str, budget_sec: float) -
         url = f"https://{host}/get?bat=baseline-{phase}-{run_context.run_id}"
         deadline = time.monotonic() + budget_sec
         while True:
-            traffic, body = fetch_page(executor, url)
+            try:
+                traffic, body = fetch_page(executor, url)
+            except CurlToolError as exc:
+                # 요청을 보내지도 못했으니 제품 응답이 하나도 없다: 판정 근거가 없는 BAT 쪽 문제다.
+                environment_error(f"the baseline request to {host} was never sent: {exc}")
             if traffic.delivered or time.monotonic() >= deadline:
                 break
             time.sleep(RETRY_GAP_SEC)

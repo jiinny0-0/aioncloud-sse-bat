@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from bat.clients.errors import ApiError, AuthError, SelfBlockedError
+from bat.clients.errors import ApiError, AuthError, EndpointError, SelfBlockedError
 from bat.events.casb_log import CasbLogReader
 from bat.events.casb_log import in_app_service_name
 from bat.events.casb_log import matches_rule as matches_casb_rule
@@ -1811,14 +1811,32 @@ def block_page_rule(body: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+class CurlToolError(EndpointError):
+    """curl 자체가 요청을 보내지 못했다(사용법 오류, 실행 파일 없음). 제품의 응답이 아니다."""
+
+
+# curl 종료 코드 2(초기화·사용법 오류)와 3(잘못된 URL), 셸의 "명령 없음"(cmd 9009, sh 127).
+CURL_TOOL_EXIT_CODES = frozenset({2, 3, 9009, 127})
+
+
 def fetch_page(executor, url: str, timeout_sec: int = 15) -> tuple[TrafficResult, str]:
-    """단말에서 URL을 curl로 요청해 (결과, 본문)을 돌려준다. 본문으로 차단한 규칙 이름을 읽는다."""
+    """단말에서 URL을 curl로 요청해 (결과, 본문)을 돌려준다. 본문으로 차단한 규칙 이름을 읽는다.
+
+    curl이 요청을 보내지도 못했으면(CURL_TOOL_EXIT_CODES) CurlToolError를 던진다. 그건 제품의
+    응답이 아니라 BAT 쪽 문제다.
+    """
     from bat.traffic.http import BLOCK_STATUS_CODES, is_delivered_status
 
+    # -w의 \n은 curl이 해석하는 두 글자다. 파이썬 줄바꿈이 들어가면 셸이 명령을 끊는다.
     result = executor.run(
-        f'curl -k -s --max-time {timeout_sec} -w "\n%{{http_code}}" "{url}"',
+        f'curl -k -s --max-time {timeout_sec} -w "\\n%{{http_code}}" "{url}"',
         timeout_sec=timeout_sec + 10,
     )
+    if result.exit_code in CURL_TOOL_EXIT_CODES:
+        raise CurlToolError(
+            f"curl could not send the request (exit {result.exit_code}): "
+            f"{(result.stderr or result.stdout).strip()[:200] or 'no output'}"
+        )
     body, _, code = result.stdout.rstrip().rpartition("\n")
     status = int(code) if code.strip().isdigit() else None
     traffic = TrafficResult(
