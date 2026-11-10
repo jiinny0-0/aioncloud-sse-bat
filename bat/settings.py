@@ -76,13 +76,15 @@ def require_env(name: str) -> str:
 
 @dataclass(frozen=True)
 class ZtnaTarget:
-    """ZTNA 게이트웨이 뒤에 있는 내부 웹 서버. 설정 값은 모두 선택이다.
+    """ZTNA로 여는 내부 웹 서버(게이트웨이 서버 또는 연결된 터널 뒤). 설정 값은 모두 선택이다.
 
-    비어 있으면 케이스가 찾는다: 게이트웨이 서버 목록(id 순)에서 흔한 웹 포트 중 규칙 없이
-    처음 열리는 서버와 포트, 그 페이지의 <title>, 콘솔이 그 서버에 붙인 도메인, 같은 포트로
-    열리는 다른 서버(other_ip). 적힌 값이 있으면 그 값이 우선이다. server_ip는 그 게이트웨이의
-    서버 목록에 있어야 하고, domain은 단말에서 그 IP로 풀리는 이름이다. scheme과 how는 찾은
-    결과를 담는다(how는 어떻게 정했는지 리포트에 남길 문장).
+    비어 있으면 케이스가 찾는다: 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, id 순)에서
+    흔한 웹 포트 중 규칙 없이 처음 열리는 서버와 포트, 없으면 연결된 터널의 interface에서 같은
+    방법으로. 그 페이지의 <title>, 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버(other_ip)도
+    찾는다. 적힌 값이 있으면 그 값이 우선이다(server_ip가 적혀 있으면 게이트웨이에서만 찾는다).
+    domain은 단말에서 그 IP로 풀리는 이름이다. 나머지는 찾은 결과다: via(gateway/tunnel),
+    target_id(게이트웨이 서버 id 또는 터널 interface id), registered_domain(콘솔에 등록된 도메인),
+    scheme, how(어떻게 정했는지 리포트에 남길 문장).
     """
 
     server_ip: str = ""
@@ -92,11 +94,14 @@ class ZtnaTarget:
     other_ip: str = ""
     scheme: str = "http"
     how: str = ""
+    via: str = "gateway"
+    target_id: int = 0
+    registered_domain: str = ""
 
 
 @dataclass(frozen=True)
 class ZtnaTunnelTarget:
-    """커넥터를 설치해 둔 실제 ZTNA 터널과 그 너머의 웹 페이지. 모두 선택 값이다.
+    """게이트웨이에서 열리는 서버가 없을 때 쓸 실제 ZTNA 터널. 모두 선택 값이다.
 
     비어 있으면 케이스가 찾는다: 연결된 터널(BAT가 만든 것 제외), 흔한 웹 포트 중 처음
     열리는 곳, 그 페이지의 <title>. 서버 IP와 도메인은 언제나 터널 목록에서 읽는다.
@@ -122,7 +127,7 @@ class Profile:
     connector_process: str = "AIConnector for Client"
     # ZTNA 게이트웨이 케이스의 대상(선택). 없으면 게이트웨이 서버 목록에서 찾아서 쓴다.
     ztna: ZtnaTarget | None = None
-    # 실제 터널 케이스의 대상(선택). 없으면 연결된 터널을 찾아서 쓴다.
+    # 게이트웨이에서 대상을 못 찾을 때 쓸 터널(선택). 없으면 연결된 터널을 찾아서 쓴다.
     ztna_tunnel: ZtnaTunnelTarget | None = None
 
     @property

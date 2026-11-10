@@ -1624,6 +1624,8 @@ def await_network_row(
 
 
 MISSING = object()
+# 다시 읽은 행에 그 키가 없다. 리스트 필드면 빈 리스트, 아니면 MISSING으로 본다(expect_values).
+ABSENT = object()
 
 
 def _plain(value: object) -> object:
@@ -1639,8 +1641,8 @@ def _plain(value: object) -> object:
 def rule_values(rules: object, subject: str) -> object:
     """저장된 rules(중첩 깊이 무관)에서 subject가 같은 rule들의 value를 모은다. 그런 rule이
     없으면 [], rules 자체가 없으면(MISSING) MISSING."""
-    if rules is MISSING:
-        return MISSING
+    if rules is MISSING or rules is ABSENT:
+        return rules
     found: list = []
 
     def walk(node: object) -> None:
@@ -1664,7 +1666,11 @@ def expect_values(
 ) -> None:
     """기대값과 다시 읽은(또는 다른 기록에서 얻은) 값을 비교한다. compared는 {필드: (기대값,
     읽은 값)}이고, 읽지 못한 필드는 MISSING으로 준다. 하나라도 다르면 FAIL, 다른 것 없이 읽지
-    못한 필드가 있으면 UNVERIFIED, 전부 같으면 통과다. 객체는 id로, 리스트는 순서 없이 비교한다."""
+    못한 필드가 있으면 UNVERIFIED, 전부 같으면 통과다. 객체는 id로, 리스트는 순서 없이 비교한다.
+
+    기대값이 리스트인 필드는 읽은 값이 None이거나 행에 키가 없으면(ABSENT) 빈 리스트로 본다
+    (서버가 빈 목록을 null로 돌려주거나 빼고 돌려준다). 리스트가 아닌 필드의 ABSENT는 못 읽은 것이다."""
+    compared = {k: (want, _read_back(want, got)) for k, (want, got) in compared.items()}
     differ = {k: (want, got) for k, (want, got) in compared.items() if got is not MISSING and _plain(want) != _plain(got)}
     missing = [k for k, (_, got) in compared.items() if got is MISSING]
     read = {k: got for k, (_, got) in compared.items() if got is not MISSING}
@@ -1683,9 +1689,17 @@ def expect_values(
     )
 
 
+def _read_back(want: object, got: object) -> object:
+    if isinstance(want, (list, tuple)) and (got is None or got is ABSENT):
+        return []
+    return MISSING if got is ABSENT else got
+
+
 def stored(row: dict | None, name: str) -> object:
-    """다시 읽은 행의 필드. 행이나 필드가 없으면 MISSING."""
-    return row.get(name, MISSING) if isinstance(row, dict) else MISSING
+    """다시 읽은 행의 필드. 행이 없으면 MISSING, 행은 있는데 필드가 없으면 ABSENT."""
+    if not isinstance(row, dict):
+        return MISSING
+    return row.get(name, ABSENT)
 
 
 def expect_dns_block(
@@ -1773,7 +1787,7 @@ def row_named(rows: list[dict], name: str) -> dict | None:
 
 
 def as_list(value: object) -> object:
-    """단일 값으로 읽힌 필드를 리스트로(비교용). MISSING과 리스트는 그대로."""
-    if value is MISSING or isinstance(value, list):
+    """단일 값으로 읽힌 필드를 리스트로(비교용). MISSING·ABSENT와 리스트는 그대로."""
+    if value is MISSING or value is ABSENT or isinstance(value, list):
         return value
     return [] if value is None else [value]

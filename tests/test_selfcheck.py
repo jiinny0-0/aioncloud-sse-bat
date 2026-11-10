@@ -3529,6 +3529,39 @@ def test_values_read_back_are_compared_not_just_found():
     assert rule_values(rules, "GENAI_REQUEST_TOPIC") == [] and rule_values(MISSING, "X") is MISSING
 
 
+def test_empty_list_fields_read_back_as_null_or_absent_match():
+    """BAT-SWG-009(빌드 #90): user_groups []를 저장했는데 None으로 읽혀 FAIL. 리스트 필드는
+    None·키 없음을 빈 리스트로 본다. 값이 실제로 다르면 여전히 FAIL, 행을 못 읽으면 UNVERIFIED."""
+    from tests.support import ABSENT, VerificationUnavailable, as_list, expect_values, rule_values, stored
+
+    case = CaseResult(case_id="BAT-SWG-009", product="swg", scenario="s")
+    for saved in ({"users": [{"id": 11}], "user_groups": None, "action_type": "BLOCK"},
+                  {"users": [{"id": 11}], "action_type": "BLOCK"},
+                  {"users": [{"id": 11}], "user_groups": [], "action_type": "BLOCK"}):
+        expect_values(case, "web policy", {
+            "users": ([11], stored(saved, "users")),
+            "user_groups": ([], stored(saved, "user_groups")),
+            "action_type": ("BLOCK", stored(saved, "action_type")),
+        })
+        assert case.steps[-1].ok, saved
+    assert stored({}, "user_groups") is ABSENT
+    assert as_list(ABSENT) is ABSENT and rule_values(ABSENT, "X") is ABSENT
+
+    saved = {"users": [{"id": 12}], "user_groups": None, "action_type": "BLOCK"}
+    with pytest.raises(AssertionError, match="users"):
+        expect_values(case, "web policy", {"users": ([11], stored(saved, "users")),
+                                           "user_groups": ([], stored(saved, "user_groups"))})
+    # 비어 있지 않은 목록을 기대했는데 None·키 없음이면 다른 값이다.
+    for saved in ({"user_groups": None}, {}):
+        with pytest.raises(AssertionError, match="user_groups"):
+            expect_values(case, "web policy", {"user_groups": ([3], stored(saved, "user_groups"))})
+    # 리스트가 아닌 필드의 키 없음, 행 자체가 없음은 못 읽은 것이다.
+    with pytest.raises(VerificationUnavailable, match="could not read"):
+        expect_values(case, "web policy", {"action_type": ("BLOCK", stored({}, "action_type"))})
+    with pytest.raises(VerificationUnavailable, match="could not read"):
+        expect_values(case, "web policy", {"user_groups": ([], stored(None, "user_groups"))})
+
+
 class _FakeRest:
     """웹 정책 REST. 삭제를 무시하는 제품(ignore_delete)과 활성화 변경을 무시하는 제품을 흉내 낸다."""
 
@@ -3674,6 +3707,127 @@ def test_gateway_target_is_found_without_config():
     assert target.domain == "test.com"
     assert target.other_ip == "192.168.3.227"
     assert "discovered" in target.how and "from <title>" in target.how
+
+
+def test_gateway_target_tries_servers_with_a_domain_first():
+    """lguplus 순서(.210, .162, .227, .106): 도메인 없는 .227이 먼저 열려도 도메인이 있는 .106을 고른다."""
+    from bat.settings import ZtnaTarget
+    from tests.ztna.test_ztna_traffic import _gateway_target
+
+    endpoint = _WebEndpoint({
+        "http://192.168.3.227/": ("<title>FTP Server</title>", 200),
+        "http://192.168.3.106/": _RETRO,
+    })
+    servers = [
+        {"id": 1, "ip": "192.168.3.210", "domain": ""},
+        {"id": 2, "ip": "192.168.3.162", "domain": None},
+        {"id": 3, "ip": "192.168.3.227", "domain": ""},
+        {"id": 4, "ip": "192.168.3.106", "domain": "test.com"},
+    ]
+    target = _gateway_target(endpoint, _Gateways(servers), ZtnaTarget())
+    assert (target.server_ip, target.domain, target.page_text) == ("192.168.3.106", "test.com", "Retro Computing Archive")
+    assert target.other_ip == "192.168.3.227"
+    assert endpoint.urls[0] == "http://192.168.3.106/", "the server with a domain is tried first"
+    # 도메인 있는 서버가 안 열리면 도메인 없는 서버라도 쓴다(011/012는 돈다).
+    endpoint = _WebEndpoint({"http://192.168.3.227/": ("<title>FTP Server</title>", 200)})
+    target = _gateway_target(endpoint, _Gateways(servers), ZtnaTarget())
+    assert (target.server_ip, target.domain) == ("192.168.3.227", "")
+
+
+class _Tunnels:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def list(self):
+        return self.rows
+
+
+_TUNNEL_ROWS = [
+    {"id": 7, "name": "BAT-ZTNA-014-old", "connect_status": True,
+     "interface": [{"id": 70, "ip": "192.0.2.10", "domain": "bat.tunnel.internal"}]},
+    {"id": 3, "name": "office", "connect_status": True, "interface": [
+        {"id": 31, "ip": "10.1.0.5", "domain": ""},
+        {"id": 32, "ip": "10.1.0.6", "domain": "wiki.office.internal"},
+    ]},
+    {"id": 4, "name": "lab", "connect_status": False, "interface": [{"id": 41, "ip": "10.2.0.5", "domain": ""}]},
+]
+
+
+def test_ztna_target_falls_back_to_a_connected_tunnel():
+    """게이트웨이 서버가 없거나 안 열리면 연결된 터널(BAT 터널·끊긴 터널 제외)의 interface에서 찾는다."""
+    from bat.settings import ZtnaTarget, ZtnaTunnelTarget
+    from tests.ztna.test_ztna_traffic import _entry, _log_destination, _ztna_target
+
+    endpoint = _WebEndpoint({
+        "http://10.1.0.5/": ("<title>Plain</title>", 200),
+        "http://10.1.0.6/": ("<title>Office Wiki</title>", 200),
+        "http://192.0.2.10/": ("<title>BAT</title>", 200),
+        "http://10.2.0.5/": ("<title>Lab</title>", 200),
+    })
+    for servers in ([], [{"id": 1, "ip": "192.168.3.160", "domain": ""}]):
+        target = _ztna_target(endpoint, _Gateways(servers), _Tunnels(_TUNNEL_ROWS), ZtnaTarget(), ZtnaTunnelTarget())
+        assert isinstance(target, ZtnaTarget), target
+        assert (target.via, target.target_id, target.server_ip) == ("tunnel", 32, "10.1.0.6"), "domain first"
+        assert target.domain == target.registered_domain == "wiki.office.internal"
+        assert target.page_text == "Office Wiki" and target.other_ip == "10.1.0.5"
+        assert "tunnel office (id=3) interface id=32" in target.how and "gateway:" in target.how
+    assert not any("192.0.2.10" in url or "10.2.0.5" in url for url in endpoint.urls), "BAT or offline tunnels"
+
+    entry = _entry(target, by_domain=True)
+    assert entry == {"port": "80", "target_type": "tunnel", "target_id": 32, "domain": "wiki.office.internal"}
+    assert _entry(target, by_domain=False)["ip"] == "10.1.0.6"
+    assert _log_destination(target) == "", "the tunnel row's dst_ip is not asserted"
+
+
+def test_ztna_target_uses_the_gateway_first_and_stays_on_a_configured_gateway():
+    from bat.settings import ZtnaTarget, ZtnaTunnelTarget
+    from tests.ztna.test_ztna_traffic import _entry, _log_destination, _ztna_target
+
+    tunnels = _Tunnels(_TUNNEL_ROWS)
+    endpoint = _WebEndpoint({"http://192.168.3.106/": _RETRO, "http://10.1.0.6/": ("<title>Wiki</title>", 200)})
+    servers = [{"id": 4, "ip": "192.168.3.106", "domain": "test.com"}]
+    target = _ztna_target(endpoint, _Gateways(servers), tunnels, ZtnaTarget(), ZtnaTunnelTarget())
+    assert (target.via, target.target_id, target.registered_domain) == ("gateway", 4, "test.com")
+    assert _entry(target, by_domain=True)["target_type"] == "gateway"
+    assert _log_destination(target) == "192.168.3.106:80"
+    assert not any("10.1.0" in url for url in endpoint.urls), "the tunnel is not tried when a gateway server opens"
+
+    # 설정에 게이트웨이 서버가 적혀 있으면 그 서버가 안 열려도 터널로 넘어가지 않는다.
+    result = _ztna_target(_WebEndpoint({"http://10.1.0.6/": ("<title>Wiki</title>", 200)}), _Gateways(servers),
+                          tunnels, ZtnaTarget(server_ip="192.168.3.106"), ZtnaTunnelTarget())
+    assert isinstance(result, str) and "gateway server" in result and "tunnel" not in result.lower()
+
+
+@pytest.mark.parametrize("rows, wanted", [
+    ([], "tunnels: none"),
+    ([{"id": 4, "name": "lab", "connect_status": False, "interface": []}], "lab (connected=False)"),
+    (_TUNNEL_ROWS, "behind the connected ZTNA tunnel"),
+])
+def test_ztna_target_reports_both_reasons_when_neither_opens(rows, wanted):
+    from bat.settings import ZtnaTarget, ZtnaTunnelTarget
+    from tests.ztna.test_ztna_traffic import _ztna_target
+
+    servers = [{"id": 1, "ip": "192.168.3.160", "domain": ""}]
+    result = _ztna_target(_WebEndpoint({}), _Gateways(servers), _Tunnels(rows), ZtnaTarget(), ZtnaTunnelTarget())
+    assert isinstance(result, str)
+    assert result.startswith("Neither a ZTNA gateway server nor a connected tunnel")
+    assert "192.168.3.160" in result and wanted in result
+
+
+def test_ztna_tunnel_settings_pick_the_tunnel_port_and_text():
+    from bat.settings import ZtnaTarget, ZtnaTunnelTarget
+    from tests.ztna.test_ztna_traffic import _ztna_target
+
+    endpoint = _WebEndpoint({
+        "http://10.1.0.6/": ("<title>Wiki</title>", 200),
+        "http://10.1.0.5:8080/": ("<title>Admin</title> console", 200),
+    })
+    target = _ztna_target(endpoint, _Gateways([]), _Tunnels(_TUNNEL_ROWS), ZtnaTarget(),
+                          ZtnaTunnelTarget(name="office", port=8080, page_text="console"))
+    assert (target.server_ip, target.port, target.page_text) == ("10.1.0.5", 8080, "console")
+    assert "from config" in target.how
+    missing = _ztna_target(endpoint, _Gateways([]), _Tunnels(_TUNNEL_ROWS), ZtnaTarget(), ZtnaTunnelTarget(name="nope"))
+    assert "No ZTNA tunnel named 'nope'" in missing
 
 
 def test_gateway_target_prefers_configured_values():

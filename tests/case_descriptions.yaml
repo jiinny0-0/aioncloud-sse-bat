@@ -1980,36 +1980,36 @@ BAT-ZTNA-008:
     expected_results: The query works in some shape
 BAT-ZTNA-009:
   test_steps: |-
-    1. 게이트웨이 서버 목록(id 순)에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna 설정에 적힌 값 우선, 못 찾으면 ERROR). 도메인이 없으면 ERROR
+    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR). 도메인이 없으면 ERROR
     2. 전체 사용자 LOGGING 접근정책을 만든다
     3. 찾은 도메인과 포트로 접근제어를 만들어 그 정책을 연결하고 우선순위를 0으로 올린다
     4. 커넥터 단말에서 <scheme>://<domain>:<port>/ 요청
     5. ZTNA 로그(service_security_log)에서 BAT 접근제어 이름의 AP_LOGGING 행 확인
     6. 접근제어, 접근정책 삭제
   test_parameters: |-
-    접근제어: type HTTP, application [{domain, port, target_type: gateway, target_id: 게이트웨이 서버 id}], user/user_group [0], priority 0
+    접근제어: type HTTP, application [{domain, port, target_type: gateway 또는 tunnel, target_id: 게이트웨이 서버 id 또는 터널 interface id}], user/user_group [0], priority 0
     접근정책: action LOGGING, rules [{user_id: [0]}]
   test_data: 'lguplus: web.qa2.internal:80 → 192.168.3.106 (Retro Computing Archive)'
   expected_results: 페이지가 열리고(page_text 포함), ZTNA 로그에 BAT 접근제어·접근정책 이름, 목적지 <server_ip>:<port>, 이 단말 device_id의 AP_LOGGING 행이 남는다
   actual_result: 내부 서버 페이지가 열리지 않았거나, ZTNA 로그에 BAT 규칙 이름의 접속 기록이 없음
   en:
-    scenario: With an access control registered by domain, the internal server page opens from the connector, and that access is recorded in the ZTNA log under the BAT rule name.
+    scenario: With an access control registered by domain, the internal server page (behind a gateway or a tunnel) opens from the connector, and that access is recorded in the ZTNA log under the BAT rule name.
     test_steps: |-
-      1. From the gateway server list (in id order), find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna setting takes priority; ERROR if not found). ERROR if there is no domain
+      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; ERROR if not found). ERROR if there is no domain
       2. Create an all-users LOGGING access policy
       3. Create an access control with the found domain and port, attach that policy to it, and raise the priority to 0
       4. Request <scheme>://<domain>:<port>/ from the connector endpoint
       5. In the ZTNA log (service_security_log), confirm an AP_LOGGING row with the BAT access control name
       6. Delete the access control and the access policy
     test_parameters: |-
-      access control: type HTTP, application [{domain, port, target_type: gateway, target_id: gateway server id}], user/user_group [0], priority 0
+      access control: type HTTP, application [{domain, port, target_type: gateway or tunnel, target_id: gateway server id or tunnel interface id}], user/user_group [0], priority 0
       access policy: action LOGGING, rules [{user_id: [0]}]
     test_data: 'lguplus: web.qa2.internal:80 -> 192.168.3.106 (Retro Computing Archive)'
     expected_results: The page opens (including page_text), and the ZTNA log leaves an AP_LOGGING row with the BAT access control and access policy names, destination <server_ip>:<port>, and this endpoint's device_id
     actual_result: The internal server page did not open, or the ZTNA log has no access record under the BAT rule name
 BAT-ZTNA-010:
   test_steps: |-
-    1. 게이트웨이 서버 목록(id 순)에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna 설정에 적힌 값 우선, 못 찾으면 ERROR). 도메인이 없으면 ERROR
+    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR). 도메인이 없으면 ERROR
     1-1. 규칙 없이 <scheme>://<domain>:<port>/ 이 열리는지 확인(안 열리면 ERROR)
     2. 전체 사용자 BLOCK 접근정책을 만든다
     3. 도메인 접근제어를 만들어 그 정책을 연결하고 우선순위를 0으로 올린다
@@ -2018,15 +2018,15 @@ BAT-ZTNA-010:
     6. ZTNA 로그에서 BAT 접근제어 이름의 AP_BLOCK 행 확인
     7. 접근제어, 접근정책 삭제 후 페이지가 다시 열리는지 확인
   test_parameters: |-
-    접근제어: type HTTP, application [{domain, port, target_type: gateway, target_id}], priority 0
+    접근제어: type HTTP, application [{domain, port, target_type: gateway 또는 tunnel, target_id}], priority 0
     접근정책: action BLOCK, rules [{user_id: [0]}]
   test_data: 'lguplus: web.qa2.internal / 192.168.3.106:80 차단 대상, 192.168.3.227:80 범위 확인'
   expected_results: 그 서버만 도메인·IP 모두 차단 페이지가 뜨고 다른 내부 서버는 열리며, AP_BLOCK 행이 남고, 삭제하면 다시 열린다
   actual_result: 도메인 접근제어의 BLOCK이 그 서버를 막지 않았거나, 다른 서버까지 막았거나, 삭제 후 다시 열리지 않음
   en:
-    scenario: When a BLOCK access policy is attached to a domain access control, only that server is blocked, by both domain and IP, and it opens again once removed.
+    scenario: When a BLOCK access policy is attached to a domain access control, only that server (behind a gateway or a tunnel) is blocked, by both domain and IP, and it opens again once removed.
     test_steps: |-
-      1. From the gateway server list (in id order), find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna setting takes priority; ERROR if not found). ERROR if there is no domain
+      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; ERROR if not found). ERROR if there is no domain
       1-1. Confirm <scheme>://<domain>:<port>/ opens without a rule (ERROR if it does not open)
       2. Create an all-users BLOCK access policy
       3. Create a domain access control, attach that policy to it, and raise the priority to 0
@@ -2035,43 +2035,43 @@ BAT-ZTNA-010:
       6. In the ZTNA log, confirm an AP_BLOCK row with the BAT access control name
       7. After deleting the access control and the access policy, confirm the page opens again
     test_parameters: |-
-      access control: type HTTP, application [{domain, port, target_type: gateway, target_id}], priority 0
+      access control: type HTTP, application [{domain, port, target_type: gateway or tunnel, target_id}], priority 0
       access policy: action BLOCK, rules [{user_id: [0]}]
     test_data: 'lguplus: web.qa2.internal / 192.168.3.106:80 is the block target, 192.168.3.227:80 is checked for scope'
     expected_results: The block page appears for that server only, by both domain and IP, the other internal server opens, an AP_BLOCK row is left, and it opens again after deletion
     actual_result: The BLOCK of the domain access control did not block that server, or blocked other servers too, or it did not open again after deletion
 BAT-ZTNA-011:
   test_steps: |-
-    1. 게이트웨이 서버 목록(id 순)에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna 설정에 적힌 값 우선, 못 찾으면 ERROR)
+    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR)
     1-1. 전체 사용자 LOGGING 접근정책을 만든다
     2. IP(server_ip:port)로 접근제어를 만들어 그 정책을 연결하고 우선순위를 0으로 올린다
     3. 커넥터 단말에서 <scheme>://<server_ip>:<port>/ 요청
     4. ZTNA 로그에서 BAT 접근제어 이름의 AP_LOGGING 행 확인
     5. 접근제어, 접근정책 삭제
   test_parameters: |-
-    접근제어: type HTTP, application [{ip, port, target_type: gateway, target_id}], priority 0
+    접근제어: type HTTP, application [{ip, port, target_type: gateway 또는 tunnel, target_id}], priority 0
     접근정책: action LOGGING, rules [{user_id: [0]}]
   test_data: 'lguplus: 192.168.3.106:80'
   expected_results: 페이지가 열리고, ZTNA 로그에 BAT 접근제어 이름, 목적지 <server_ip>:<port>, 이 단말 device_id의 AP_LOGGING 행이 남는다
   actual_result: 내부 서버 IP가 열리지 않았거나, ZTNA 로그에 BAT 규칙 이름의 접속 기록이 없음
   en:
-    scenario: With an access control registered by IP, the internal server IP is reached from the connector, and that access is recorded in the ZTNA log under the BAT rule name.
+    scenario: With an access control registered by IP, the internal server IP (behind a gateway or a tunnel) is reached from the connector, and that access is recorded in the ZTNA log under the BAT rule name.
     test_steps: |-
-      1. From the gateway server list (in id order), find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna setting takes priority; ERROR if not found)
+      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; ERROR if not found)
       1-1. Create an all-users LOGGING access policy
       2. Create an access control by IP (server_ip:port), attach that policy to it, and raise the priority to 0
       3. Request <scheme>://<server_ip>:<port>/ from the connector endpoint
       4. In the ZTNA log, confirm an AP_LOGGING row with the BAT access control name
       5. Delete the access control and the access policy
     test_parameters: |-
-      access control: type HTTP, application [{ip, port, target_type: gateway, target_id}], priority 0
+      access control: type HTTP, application [{ip, port, target_type: gateway or tunnel, target_id}], priority 0
       access policy: action LOGGING, rules [{user_id: [0]}]
     test_data: 'lguplus: 192.168.3.106:80'
     expected_results: The page opens, and the ZTNA log leaves an AP_LOGGING row with the BAT access control name, destination <server_ip>:<port>, and this endpoint's device_id
     actual_result: The internal server IP did not open, or the ZTNA log has no access record under the BAT rule name
 BAT-ZTNA-012:
   test_steps: |-
-    1. 게이트웨이 서버 목록(id 순)에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna 설정에 적힌 값 우선, 못 찾으면 ERROR). 다른 서버가 없으면 ERROR
+    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR). 다른 서버가 없으면 ERROR
     1-1. 규칙 없이 그 다른 서버(other_ip)가 열리는지 확인(안 열리면 ERROR)
     2. 전체 사용자 BLOCK 접근정책을 만든다
     3. 도메인 없이 IP(server_ip:port)만으로 접근제어를 만들어 연결하고 우선순위를 0으로 올린다
@@ -2079,7 +2079,7 @@ BAT-ZTNA-012:
     5. other_ip는 계속 열리는지 확인
     6. 접근제어, 접근정책 삭제
   test_parameters: |-
-    접근제어: type HTTP, application [{ip, port, target_type: gateway, target_id}] (domain 없음), priority 0
+    접근제어: type HTTP, application [{ip, port, target_type: gateway 또는 tunnel, target_id}] (domain 없음), priority 0
     접근정책: action BLOCK, rules [{user_id: [0]}]
   test_data: 'lguplus: 192.168.3.106:80 차단 대상, 192.168.3.227:80 범위 확인'
   expected_results: 규칙에 적은 IP만 차단되고, 같은 포트의 다른 내부 서버는 열린다
@@ -2087,7 +2087,7 @@ BAT-ZTNA-012:
   en:
     scenario: When BLOCK is attached to an access control registered by IP only, only that IP is blocked, and another internal server on the same port opens.
     test_steps: |-
-      1. From the gateway server list (in id order), find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna setting takes priority; ERROR if not found). ERROR if there is no other server
+      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; ERROR if not found). ERROR if there is no other server
       1-1. Confirm that other server (other_ip) opens without a rule (ERROR if it does not open)
       2. Create an all-users BLOCK access policy
       3. Create an access control with only the IP (server_ip:port), without a domain, attach it, and raise the priority to 0
@@ -2095,15 +2095,15 @@ BAT-ZTNA-012:
       5. Confirm other_ip keeps opening
       6. Delete the access control and the access policy
     test_parameters: |-
-      access control: type HTTP, application [{ip, port, target_type: gateway, target_id}] (no domain), priority 0
+      access control: type HTTP, application [{ip, port, target_type: gateway or tunnel, target_id}] (no domain), priority 0
       access policy: action BLOCK, rules [{user_id: [0]}]
     test_data: 'lguplus: 192.168.3.106:80 is the block target, 192.168.3.227:80 is checked for scope'
     expected_results: Only the IP written in the rule is blocked, and another internal server on the same port opens
     actual_result: The access control with only an IP does not look at the IP and matches by port alone, so another internal server on the same port (192.168.3.227:80) was also blocked under that rule name
 BAT-ZTNA-013:
   test_steps: |-
-    1. 게이트웨이 서버 목록(id 순)에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna 설정에 적힌 값 우선, 못 찾으면 ERROR)
-    1-1. 게이트웨이 서버 목록에서 그 서버에 콘솔이 등록한 도메인을 읽는다(없으면 ERROR)
+    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR)
+    1-1. 그 서버(게이트웨이 서버 또는 터널 interface)에 콘솔이 등록한 도메인을 읽는다(없으면 ERROR)
     2. 단말에서 그 도메인을 조회해 커넥터가 server_ip로 답하는지 확인
     3. 전체 사용자 LOGGING 접근정책을 만든다
     4. 그 도메인으로 접근제어를 만들어 연결하고 우선순위를 0으로 올린다
@@ -2112,15 +2112,15 @@ BAT-ZTNA-013:
     7. 접근제어, 접근정책 삭제
   test_parameters: |-
     게이트웨이 서버: SIA.ztna.gateway.list.servers {id, ip, domain}
-    접근제어: type HTTP, application [{domain, port, target_type: gateway, target_id}], priority 0
+    접근제어: type HTTP, application [{domain, port, target_type: gateway 또는 tunnel, target_id}], priority 0
     접근정책: action LOGGING, rules [{user_id: [0]}]
   test_data: 'lguplus: 게이트웨이 Openstack Test Env 서버 4 (192.168.3.106, 도메인 test.com), 페이지 문구 Retro Computing Archive'
   expected_results: 콘솔에 등록한 도메인이 커넥터에서 그 서버 IP로 풀리고, 브라우저와 curl 모두 내부 서버 페이지가 열리며, ZTNA 로그에 BAT 규칙 이름으로 접속이 남는다
   en:
-    scenario: The domain registered on a gateway server resolves to that server's IP on the connector so the page opens in the browser and with curl, and an access control made with that domain records the access.
+    scenario: The domain registered on a gateway server (or tunnel interface) resolves to that IP on the connector so the page opens in the browser and with curl, and an access control made with that domain records the access.
     test_steps: |-
-      1. From the gateway server list (in id order), find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna setting takes priority; ERROR if not found)
-      1-1. Read, from the gateway server list, the domain the console registered for that server (ERROR if none)
+      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; ERROR if not found)
+      1-1. Read the domain the console registered for that server (gateway server or tunnel interface) (ERROR if none)
       2. Look up that domain on the endpoint and confirm the connector answers with server_ip
       3. Create an all-users LOGGING access policy
       4. Create an access control with that domain, attach it, and raise the priority to 0
@@ -2129,7 +2129,7 @@ BAT-ZTNA-013:
       7. Delete the access control and the access policy
     test_parameters: |-
       gateway server: SIA.ztna.gateway.list.servers {id, ip, domain}
-      access control: type HTTP, application [{domain, port, target_type: gateway, target_id}], priority 0
+      access control: type HTTP, application [{domain, port, target_type: gateway or tunnel, target_id}], priority 0
       access policy: action LOGGING, rules [{user_id: [0]}]
     test_data: 'lguplus: gateway Openstack Test Env server 4 (192.168.3.106, domain test.com), page text Retro Computing Archive'
     expected_results: The domain registered in the console resolves to that server's IP on the connector, the internal server page opens in both the browser and curl, and the access is left in the ZTNA log under the BAT rule name
@@ -2160,57 +2160,3 @@ BAT-ZTNA-014:
       auth file: tunnel.authFile(id).file_content (base64 JSON: workspace, access_id, client_type, vpn_type, pqc), the value is not recorded
     test_data: 'lguplus: 192.0.2.10 (documentation range), bat-<run_id>.tunnel.internal'
     expected_results: The domain of the registered tunnel is pushed to the connector immediately and resolves to the tunnel address on the endpoint, but the unconnected tunnel cannot be reached, and when the tunnel is deleted that name disappears
-BAT-ZTNA-015:
-  test_steps: |-
-    1. 연결된 터널(콘솔 초록불, BAT가 만든 것 제외)을 고르고, 규칙 없이 그 interface의 웹 포트(80/8080/8000/443/8443/3000/5000)를 열어 처음 열리는 페이지와 그 <title>을 기준으로 삼는다(ztna_tunnel에 이름·포트·문구가 있으면 그 값 우선, 못 찾으면 ERROR)
-    2. 전체 사용자 LOGGING 접근정책을 만든다
-    3. 그 터널 interface(도메인, 없으면 IP)로 터널 방식 접근제어를 만들어 연결하고 우선순위를 0으로 올린다
-    4. 단말에서 그 주소로 접속해 같은 페이지(기준 문구 포함)가 열리는지 확인
-    5. ZTNA 로그에 BAT 접근제어 이름, AP_LOGGING, 이 단말 device_id 행이 남는지 확인
-    6. 접근제어, 접근정책 삭제
-  test_parameters: |-
-    접근제어: type HTTP, application [{domain 또는 ip, port, target_type: tunnel, target_id: interface id}], priority 0
-    접근정책: action LOGGING, rules [{user_id: [0]}]
-  test_data: 'lguplus: 아직 터널 없음(설치하면 설정 없이 찾아서 씀)'
-  expected_results: 터널 뒤 서버 페이지가 열리고, ZTNA 로그에 BAT 규칙 이름으로 접속이 남는다
-  en:
-    scenario: With an access control made for a really connected tunnel, the server page behind the tunnel opens from the connector, and that access is recorded in the ZTNA log under the BAT rule name.
-    test_steps: |-
-      1. Pick a connected tunnel (green light in the console, excluding ones BAT made), open the web ports (80/8080/8000/443/8443/3000/5000) of its interface without a rule, and use the first page that opens and its <title> as the baseline (a name, port and text in ztna_tunnel take priority; ERROR if not found)
-      2. Create an all-users LOGGING access policy
-      3. Create a tunnel-type access control with that tunnel interface (domain, or IP if none), attach it, and raise the priority to 0
-      4. Connect to that address from the endpoint and confirm the same page (including the baseline text) opens
-      5. Confirm the ZTNA log leaves a row with the BAT access control name, AP_LOGGING, and this endpoint's device_id
-      6. Delete the access control and the access policy
-    test_parameters: |-
-      access control: type HTTP, application [{domain or ip, port, target_type: tunnel, target_id: interface id}], priority 0
-      access policy: action LOGGING, rules [{user_id: [0]}]
-    test_data: 'lguplus: no tunnel yet (once installed, it is found and used without configuration)'
-    expected_results: The server page behind the tunnel opens, and the access is left in the ZTNA log under the BAT rule name
-BAT-ZTNA-016:
-  test_steps: |-
-    1. BAT-ZTNA-015와 같은 방식으로 연결된 터널과 규칙 없이 열리는 페이지를 찾는다(못 찾으면 ERROR)
-    2. 전체 사용자 BLOCK 접근정책을 만든다
-    3. 그 터널 interface로 터널 방식 접근제어를 만들어 연결하고 우선순위를 0으로 올린다
-    4. 그 주소가 "blocked by <접근제어 이름>"으로 차단되는지 확인
-    5. ZTNA 로그에 AP_BLOCK 행이 남는지 확인
-    6. 접근제어, 접근정책을 지운 뒤 페이지가 다시 열리는지 확인
-  test_parameters: |-
-    접근제어: type HTTP, application [{domain 또는 ip, port, target_type: tunnel, target_id: interface id}], priority 0
-    접근정책: action BLOCK, rules [{user_id: [0]}]
-  test_data: 'lguplus: 아직 터널 없음'
-  expected_results: 터널 뒤 서버가 BAT 규칙 이름의 차단 페이지로 막히고 AP_BLOCK이 기록되며, 규칙을 지우면 다시 열린다
-  en:
-    scenario: When a BLOCK access policy is attached to an access control made for a really connected tunnel, the server behind the tunnel is blocked, and it opens again once removed.
-    test_steps: |-
-      1. Find a connected tunnel and a page that opens without a rule in the same way as BAT-ZTNA-015 (ERROR if not found)
-      2. Create an all-users BLOCK access policy
-      3. Create a tunnel-type access control with that tunnel interface, attach it, and raise the priority to 0
-      4. Confirm that address is blocked with "blocked by <access control name>"
-      5. Confirm the ZTNA log leaves an AP_BLOCK row
-      6. After deleting the access control and the access policy, confirm the page opens again
-    test_parameters: |-
-      access control: type HTTP, application [{domain or ip, port, target_type: tunnel, target_id: interface id}], priority 0
-      access policy: action BLOCK, rules [{user_id: [0]}]
-    test_data: 'lguplus: no tunnel yet'
-    expected_results: The server behind the tunnel is stopped by a block page with the BAT rule name and AP_BLOCK is recorded, and it opens again when the rule is deleted
