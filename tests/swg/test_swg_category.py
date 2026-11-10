@@ -37,7 +37,7 @@ pytestmark = [
 
 @pytest.mark.case("BAT-SWG-003")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
-@pytest.mark.priority("P0")
+@pytest.mark.priority("P1")
 @pytest.mark.critical
 def test_builtin_category_matches_traffic(
     case, run_context, web_policies, browser_session, web_log

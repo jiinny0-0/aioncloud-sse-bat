@@ -9,6 +9,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from bat.scheduler import build_lanes, estimate_runtime, parallel_slots
@@ -28,11 +29,18 @@ PRODUCT_DIRS = {
 
 # RBI는 보류(parked)다. `--tag parked`로는 여전히 돌릴 수 있다.
 DEFAULT_MARKERS = "not manual and not crud and not parked"
+# 서버 점검·기준선(tests/basic/test_service.py)은 본 실행과 따로, 처음(run_start)과 끝(run_end)에 돈다.
+SERVICE_TESTS = "tests/basic/test_service.py"
+PHASE_MARKERS = "not run_start and not run_end"
+# 실행 처음의 이 케이스가 재확인 뒤에도 FAIL이면 나머지 케이스는 돌리지 않는다(결과가 전부 그 탓이다).
+STOPPING_CASES = ("BAT-BASIC-007", "BAT-BASIC-008")
+# FAIL 재확인 전에 기다리는 시간: 1차에서 지운 정책이 전파될 시간.
+RETRY_WAIT_SEC = int(os.getenv("BAT_RETRY_WAIT_SEC", "30"))
 
 # 케이스당 초. qa 직렬 실행에서 잰 값이다(5초 단위로 올림).
 ESTIMATED_SECONDS = {
     "BAT-BASIC-001": 5, "BAT-BASIC-002": 5, "BAT-BASIC-003": 5, "BAT-BASIC-004": 30, "BAT-BASIC-005": 10,
-    "BAT-BASIC-006": 8,
+    "BAT-BASIC-006": 8, "BAT-BASIC-007": 5, "BAT-BASIC-008": 15, "BAT-BASIC-009": 15,
     "BAT-SWG-001": 30, "BAT-SWG-002": 45, "BAT-SWG-003": 75, "BAT-SWG-004": 60, "BAT-SWG-005": 45,
     "BAT-SWG-008": 15, "BAT-SWG-009": 5, "BAT-SWG-010": 35,
     "BAT-SWG-011": 40, "BAT-SWG-012": 40, "BAT-SWG-013": 35, "BAT-SWG-014": 45, "BAT-SWG-015": 20,
@@ -182,11 +190,18 @@ def cmd_lanes(profile: str) -> int:
 
 
 def cmd_doctor(profile: str) -> int:
+    """설정과 연결을 점검한다. 종료 코드: 0 정상 / 20 서버 다운(제품 장애) / 21 설정·인증 문제."""
+    from bat import health
     from bat.clients.graphql import GraphQLClient
     from bat.clients.rest import RestClient
     from bat.clients.tokens import TokenBudget, save_console_token
 
-    context = build_run_context(profile_name=profile)
+    try:
+        context = build_run_context(profile_name=profile)
+    except Exception as exc:  # noqa: BLE001 - 설정 파일·스테이지 누락
+        print(f"Config       : FAILED - {type(exc).__name__}: {exc}")
+        print(f"\nDoctor       : CONFIG (exit {health.DOCTOR_CONFIG})")
+        return health.DOCTOR_CONFIG
     print(f"Profile      : {context.profile.name}")
     print(f"Console      : {context.profile.console_url}")
     print(f"GraphQL      : {context.profile.graphql_url}")
@@ -199,6 +214,14 @@ def cmd_doctor(profile: str) -> int:
     workspace = lanes[0].workspace
     budget = TokenBudget(context.token_budget)
     problems: list[str] = []
+
+    # 서버 다운(연결 실패·타임아웃·5xx)과 설정·인증 문제를 먼저 가른다.
+    probes = health.probe_servers(context.profile, workspace)
+    for probe in probes:
+        print(f"Server       : {probe.state:<6} {probe.name} - {probe.detail}")
+    if any(p.state == health.DOWN for p in probes):
+        print(f"\nDoctor       : SERVER DOWN (exit {health.DOCTOR_SERVER_DOWN})")
+        return health.DOCTOR_SERVER_DOWN
 
     # 콘솔 세션. REST 토큰이 있어도 확인한다. 그래야 GraphQL 전용 케이스가 돌기 전에
     # 로그인이 깨진 것이 드러난다.
@@ -274,11 +297,14 @@ def cmd_doctor(profile: str) -> int:
     else:
         print("GraphQL cases: will skip (console session unavailable)")
 
+    states = [p.state for p in probes] + [health.CONFIG] * len(problems)
+    code = health.doctor_exit_code(states)
     if problems:
         print(f"\nProblems     : {', '.join(problems)}")
-        return 1
-    print("\nAll checks passed.")
-    return 0
+    if code == health.DOCTOR_OK:
+        print("\nAll checks passed.")
+    print(f"Doctor       : {'OK' if code == health.DOCTOR_OK else 'CONFIG'} (exit {code})")
+    return code
 
 
 def _graphql_policies():
@@ -979,6 +1005,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     tags = args.tag or []
     marker_expr = " or ".join(tags) if tags else DEFAULT_MARKERS
+    phases = not args.case  # 서버 점검·기준선은 케이스 하나를 돌릴 때는 건너뛴다
+    if phases:
+        marker_expr = f"({marker_expr}) and {PHASE_MARKERS}"
     command += ["-m", marker_expr]
 
     if args.case:
@@ -990,7 +1019,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             excluded = _load_exclusions()
         except Exception as exc:
             print(f"[EXCLUDE] ERROR cannot read {EXCLUDE_FILE}: {exc.__class__.__name__}")
-            return 2
+            return EXIT_CONFIG
         if excluded:
             env["BAT_EXCLUDE"] = ",".join(excluded)
             command += ["-p", "bat.exclude_plugin"]
@@ -1011,16 +1040,73 @@ def cmd_run(args: argparse.Namespace) -> int:
     if missing:
         print(f"\nNo test files under: {', '.join(missing)}")
         print("Nothing will run. Check that the directory was extracted.")
-        return 1
+        return EXIT_CONFIG
 
     print(f"Command      : {' '.join(command)}\n")
+
+    pytest_base = [sys.executable, "-m", "pytest", "-p", "xdist"]
+    if phases:
+        print("Phase        : start (server check, baseline)")
+        code = _pytest(pytest_base + [SERVICE_TESTS, "-n", "0", "-m", "run_start"], env, "start")
+        if code in CRASH_CODES:
+            return EXIT_CRASH_BASE + code
+        _retry_failures(pytest_base, env, run_id, workers=1)
+        stopping = [c for c in _run_cases(run_id)
+                    if c["case_id"] in STOPPING_CASES and c.get("status") == "FAIL"]
+        if stopping:
+            print("\nNot running the other cases: "
+                  + ", ".join(f"{c['case_id']} failed" for c in stopping)
+                  + " (server down or everything blocked), so every other result would only repeat it.")
+            return _finish(args.profile, run_id)
 
     if not args.skip_preflight and not _preflight_passes(args.profile, run_id):
         return EXIT_PREFLIGHT
 
-    pytest_code = subprocess.call(command, cwd=str(ROOT), env=env)
-    code = bat_exit_code(pytest_code, run_id)
-    _record_in_status_book(args.profile, run_id)
+    print("Phase        : main")
+    code = _pytest(command, env, "main")
+    if code in CRASH_CODES:
+        _record_in_status_book(args.profile, run_id)
+        return EXIT_CRASH_BASE + code
+    _retry_failures(pytest_base, env, run_id, workers=workers)
+
+    if phases:
+        print("Phase        : end (baseline after cleanup)")
+        code = _pytest(pytest_base + [SERVICE_TESTS, "-n", "0", "-m", "run_end"], env, "end")
+        if code in CRASH_CODES:
+            return EXIT_CRASH_BASE + code
+        _retry_failures(pytest_base, env, run_id, workers=1)
+    return _finish(args.profile, run_id)
+
+
+def _pytest(command: list[str], env: dict, phase: str) -> int:
+    return subprocess.call(command, cwd=str(ROOT), env={**env, "BAT_PHASE": phase})
+
+
+def _run_cases(run_id: str) -> list[dict]:
+    from bat.report.collector import load_cases
+    from bat.settings import REPORTS_DIR
+
+    return [case for run_dir in REPORTS_DIR.glob(f"*/{run_id}") for case in load_cases(run_dir)]
+
+
+def _retry_failures(pytest_base: list[str], env: dict, run_id: str, *, workers: int) -> list[str]:
+    """아직 재확인하지 않은 FAIL 케이스만 같은 run_id로 한 번 더 돌린다(BAT_ATTEMPT=2).
+
+    conftest가 1차 결과를 attempts에 남기고, 재확인 결과로 최종 상태를 정한다(bat.verdict.merge_retry).
+    """
+    failed = [c["case_id"] for c in _run_cases(run_id) if c.get("status") == "FAIL" and not c.get("attempts")]
+    if not failed:
+        return []
+    print(f"\nRetry        : {', '.join(failed)} (FAIL, re-checking after {RETRY_WAIT_SEC}s)")
+    time.sleep(RETRY_WAIT_SEC)
+    command = pytest_base + ["tests", "-n", str(max(1, min(workers, len(failed)))), "--dist", "loadgroup"]
+    _pytest(command, {**env, "BAT_CASE_FILTER": ",".join(failed), "BAT_ATTEMPT": "2"}, "retry")
+    return failed
+
+
+def _finish(profile: str, run_id: str) -> int:
+    code = report_gate(run_id)
+    _record_in_status_book(profile, run_id)
     return code
 
 
@@ -1082,10 +1168,17 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0 if row else 1
 
 
-# 0~5는 pytest 것이다. 6 = 실패는 없지만 확인하지 못한 시나리오가 있다.
-EXIT_UNVERIFIED = 6
+# bat run 종료 코드. 0/1/2는 실행 판정(bat.verdict.GATE_EXIT_CODES: OK/REVIEW/ROLLBACK)이고,
+# 나머지는 실행 자체가 제대로 끝나지 않은 경우다.
 # 7 = 실행 안 함: 단말의 트래픽이 테스트 대상 워크스페이스에 닿지 않았다.
 EXIT_PREFLIGHT = 7
+# 12/13/14 = pytest가 중단(2)·내부 오류(3)·사용법 오류(4)로 끝났다.
+CRASH_CODES = (2, 3, 4)
+EXIT_CRASH_BASE = 10
+# 15 = 판정할 케이스 결과가 하나도 없다.
+EXIT_NO_RESULTS = 15
+# 21 = 설정 문제(bat doctor와 같은 값).
+EXIT_CONFIG = 21
 
 
 def _preflight_passes(profile: str, run_id: str) -> bool:
@@ -1114,41 +1207,50 @@ def _preflight_passes(profile: str, run_id: str) -> bool:
     return not failed
 
 
-def bat_exit_code(pytest_code: int, run_id: str) -> int:
-    """실행의 BAT 판정을 출력하고, 그것으로 종료 코드를 정한다.
+STATUS_ORDER = ("PASS", "FAIL", "WARN", "UNVERIFIED", "SKIP", "BAT_ERROR")
 
-    pytest만으로는 시나리오가 전부 UNVERIFIED인 실행도 0으로 끝난다. diagnostic
-    케이스는 원래 UNVERIFIED라서 종료 코드를 바꾸지 않는다.
+
+def report_gate(run_id: str) -> int:
+    """실행 전체의 판정을 출력하고 run-report.json에 남긴 뒤, 그것으로 종료 코드를 정한다.
+
+    봇이 파싱하는 형식이다: 집계 행 `BAT verdict: PASS n / FAIL n / WARN n / UNVERIFIED n /
+    SKIP n / BAT_ERROR n`, 판정 행 `[BAT-GATE] <ROLLBACK|REVIEW|OK>`, 사유 행
+    `[BAT-GATE] reason: ...`. 종료 코드는 OK 0 / REVIEW 1 / ROLLBACK 2.
     """
+    import json
     from collections import Counter
 
-    from bat.report.collector import load_cases
+    from bat.report.collector import ResultCollector
     from bat.settings import REPORTS_DIR
-    from bat.verdict import counts_against_run
+    from bat.verdict import GATE_EXIT_CODES, current_status, run_gate
 
-    cases = [case for run_dir in REPORTS_DIR.glob(f"*/{run_id}") for case in load_cases(run_dir)]
+    cases = _run_cases(run_id)
     if not cases:
-        return pytest_code
+        print("\nBAT verdict: no case results")
+        return EXIT_NO_RESULTS
+    totals = Counter(current_status(case.get("status")) for case in cases)
+    print("\nBAT verdict: " + " / ".join(f"{status} {totals.get(status, 0)}" for status in STATUS_ORDER))
 
-    totals = Counter(case["status"] for case in cases)
-    blocking = [case for case in cases if counts_against_run(case)]
-    diagnostic = totals.get("UNVERIFIED", 0) - len(blocking)
-    print(
-        f"\nBAT verdict  : PASS {totals.get('PASS', 0)} / FAIL {totals.get('FAIL', 0)} / "
-        f"UNVERIFIED {totals.get('UNVERIFIED', 0)} "
-        f"({len(blocking)} scenario, {diagnostic} diagnostic) / "
-        f"SKIP {totals.get('SKIP', 0)} / ERROR {totals.get('ERROR', 0)}"
-    )
-    for case in blocking:
-        print(f"  UNVERIFIED {case['case_id']} - {case.get('verdict_reason') or '-'}")
+    notes = []
+    for path in sorted(p for run_dir in REPORTS_DIR.glob(f"*/{run_id}") for p in run_dir.glob("leftovers-*.json")):
+        try:
+            notes += [f"leftover BAT resource: {line}" for line in json.loads(path.read_text(encoding="utf-8"))]
+        except (OSError, ValueError):
+            notes.append(f"leftover list unreadable: {path.name}")
+    gate, reasons = run_gate(cases, notes)
+    print(f"[BAT-GATE] {gate.value}")
+    for reason in reasons:
+        print(f"[BAT-GATE] reason: {reason}")
 
-    if pytest_code != 0:
-        return pytest_code
-    if totals.get("FAIL") or totals.get("ERROR"):
-        return 1
-    if blocking:
-        return EXIT_UNVERIFIED
-    return 0
+    for path in REPORTS_DIR.glob(f"*/{run_id}/run-report.json"):
+        try:
+            meta = json.loads(path.read_text(encoding="utf-8"))
+            meta["gate"] = {"verdict": gate.value, "reasons": reasons}
+            path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+            (path.parent / "human-summary.md").write_text(ResultCollector.render_markdown(meta), encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            print(f"Run report   : gate not saved ({type(exc).__name__}: {exc})")
+    return GATE_EXIT_CODES[gate]
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -33,6 +33,7 @@ from bat.events.web_log import (
     matches_target,
 )
 from bat.models import CaseResult, Kind, SecurityEvent, Status, Step, TrafficResult
+from bat.verdict import MinorFailure
 
 log = logging.getLogger(__name__)
 
@@ -46,11 +47,11 @@ class VerificationUnavailable(pytest.skip.Exception):
 
 
 class EnvironmentNotReady(Exception):
-    """실행 조건(커넥터, 단말, 자격증명, 테넌트 데이터)이 갖춰지지 않았다. ERROR로 기록된다."""
+    """실행 조건(커넥터, 단말, 자격증명, 테넌트 데이터)이 갖춰지지 않았다. BAT_ERROR로 기록된다."""
 
 
 def environment_error(reason: str) -> NoReturn:
-    """중단한다: 실행 조건이 갖춰지지 않아 케이스를 돌릴 수 없다(ERROR)."""
+    """중단한다: 실행 조건이 갖춰지지 않아 케이스를 돌릴 수 없다(BAT_ERROR)."""
     raise EnvironmentNotReady(reason)
 
 
@@ -601,12 +602,12 @@ def _log_read_failure(exc: Exception) -> str:
     """casb_security_log 읽기를 무엇이 막았는지를 BAT가 이미 쓰는 판정 기준으로 나눈다.
 
     session     콘솔 세션이 거부됨(AuthError, 'bat sweep'이 읽는 방식의 HTTP 401/403,
-                GraphQL "Duplicate login"): 실행 문제라 ERROR, 'bat login'으로 해결
+                GraphQL "Duplicate login"): 실행 문제라 BAT_ERROR, 'bat login'으로 해결
     self-block  SSE가 스위트 자신의 조회에 차단 페이지로 답함: 러너의 트래픽이 걸린
-                다른 모든 경우와 마찬가지로 ERROR
+                다른 모든 경우와 마찬가지로 BAT_ERROR
     api         로그 API의 그 밖의 거부(HTTP 5xx, GraphQL 오류)
     network     응답이 전혀 없음(httpx 전송 오류)
-    other       그 밖의 모든 것. 예상치 못한 예외로 남는다(ERROR)
+    other       그 밖의 모든 것. 예상치 못한 예외로 남는다(BAT_ERROR)
 
     api와 network는 행을 읽지 못한 것이라 검증 불가, UNVERIFIED다.
     """
@@ -730,7 +731,7 @@ def expect_casb_block(
 
     행은 event_timeout_sec까지, 검사가 이미 실패했으면 CASB_FAILED_ROW_WAIT_SEC까지 기다린다.
     로그 읽기 실패는 _log_read_failure로 분류한다: 읽지 못한 행은 UNAVAILABLE, 세션 거부나
-    self-block은 ERROR다. 위반을 한 번 보면 그 뒤에 무엇이 오든(그 오류들과 브라우저 실패
+    self-block은 BAT_ERROR다. 위반을 한 번 보면 그 뒤에 무엇이 오든(그 오류들과 브라우저 실패
     포함) FAIL로 남는다. 무엇이든 예외를 던지기 전에 전부 기록한다. 검사가 실패하면
     AssertionError를 던지고, 그렇지 않으면 첫 hold 요청의 행이나 None을 돌려준다.
     """
@@ -1023,7 +1024,7 @@ def expect_casb_block(
             return True
         return None
 
-    refused: Exception | None = None  # 위반이 확정되지 않았으면 ERROR가 되는 읽기 실패
+    refused: Exception | None = None  # 위반이 확정되지 않았으면 BAT_ERROR가 되는 읽기 실패
     try:
         poll_until(collect, timeout_sec=limit, description=f"casb rows for the requests to {url}")
     except PollTimeout:
@@ -1186,7 +1187,7 @@ def cleanup_failed(case: CaseResult, warning: Exception) -> None:
 
     본문이 완료를 주장한 뒤(pass_case)라면 삭제 실패는 정리 차원의 경고다: 검사는 전부
     돌았고, 남은 리소스는 'bat sweep'용으로 보고한다. 그 전이라면 삭제 실패로 본문의 나머지가
-    건너뛰어졌는데, 그때까지 기록된 단계만으로 기준이 충족될 수도 있으므로 케이스는 ERROR로
+    건너뛰어졌는데, 그때까지 기록된 단계만으로 기준이 충족될 수도 있으므로 케이스는 BAT_ERROR로
     끝난다. 보안 FAIL과 구분되는 실행 문제다.
     """
     case.cleanup_warnings.append(str(warning))
@@ -1202,10 +1203,12 @@ def across_targets(case: CaseResult, targets, check: Callable[[str], None], *, w
     """같은 확인을 대상 여러 개에 돌리고 결과를 합친다.
 
     check(target)는 기대와 다르면 AssertionError를, 확인할 수 없으면 VerificationUnavailable을
-    던진다. 전부 기대대로면 그냥 돌아온다. 하나라도 어긋나면 FAIL이다(어긋난 대상과 통과한
-    대상, 확인 못 한 대상을 메시지에 적는다). 어긋난 대상 없이 확인 못 한 대상만 있을 때만
+    던진다. 전부 기대대로면 그냥 돌아온다. 하나라도 어긋나면 실패다(어긋난 대상과 통과한
+    대상, 확인 못 한 대상을 메시지에 적는다). 전부 어긋났으면 FAIL이고, 일부만 어긋났으면
+    MinorFailure라 gate 케이스에서도 WARN이다. 어긋난 대상 없이 확인 못 한 대상만 있을 때만
     UNVERIFIED다.
     """
+    targets = list(targets)
     failed: dict[str, str] = {}
     unknown: dict[str, str] = {}
     for target in targets:
@@ -1219,12 +1222,15 @@ def across_targets(case: CaseResult, targets, check: Callable[[str], None], *, w
         return
     passed = [t for t in targets if t not in failed and t not in unknown]
     if failed:
-        raise AssertionError(
+        message = (
             f"{what} failed on {list(failed)}"
             + (f", held on {passed}" if passed else "")
             + (f", could not be checked on {list(unknown)}" if unknown else "")
             + " — " + "; ".join(f"{t}: {m}" for t, m in {**failed, **unknown}.items())
         )
+        if len(failed) < len(targets):
+            raise MinorFailure(message, f"failed on {len(failed)} of {len(targets)} targets only")
+        raise AssertionError(message)
     unverified(
         case,
         step,
@@ -1665,8 +1671,9 @@ def expect_values(
     case: CaseResult, what: str, compared: dict[str, tuple[object, object]], *, step: Step = Step.USER_RESULT
 ) -> None:
     """기대값과 다시 읽은(또는 다른 기록에서 얻은) 값을 비교한다. compared는 {필드: (기대값,
-    읽은 값)}이고, 읽지 못한 필드는 MISSING으로 준다. 하나라도 다르면 FAIL, 다른 것 없이 읽지
-    못한 필드가 있으면 UNVERIFIED, 전부 같으면 통과다. 객체는 id로, 리스트는 순서 없이 비교한다.
+    읽은 값)}이고, 읽지 못한 필드는 MISSING으로 준다. 하나라도 다르면 실패(MinorFailure: 저장값
+    일부 불일치라 gate 케이스에서도 WARN), 다른 것 없이 읽지 못한 필드가 있으면 UNVERIFIED, 전부
+    같으면 통과다. 객체는 id로, 리스트는 순서 없이 비교한다.
 
     기대값이 리스트인 필드는 읽은 값이 None이거나 행에 키가 없으면(ABSENT) 빈 리스트로 본다
     (서버가 빈 목록을 null로 돌려주거나 빼고 돌려준다). 리스트가 아닌 필드의 ABSENT는 못 읽은 것이다."""
@@ -1680,7 +1687,8 @@ def expect_values(
             step, ok=False, kind=Kind.ASSERTION, expected=expected, actual=read,
             detail=f"{what}: differs from what was expected: {differ}",
         )
-        raise AssertionError(f"{what} differs from what was expected: {differ}")
+        raise MinorFailure(f"{what} differs from what was expected: {differ}",
+                           f"stored values differ in {sorted(differ)}")
     if missing:
         unverified(case, step, f"{what}: could not read {missing} (read: {read})")
     case.record(
@@ -1791,3 +1799,34 @@ def as_list(value: object) -> object:
     if value is MISSING or value is ABSENT or isinstance(value, list):
         return value
     return [] if value is None else [value]
+
+
+# 차단 페이지가 밝히는 규칙 이름: 웹 정책 "Browsing blocked by <정책 이름>", ZTNA "blocked by <접근제어 이름>".
+_BLOCKED_BY_RE = re.compile(r"blocked by\s+([^<\r\n\"]+)", re.IGNORECASE)
+
+
+def block_page_rule(body: str) -> str:
+    """차단 페이지 본문에서 막은 규칙 이름. 없으면 빈 문자열."""
+    match = _BLOCKED_BY_RE.search(body or "")
+    return match.group(1).strip() if match else ""
+
+
+def fetch_page(executor, url: str, timeout_sec: int = 15) -> tuple[TrafficResult, str]:
+    """단말에서 URL을 curl로 요청해 (결과, 본문)을 돌려준다. 본문으로 차단한 규칙 이름을 읽는다."""
+    from bat.traffic.http import BLOCK_STATUS_CODES, is_delivered_status
+
+    result = executor.run(
+        f'curl -k -s --max-time {timeout_sec} -w "\n%{{http_code}}" "{url}"',
+        timeout_sec=timeout_sec + 10,
+    )
+    body, _, code = result.stdout.rstrip().rpartition("\n")
+    status = int(code) if code.strip().isdigit() else None
+    traffic = TrafficResult(
+        url=url,
+        status_code=status,
+        blocked=bool(status) and status in BLOCK_STATUS_CODES,
+        via="curl",
+        detail=f"HTTP {status}" if status else (result.stderr.strip()[:200] or "no response"),
+        delivered=is_delivered_status(status),
+    )
+    return traffic, body

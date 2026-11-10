@@ -62,7 +62,7 @@ def application_shape() -> object:
 def test_in_app_control_is_readable(case, in_app_control):
     """CASB In-App Control 정책 목록을 조회할 수 있다(환경 점검, 보안 동작이 아님).
 
-    조회가 오류 없이 답하면 통과다. 조회가 실패하면 예외로 ERROR가 된다.
+    조회가 오류 없이 답하면 통과다. 조회가 실패하면 예외로 BAT_ERROR가 된다.
     """
     from bat.fixtures.graphql_policies import InAppControlReader
 
@@ -81,7 +81,7 @@ def test_in_app_control_is_readable(case, in_app_control):
 
 @pytest.mark.case("BAT-CASB-001")
 @pytest.mark.verifies(Step.USER_RESULT)
-@pytest.mark.priority("P0")
+@pytest.mark.priority("P1")
 @pytest.mark.critical
 def test_in_app_control_policy_round_trip(
     case, run_context, in_app_control, application_shape
@@ -255,7 +255,8 @@ def test_saas_access_detects_only_the_app_it_names(
 
 @pytest.mark.case("BAT-CASB-004")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
-@pytest.mark.priority("P1")
+@pytest.mark.priority("P0")
+@pytest.mark.gate
 def test_saas_access_block_records_a_block_event(
     case, run_context, saas_access, browser_session, casb_log
 ):

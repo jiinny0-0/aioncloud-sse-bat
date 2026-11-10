@@ -11,10 +11,11 @@ class Status(str, Enum):
     """의미는 bat/verdict.py에 정의돼 있고, 상태를 정하는 곳도 거기뿐이다."""
 
     PASS = "PASS"
-    FAIL = "FAIL"
-    SKIP = "SKIP"
-    ERROR = "ERROR"
+    FAIL = "FAIL"  # 치명적 결함. 롤백 사유(gate 케이스만)
+    WARN = "WARN"  # 기대와 다르게 동작했지만 롤백 대상은 아님
     UNVERIFIED = "UNVERIFIED"
+    SKIP = "SKIP"
+    BAT_ERROR = "BAT_ERROR"  # 제품 문제가 아니라 BAT 도구·실행 환경 문제
 
 
 class Step(str, Enum):
@@ -60,7 +61,7 @@ class CaseResult:
     case_id: str
     product: str
     scenario: str
-    status: Status = Status.ERROR
+    status: Status = Status.BAT_ERROR
     priority: str = "P1"
     lane: str = ""
     workspace: str = ""
@@ -81,6 +82,10 @@ class CaseResult:
     # @pytest.mark.diagnostic: 환경 점검. 기록한 점검이 전부 통과하면 PASS다.
     diagnostic: bool = False
     verdict_reason: str = ""
+    # @pytest.mark.gate: FAIL이 나올 수 있는(배포 롤백 판정에 쓰는) 케이스. 아니면 실패해도 최대 WARN.
+    gate: bool = False
+    # FAIL 재확인을 했으면 앞선 시도의 결과(to_dict)가 여기 남는다.
+    attempts: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def duration_sec(self) -> float:
@@ -120,6 +125,8 @@ class CaseResult:
             "criteria": self.criteria,
             "diagnostic": self.diagnostic,
             "verdict_reason": self.verdict_reason,
+            "gate": self.gate,
+            "attempts": self.attempts,
             "steps": [
                 {
                     "step": s.step.value,

@@ -37,13 +37,16 @@ markers = [
     "priority(level): P0..P4",
     "lane(name): resource lane (api, b, c, d, e)",
     "smoke: representative case per product",
-    "critical: P0 cases",
+    "critical: key cases (informational; the rollback set is `gate`)",
+    "gate: deployment rollback set — only these can end FAIL; any other case's failure is at most WARN. Gate cases are P0 and only gate cases are P0",
+    "run_start: runs before every other case in its own phase (server check, baseline); excluded from the main run",
+    "run_end: runs after every other case and its cleanup (baseline); excluded from the main run",
     "manual: requires a human action, excluded from the default run",
     "parked: held back (RBI) — excluded from the default run and the status book; run with --tag parked",
     "crud: only creates/reads/deletes through the API (no traffic, no events) — API-suite territory, excluded from the default run",
     "verifies(*steps): mandatory criteria (user_visible_result, event_validation) — PASS needs a passing assertion on each",
     "known_issue(reason, match=regex): a symptom the user does not treat as a bug — a FAIL whose reason matches `match` is reported as SKIP; other failures stay FAIL",
-    "diagnostic: environment/preflight check; runs by default but never reports PASS (no security-behaviour criterion)",
+    "diagnostic: environment check; PASS when every recorded check passed, FAIL when one failed, UNVERIFIED with none",
     "discovery: requires runtime policy-schema discovery",
 ]
 log_cli = true

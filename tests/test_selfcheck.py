@@ -26,7 +26,7 @@ from bat.fixtures.policies import UNRAISED_CLEANUP_FAILURES, CleanupWarning, _cl
 from bat.models import CaseResult, Kind, SecurityEvent, Status, Step, TrafficResult
 from bat.report.collector import ResultCollector
 from bat.report.redact import MASK, redact
-from bat.verdict import Raised, classify, counts_against_run
+from bat.verdict import Raised, classify
 
 RUN_ID = "20260915-101500-ab12cd"
 TESTS_DIR = pathlib.Path(__file__).parent
@@ -140,14 +140,14 @@ def test_an_intentional_skip_is_skip():
 
 def test_an_unexpected_exception_is_error():
     status, reason = classify(_case(Step.EVENT), Raised.ERROR, "ApiError: HTTP 500")
-    assert status is Status.ERROR
+    assert status is Status.BAT_ERROR
     assert "500" in reason
 
 
 def test_a_body_that_never_claims_completion_is_error():
     case = _case(Step.EVENT, claimed=False)
     case.record(Step.EVENT, ok=True)
-    assert classify(case, Raised.NOTHING) == (Status.ERROR, "case did not set a status")
+    assert classify(case, Raised.NOTHING) == (Status.BAT_ERROR, "case did not set a status")
 
 
 def test_crud_success_without_a_criterion_is_not_pass():
@@ -197,7 +197,7 @@ def test_unknown_criterion_is_an_error_not_a_pass():
     case = _case()
     case.criteria = ["setup"]
     case.record(Step.SETUP, ok=True)
-    assert classify(case, Raised.NOTHING)[0] is Status.ERROR
+    assert classify(case, Raised.NOTHING)[0] is Status.BAT_ERROR
 
 
 @pytest.mark.parametrize(
@@ -253,39 +253,64 @@ def test_run_report_covers_every_worker_and_shows_unverified(tmp_path):
     assert report["totals"] == {"PASS": 1, "UNVERIFIED": 2}
     assert report["by_product"]["swg"] == {"passed": 1, "unverified": 2, "total": 3}
     summary = (tmp_path / "human-summary.md").read_text(encoding="utf-8")
-    assert "Unverified: 2" in summary
+    assert "UNVERIFIED: 2" in summary
     assert "BAT-SWG-002 [scenario] — criteria never evaluated" in summary
     assert "BAT-BASIC-001 [diagnostic]" in summary
 
 
 @pytest.mark.parametrize(
-    "statuses, pytest_code, expected",
+    "statuses, gate, expected",
     [
-        ([("PASS", ["event_validation"])], 0, 0),
-        ([("PASS", ["event_validation"]), ("UNVERIFIED", [])], 0, 0),
-        ([("PASS", ["event_validation"]), ("UNVERIFIED", ["event_validation"])], 0, 6),
-        ([("UNVERIFIED", ["event_validation"]), ("FAIL", ["event_validation"])], 1, 1),
-        ([("SKIP", ["event_validation"])], 0, 0),
+        ([("PASS", False)], "OK", 0),
+        ([("PASS", False), ("SKIP", False)], "OK", 0),
+        ([("PASS", False), ("BAT_ERROR", False)], "OK", 0),
+        ([("PASS", False), ("WARN", False)], "REVIEW", 1),
+        ([("PASS", False), ("UNVERIFIED", False)], "REVIEW", 1),
+        ([("PASS", False), ("BAT_ERROR", True)], "REVIEW", 1),
+        ([("WARN", False), ("FAIL", True)], "ROLLBACK", 2),
     ],
 )
-def test_cli_exit_code_follows_the_bat_verdict(tmp_path, monkeypatch, capsys, statuses, pytest_code, expected):
+def test_run_gate_sets_the_exit_code_and_the_bot_lines(tmp_path, monkeypatch, capsys, statuses, gate, expected):
     import bat.settings
-    from bat.cli import bat_exit_code
+    from bat.cli import report_gate
 
     run_dir = tmp_path / "2026-10-13" / RUN_ID
     collector = ResultCollector(report_dir=run_dir, run_id=RUN_ID, profile="qa")
-    for index, (status, criteria) in enumerate(statuses):
-        collector.add(_finished(f"BAT-SWG-{index:03d}", Status(status), criteria, "reason"))
+    for index, (status, is_gate) in enumerate(statuses):
+        case = _finished(f"BAT-SWG-{index:03d}", Status(status), ["event_validation"], "reason")
+        case.gate = is_gate
+        collector.add(case)
+    collector.write_run_report()
     monkeypatch.setattr(bat.settings, "REPORTS_DIR", tmp_path)
 
-    assert bat_exit_code(pytest_code, RUN_ID) == expected
-    assert "BAT verdict" in capsys.readouterr().out
+    assert report_gate(RUN_ID) == expected
+    lines = capsys.readouterr().out.splitlines()
+    counts = {status: sum(1 for s, _ in statuses if s == status)
+              for status in ("PASS", "FAIL", "WARN", "UNVERIFIED", "SKIP", "BAT_ERROR")}
+    assert ("BAT verdict: " + " / ".join(f"{k} {v}" for k, v in counts.items())) in lines
+    assert f"[BAT-GATE] {gate}" in lines
+    assert all(line.startswith("[BAT-GATE] reason: ") for line in lines[lines.index(f"[BAT-GATE] {gate}") + 1:])
+    report = json.loads((run_dir / "run-report.json").read_text(encoding="utf-8"))
+    assert report["gate"]["verdict"] == gate
+    assert f"## Gate: {gate}" in (run_dir / "human-summary.md").read_text(encoding="utf-8")
 
 
-def test_unverified_counts_against_a_run_only_for_scenarios():
-    assert counts_against_run({"status": "UNVERIFIED", "criteria": ["event_validation"]})
-    assert not counts_against_run({"status": "UNVERIFIED", "criteria": []})
-    assert not counts_against_run({"status": "PASS", "criteria": ["event_validation"]})
+def test_run_gate_reviews_leftovers_and_reads_old_error_results():
+    from bat.verdict import Gate, run_gate
+
+    assert run_gate([{"case_id": "A", "status": "PASS"}], ["leftover BAT resource: web policy 1"]) == (
+        Gate.REVIEW, ["leftover BAT resource: web policy 1"])
+    gate, reasons = run_gate([{"case_id": "A", "status": "ERROR", "gate": True, "verdict_reason": "x"}])
+    assert gate is Gate.REVIEW and reasons[0].startswith("BAT_ERROR A - x")
+    assert run_gate([{"case_id": "A", "status": "SKIP"}]) == (Gate.OK, [])
+
+
+def test_report_gate_without_results_is_its_own_exit_code(tmp_path, monkeypatch, capsys):
+    import bat.settings
+    from bat.cli import EXIT_NO_RESULTS, report_gate
+
+    monkeypatch.setattr(bat.settings, "REPORTS_DIR", tmp_path)
+    assert report_gate(RUN_ID) == EXIT_NO_RESULTS
 
 
 # -- 정리와 마스킹은 이 변경 뒤에도 유지돼야 한다 -------------------------
@@ -510,7 +535,7 @@ def _run_case_body(module: str, function: str, case_id: str, **fixtures):
     try:
         body(**{name: available[name] for name in inspect.signature(body).parameters})
     except BaseException:  # noqa: BLE001 - conftest처럼 아래에서 분류한다
-        raised, message = _how_it_ended(SimpleNamespace(excinfo=pytest.ExceptionInfo.from_current()))
+        raised, message, _minor = _how_it_ended(SimpleNamespace(excinfo=pytest.ExceptionInfo.from_current()))
     else:
         raised, message = Raised.NOTHING, ""
     status, reason = classify(case, raised, message)
@@ -1034,8 +1059,8 @@ def test_cleanup_failure_before_the_body_finished_is_an_error():
         info = pytest.ExceptionInfo.from_current()
     else:
         pytest.fail("cleanup_failed must raise when the body has not finished")
-    status, reason = classify(case, *_how_it_ended(SimpleNamespace(excinfo=info)))
-    assert status is Status.ERROR
+    status, reason = classify(case, *_how_it_ended(SimpleNamespace(excinfo=info))[:2])
+    assert status is Status.BAT_ERROR
     assert "never ran" in reason
 
 
@@ -1134,7 +1159,7 @@ def test_known_issue_skips_only_its_own_symptom():
     assert status is Status.FAIL and "no match pattern" in reason
     status, reason = apply_known_issue(Status.PASS, "all mandatory criteria passed", "d", match)
     assert status is Status.PASS and "해제 검토 필요" in reason
-    for other in (Status.UNVERIFIED, Status.ERROR, Status.SKIP):
+    for other in (Status.UNVERIFIED, Status.BAT_ERROR, Status.SKIP):
         assert apply_known_issue(other, "r", "d", match) == (other, "r")
 
 
@@ -1271,7 +1296,7 @@ def test_fw_010_cannot_pass_when_the_other_user_policy_is_left_behind(instant_po
     """"다른 사용자" 정책 삭제가 실패하면, 앞 절반의 기록으로 PASS가 되는 게 아니라 ERROR다."""
     tenant = _FakeDnsTenant(fail_delete=("-other",))
     status, reason, case = _run_fw_010(tenant)
-    assert status is Status.ERROR, reason
+    assert status is Status.BAT_ERROR, reason
     assert "never ran" in reason
     assert not any(name.endswith("-mine") for name in tenant.created), "the own-user half must not have run"
     assert case.cleanup_warnings
@@ -1518,7 +1543,7 @@ def test_x_010_cannot_pass_when_its_dlp_leg_is_left_behind(instant_polling, monk
     """DLP 단계만으로 USER_RESULT와 EVENT가 충족되더라도, 그 단계의 삭제가 실패하면 ERROR다."""
     tenant = _FakeJourneyTenant(fail_delete=("-dlpblock",))
     status, reason, case = _run_x_010(tenant, monkeypatch)
-    assert status is Status.ERROR, reason
+    assert status is Status.BAT_ERROR, reason
     assert "never ran" in reason
     assert not any(name.endswith(("-casb", "-genai")) for name in tenant.created)
 
@@ -1621,7 +1646,7 @@ def _judge_casb_block(tenant, clock, *, budget=10, event_timeout_sec=90, start_a
             )
             pass_case(case)
         except BaseException:  # noqa: BLE001 - conftest처럼 아래에서 분류한다
-            raised, message = _how_it_ended(SimpleNamespace(excinfo=pytest.ExceptionInfo.from_current()))
+            raised, message, _minor = _how_it_ended(SimpleNamespace(excinfo=pytest.ExceptionInfo.from_current()))
         else:
             raised, message = Raised.NOTHING, ""
     status, reason = classify(case, raised, message)
@@ -1726,7 +1751,7 @@ def test_an_unreadable_log_leaves_five_blocks_unverified_not_errored(instant_pol
 
 @pytest.mark.parametrize("after, expected", [
     pytest.param(("block", "render", "block"), Status.FAIL, id="after-a-render"),
-    pytest.param(("block",), Status.ERROR, id="before-any-violation"),
+    pytest.param(("block",), Status.BAT_ERROR, id="before-any-violation"),
 ])
 def test_a_browser_failure_leaves_a_violation_already_seen_a_fail(after, expected, instant_polling):
     """브라우저가 기한 뒤 네 번째 요청(9번째 방문)에서 고장 난다."""
@@ -2004,12 +2029,12 @@ def test_a_stability_violation_stays_a_fail_through_whatever_follows(trouble, in
 LOG_READ_FAILURES = [
     pytest.param(ApiError("GraphQL HTTP 502", status_code=502), "api", Status.UNVERIFIED, id="api"),
     pytest.param(httpx.ConnectError("connection reset"), "network", Status.UNVERIFIED, id="network"),
-    pytest.param(AuthError("GraphQL client is not logged in"), "session", Status.ERROR, id="session-auth-error"),
+    pytest.param(AuthError("GraphQL client is not logged in"), "session", Status.BAT_ERROR, id="session-auth-error"),
     pytest.param(ApiError("GraphQL errors: Duplicate login\nThe cached console session is stale."),
-                 "session", Status.ERROR, id="session-duplicate-login"),
-    pytest.param(ApiError("GraphQL HTTP 401", status_code=401), "session", Status.ERROR, id="session-http-401"),
+                 "session", Status.BAT_ERROR, id="session-duplicate-login"),
+    pytest.param(ApiError("GraphQL HTTP 401", status_code=401), "session", Status.BAT_ERROR, id="session-http-401"),
     pytest.param(SelfBlockedError("The GraphQL request was intercepted by an SSE block page"),
-                 "self-block", Status.ERROR, id="self-block"),
+                 "self-block", Status.BAT_ERROR, id="self-block"),
 ]
 
 
@@ -2748,8 +2773,8 @@ def test_run_progress_counts_what_the_run_left_on_disk(tmp_path):
     text = progress.render(run_dir, now=started.replace(microsecond=0) + __import__("datetime").timedelta(minutes=4),
                            estimates={"BAT-SWG-002": 60, "BAT-DLP-001": 120})
     assert f"Run {RUN_ID} (qa) — 2/4 (50%)" in text and "경과 4분" in text and "예상 남은 시간 ~3분" in text, text
-    assert "PASS 1 / FAIL 1 / UNVERIFIED 0 / SKIP 0 / ERROR 0" in text
-    assert "현재: BAT-SWG-002" in text and "FAIL/ERROR: BAT-X-001" in text
+    assert "PASS 1 / FAIL 1 / WARN 0 / UNVERIFIED 0 / SKIP 0 / BAT_ERROR 0" in text
+    assert "현재: BAT-SWG-002" in text and "FAIL/BAT_ERROR: BAT-X-001" in text
 
     progress.mark_running(run_dir, None, worker="gw0")
     (run_dir / "run-report.json").write_text("{}", encoding="utf-8")
@@ -2868,7 +2893,8 @@ def test_result_book_has_only_the_published_columns(tmp_path):
     cases = [{"case_id": f"BAT-SWG-00{i}", "product": "swg", "scenario": f"s{i}"} for i in (1, 2, 3, 4)]
     rows = result_book.build_rows(statuses, cases, descriptions)
     assert [r["status"] for r in rows] == ["PASS", "FAIL", "FAIL", "미실행"]
-    assert [r["actual_result"] for r in rows] == ["차단된다", "차단되지 않음", "기대 결과와 다르게 동작함", "미실행"]
+    assert [r["actual_result"] for r in rows] == ["차단된다", "차단되지 않음", "치명적으로 기대 결과와 다르게 동작함(롤백 사유)", "미실행"]
+    assert rows[3]["status_meaning"] == "미실행 - 이번 실행에서 돌지 않음"
     assert rows[0]["test_steps"] == "1. 요청" and rows[0]["expected_results"] == "차단된다"
 
     path = result_book.write(rows, tmp_path / "r.csv")
@@ -2877,7 +2903,7 @@ def test_result_book_has_only_the_published_columns(tmp_path):
         table = list(csv.reader(f))
     assert table[0] == [
         "Case ID", "Product", "Status", "Scenario", "Test Steps", "Test Parameters", "Test Data",
-        "Expected Results", "Actual Result",
+        "Expected Results", "Actual Result", "Status Meaning",
     ]
     assert table[1][0] == "BAT-SWG-001" and table[1][4] == "1. 요청" and len(table) == 5
 
@@ -2982,7 +3008,7 @@ def test_every_case_has_an_english_description():
 
 def _result_book_sample():
     statuses = {"BAT-SWG-001": "PASS", "BAT-SWG-002": "FAIL", "BAT-SWG-003": "FAIL",
-                "BAT-SWG-004": "UNVERIFIED", "BAT-SWG-005": "SKIP", "BAT-SWG-007": "ERROR",
+                "BAT-SWG-004": "UNVERIFIED", "BAT-SWG-005": "SKIP", "BAT-SWG-007": "BAT_ERROR",
                 "BAT-SWG-009": "PASS"}
     cases = [{"case_id": f"BAT-SWG-00{i}", "product": "swg", "scenario": f"한국어 시나리오 {i}"}
              for i in range(1, 10)]
@@ -3020,8 +3046,10 @@ def test_result_book_korean_output_is_unchanged(tmp_path):
     assert rows == result_book.build_rows(statuses, cases, descriptions, "ko")
     assert rows[0]["scenario"] == "한국어 시나리오 1" and rows[0]["actual_result"] == "차단된다"
     assert [r["actual_result"] for r in rows[1:]] == [
-        "기대 결과와 다르게 동작함", "기대 결과와 다르게 동작함", "확인할 수단이 없어 판정하지 못함",
-        "대상 기능이 탐지하지 않아 판정에서 제외함", "미실행", "실행 환경 오류로 판정하지 못함", "미실행",
+        "치명적으로 기대 결과와 다르게 동작함(롤백 사유)", "치명적으로 기대 결과와 다르게 동작함(롤백 사유)",
+        "확인할 수단이나 근거가 없어 판정하지 못함",
+        "대상 기능이 탐지하지 않아 판정에서 제외함", "미실행", "테스트 도구·실행 환경 문제로 판정하지 못함(제품 이슈 아님)",
+        "미실행",
         "기대 결과대로 동작함",
     ]
     assert result_book.untranslated("ko", path=yaml_path) == {}
@@ -3044,7 +3072,7 @@ def test_result_book_in_english_keeps_status_values(tmp_path, monkeypatch, capsy
     statuses, cases = _result_book_sample()
     rows = result_book.build_rows(statuses, cases, result_book.load_descriptions(yaml_path, "en"), "en")
     assert [r["status"] for r in rows] == [
-        "PASS", "FAIL", "FAIL", "UNVERIFIED", "SKIP", status_book.NOT_RUN, "ERROR", status_book.NOT_RUN, "PASS",
+        "PASS", "FAIL", "FAIL", "UNVERIFIED", "SKIP", status_book.NOT_RUN, "BAT_ERROR", status_book.NOT_RUN, "PASS",
     ]
     assert status_book.NOT_RUN == "미실행"
     assert rows[0]["scenario"] == "English scenario" and rows[0]["actual_result"] == "Blocked"
@@ -3052,10 +3080,11 @@ def test_result_book_in_english_keeps_status_values(tmp_path, monkeypatch, capsy
     # 번역이 없는 actual_result는 한국어로 대체된다.
     assert rows[1]["actual_result"] == "차단되지 않음"
     assert [r["actual_result"] for r in rows[2:]] == [
-        "Behaved differently from the expected result",
-        "Not judged: there was no means to verify the result",
+        "Critically different from the expected result (rollback)",
+        "Not judged: there was no means or evidence to verify the result",
         "Excluded from the verdict: the target feature did not detect it",
-        "Not run", "Not judged because of an execution environment error", "Not run", "Behaved as expected",
+        "Not run", "Not judged because of a test tool / environment problem (not a product issue)", "Not run",
+        "Behaved as expected",
     ]
     assert rows[2]["scenario"] == "한국어 시나리오 3", "no translation: the docstring scenario"
     assert result_book.untranslated("en", ["BAT-SWG-001", "BAT-SWG-002", "BAT-SWG-003"], yaml_path) == {
@@ -3073,7 +3102,8 @@ def test_result_book_in_english_keeps_status_values(tmp_path, monkeypatch, capsy
     with path.open(encoding="utf-8-sig", newline="") as f:
         table = list(csv.reader(f))
     assert table[0][2] == "Status" and [row[2] for row in table[1:]] == ["PASS", "FAIL", "FAIL"]
-    assert table[1][3] == "English scenario" and table[3][8] == "Behaved differently from the expected result"
+    assert table[1][3] == "English scenario" and table[3][8] == "Critically different from the expected result (rollback)"
+    assert table[0][-1] == "Status Meaning" and table[1][-1] == "PASS - behaved as expected"
     warning = capsys.readouterr().err
     assert "no en text for 2 case(s), used Korean" in warning
     assert "BAT-SWG-002 (actual_result)" in warning and "BAT-SWG-003 (scenario" in warning
@@ -4033,3 +4063,202 @@ def test_echo_with_a_bom_or_line_break_is_not_intact():
         assert note in echo_change(body, EICAR_LIKE), received
     same = json.dumps({"files": {"file": EICAR_LIKE}})
     assert echoed_file_intact(same, EICAR_LIKE) is True and echo_change(same, EICAR_LIKE) == ""
+
+
+# -- 배포 롤백 판정(gate) ------------------------------------------------------
+
+GATE_CASES = {
+    "BAT-BASIC-001", "BAT-BASIC-002", "BAT-BASIC-004", "BAT-BASIC-007", "BAT-BASIC-008", "BAT-BASIC-009",
+    "BAT-SWG-001", "BAT-SWG-002", "BAT-DLP-001", "BAT-DLP-002", "BAT-DLP-005", "BAT-FW-001", "BAT-FW-003",
+    "BAT-CASB-004", "BAT-ZTNA-001", "BAT-ZTNA-009",
+}
+
+
+def test_gate_cases_are_exactly_the_rollback_set_and_exactly_the_p0_cases():
+    from bat.report import status_book
+
+    cases = status_book._all_cases(status_book.TESTS_DIR)
+    assert {c["case_id"] for c in cases if c["gate"]} == GATE_CASES
+    assert {c["case_id"] for c in cases if c["priority"] == "P0"} == GATE_CASES, "gate case <=> P0"
+
+
+def _gate_case(*, gate: bool, steps=()) -> CaseResult:
+    case = CaseResult(case_id="BAT-SWG-001", product="swg", scenario="s", criteria=["user_visible_result"], gate=gate)
+    for step, ok in steps:
+        case.record(step, ok=ok)
+    return case
+
+
+def test_only_a_gate_case_that_fails_outright_stays_fail():
+    from bat.verdict import apply_gate
+
+    assert apply_gate(_gate_case(gate=True), Status.FAIL, "r") == (Status.FAIL, "r")
+    status, reason = apply_gate(_gate_case(gate=False), Status.FAIL, "r")
+    assert status is Status.WARN and "not a gate case" in reason
+    status, reason = apply_gate(_gate_case(gate=True), Status.FAIL, "r", minor="failed on 1 of 3 targets only")
+    assert status is Status.WARN and "1 of 3" in reason
+    event_only = _gate_case(gate=True, steps=[(Step.USER_RESULT, True), (Step.EVENT, False)])
+    status, reason = apply_gate(event_only, Status.FAIL, "r")
+    assert status is Status.WARN and "only the event" in reason
+    both = _gate_case(gate=True, steps=[(Step.USER_RESULT, False), (Step.EVENT, False)])
+    assert apply_gate(both, Status.FAIL, "r")[0] is Status.FAIL
+    for other in (Status.PASS, Status.UNVERIFIED, Status.SKIP, Status.BAT_ERROR):
+        assert apply_gate(_gate_case(gate=False), other, "r") == (other, "r")
+
+
+def test_a_retried_fail_is_fail_only_when_the_retry_fails_too():
+    from bat.verdict import merge_retry
+
+    first = {"status": "FAIL", "verdict_reason": "blocked nothing"}
+    assert merge_retry(first, Status.FAIL, "again")[0] is Status.FAIL
+    status, reason = merge_retry(first, Status.PASS, "ok")
+    assert status is Status.WARN and reason.startswith("1차 FAIL, 재확인 PASS: 불안정")
+    assert merge_retry(first, Status.WARN, "partial")[0] is Status.WARN
+    for unknown in (Status.UNVERIFIED, Status.BAT_ERROR, Status.SKIP):
+        assert merge_retry(first, unknown, "x")[0] is Status.FAIL
+
+
+def test_the_retry_keeps_the_first_attempt(tmp_path, monkeypatch):
+    from tests.conftest import _prior_attempt
+
+    (tmp_path / "BAT-SWG-001").mkdir()
+    (tmp_path / "BAT-SWG-001" / "result.json").write_text(json.dumps({"status": "FAIL", "steps": [1]}), encoding="utf-8")
+    monkeypatch.delenv("BAT_ATTEMPT", raising=False)
+    assert _prior_attempt(tmp_path, "BAT-SWG-001") is None
+    monkeypatch.setenv("BAT_ATTEMPT", "2")
+    assert _prior_attempt(tmp_path, "BAT-SWG-001") == {"status": "FAIL", "steps": [1]}
+    assert _prior_attempt(tmp_path, "BAT-SWG-002") is None
+    assert CaseResult(case_id="x", product="p", scenario="s", attempts=[{"status": "FAIL"}]).to_dict()["attempts"]
+
+
+def test_only_unretried_failures_are_retried(monkeypatch):
+    import bat.cli as cli
+
+    rows = [{"case_id": "A", "status": "FAIL"}, {"case_id": "B", "status": "FAIL", "attempts": [{}]},
+            {"case_id": "C", "status": "WARN"}]
+    calls = []
+    monkeypatch.setattr(cli, "_run_cases", lambda run_id: rows)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(cli, "_pytest", lambda command, env, phase: calls.append((command, env, phase)) or 0)
+    assert cli._retry_failures(["pytest"], {}, RUN_ID, workers=3) == ["A"]
+    command, env, phase = calls[0]
+    assert env["BAT_CASE_FILTER"] == "A" and env["BAT_ATTEMPT"] == "2" and phase == "retry"
+    assert command[-3:] == ["1", "--dist", "loadgroup"]
+    rows[0]["attempts"] = [{}]
+    assert cli._retry_failures(["pytest"], {}, RUN_ID, workers=3) == []
+
+
+def _minor_failure():
+    from bat.verdict import MinorFailure
+
+    return MinorFailure("m", "some targets")
+
+
+@pytest.mark.parametrize(
+    "make, raised, minor",
+    [
+        (_minor_failure, Raised.ASSERTION, "some targets"),
+        (lambda: httpx.ConnectError("refused"), Raised.ASSERTION, ""),
+        (lambda: httpx.ReadTimeout("slow"), Raised.ASSERTION, ""),
+        (lambda: ApiError("GraphQL HTTP 503", status_code=503), Raised.ASSERTION, ""),
+        (lambda: ApiError("GraphQL HTTP 401", status_code=401), Raised.ERROR, ""),
+        (lambda: ApiError("HTTP 400", status_code=400), Raised.ERROR, ""),
+        (lambda: AuthError("bad password"), Raised.ERROR, ""),
+    ],
+    ids=["minor", "connect", "timeout", "5xx", "401", "400", "auth"],
+)
+def test_management_api_down_is_a_product_failure_and_auth_is_a_bat_error(make, raised, minor):
+    from tests.conftest import _how_it_ended
+
+    try:
+        raise make()
+    except BaseException:
+        info = pytest.ExceptionInfo.from_current()
+    got = _how_it_ended(SimpleNamespace(excinfo=info))
+    assert got[0] is raised and got[2] == minor
+
+
+def test_some_targets_failing_is_minor_and_all_failing_is_not():
+    from bat.verdict import MinorFailure
+    from tests.support import across_targets
+
+    def check(target):
+        assert target != "bad", "not blocked"
+
+    case = _gate_case(gate=True)
+    with pytest.raises(MinorFailure) as partial:
+        across_targets(case, ["good", "bad"], check, what="block")
+    assert "1 of 2" in partial.value.why
+    with pytest.raises(AssertionError) as total:
+        across_targets(case, ["bad"], check, what="block")
+    assert not isinstance(total.value, MinorFailure)
+
+
+def test_a_stored_value_mismatch_is_minor():
+    from bat.verdict import MinorFailure
+    from tests.support import expect_values
+
+    with pytest.raises(MinorFailure):
+        expect_values(_gate_case(gate=True), "policy", {"users": ([0], [5])})
+
+
+def test_doctor_tells_a_server_down_from_a_config_problem():
+    from bat import health
+
+    assert health.classify_failure(httpx.ConnectError("x")) == health.DOWN
+    assert health.classify_failure(ApiError("HTTP 502", status_code=502)) == health.DOWN
+    assert health.classify_failure(ApiError("HTTP 401", status_code=401)) == health.CONFIG
+    assert health.classify_failure(AuthError("x")) == health.CONFIG
+    assert health.classify_failure(ValueError("not json")) == health.CONFIG
+    assert health.doctor_exit_code([health.OK, health.OK]) == 0
+    assert health.doctor_exit_code([health.OK, health.CONFIG]) == 21
+    assert health.doctor_exit_code([health.CONFIG, health.DOWN]) == 20
+
+
+def test_baseline_verdicts():
+    from bat import health
+
+    ok = health.BaselineOutcome("a", True, "HTTP 200")
+    cut = health.BaselineOutcome("b", False, "connection failed")
+    mine = health.BaselineOutcome("c", False, "HTTP 403", f"BAT-SWG-001-{RUN_ID}")
+    theirs = health.BaselineOutcome("d", False, "HTTP 403", "tt")
+
+    def judge(outcomes):
+        return health.judge_baseline(outcomes, is_bat_resource)[0]
+
+    assert judge([ok, ok]) == health.PASS_ALL
+    assert judge([ok, cut]) == health.PARTIAL
+    assert judge([cut, cut]) == health.ALL_FAILED
+    assert judge([mine, cut]) == health.ALL_FAILED
+    assert judge([theirs, cut]) == health.USER_POLICY
+
+
+def test_block_page_rule_name():
+    from tests.support import block_page_rule
+
+    assert block_page_rule("<title>Browsing blocked by tt</title>") == "tt"
+    assert block_page_rule("403 Forbidden - blocked by BAT-ZTNA-012-x\n") == "BAT-ZTNA-012-x"
+    assert block_page_rule("<html>Forbidden</html>") == ""
+
+
+def test_every_status_has_a_meaning_in_both_languages():
+    from bat.verdict import STATUS_MEANINGS
+
+    for lang in ("ko", "en"):
+        assert set(STATUS_MEANINGS[lang]) == {s.value for s in Status} | {"미실행"}
+        for status, text in STATUS_MEANINGS[lang].items():
+            assert text.startswith(f"{status} - ")
+
+
+def test_old_error_results_read_as_bat_error(tmp_path):
+    from bat.report import result_book, status_book
+
+    case_dir = tmp_path / "2026-11-01" / RUN_ID / "BAT-SWG-001"
+    case_dir.mkdir(parents=True)
+    (case_dir / "result.json").write_text(json.dumps({"case_id": "BAT-SWG-001", "status": "ERROR"}), encoding="utf-8")
+    assert result_book.run_statuses(RUN_ID, tmp_path) == {"BAT-SWG-001": "BAT_ERROR"}
+    row = {}
+    status_book._apply_result(row, "qa", {"status": "ERROR"}, RUN_ID)
+    assert row["qa_status"] == "BAT_ERROR"
+
+

@@ -14,9 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from bat.settings import REPORTS_DIR
+from bat.verdict import current_status
 
 PLAN_NAME = "plan.json"
-STATUSES = ("PASS", "FAIL", "UNVERIFIED", "SKIP", "ERROR")
+STATUSES = ("PASS", "FAIL", "WARN", "UNVERIFIED", "SKIP", "BAT_ERROR")
 
 
 def write_plan(report_dir: Path, run_id: str, profile: str, case_ids: list[str], workers: int) -> Path:
@@ -48,7 +49,7 @@ def snapshot(report_dir: Path, *, now: datetime | None = None,
         results[case.get("case_id")] = case
     planned = plan["case_ids"]
     done = [cid for cid in planned if cid in results]
-    counts = Counter(results[cid].get("status") for cid in done)
+    counts = Counter(current_status(results[cid].get("status")) for cid in done)
     running = sorted({p.read_text(encoding="utf-8").strip() for p in report_dir.glob(".running-*")} - set(done))
     now = now or datetime.now()
     started = datetime.fromisoformat(plan["started_at"])
@@ -60,7 +61,7 @@ def snapshot(report_dir: Path, *, now: datetime | None = None,
         "total": len(planned), "done": len(done), "counts": counts, "running": running,
         "elapsed_min": (now - started).total_seconds() / 60,
         "remaining_min": sum(estimates.get(cid, 30) for cid in left) / 60 / plan["workers"],
-        "failed": [cid for cid in done if results[cid].get("status") in ("FAIL", "ERROR")],
+        "failed": [cid for cid in done if current_status(results[cid].get("status")) in ("FAIL", "BAT_ERROR")],
     }
 
 
@@ -78,7 +79,7 @@ def render(report_dir: Path, *, finished: bool = False, now: datetime | None = N
     ]
     if s["running"] and not finished:
         lines.append(f"현재: {', '.join(s['running'])}")
-    lines.append(f"FAIL/ERROR: {', '.join(s['failed']) or '-'}")
+    lines.append(f"FAIL/BAT_ERROR: {', '.join(s['failed']) or '-'}")
     return "\n".join(lines) + "\n"
 
 

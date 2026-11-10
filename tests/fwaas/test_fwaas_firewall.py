@@ -83,7 +83,8 @@ def _resolved_before(executor, hosts, timeout_sec: float) -> dict:
 
 @pytest.mark.case("BAT-FW-001")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
-@pytest.mark.priority("P1")
+@pytest.mark.priority("P0")
+@pytest.mark.gate
 def test_dns_firewall_blocks_a_domain(case, run_context, dns_firewall, executor, network_log):
     """DNS Firewall로 도메인을 차단하면 실제로 이름 해석이 실패하고 이벤트가 남는다.
 
@@ -158,7 +159,8 @@ def test_dns_firewall_removal_restores_resolution(case, run_context, dns_firewal
 
 @pytest.mark.case("BAT-FW-003")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
-@pytest.mark.priority("P1")
+@pytest.mark.priority("P0")
+@pytest.mark.gate
 def test_application_firewall_blocks_a_destination(
     case, run_context, application_firewall, executor, network_log
 ):

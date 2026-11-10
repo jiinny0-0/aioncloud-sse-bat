@@ -4,8 +4,9 @@
 돌지 않은 케이스는 미실행을 담는다. 설명 열은 tests/case_descriptions.yaml에서 가져온다.
 
 언어는 BAT_REPORT_LANG(ko/en, 기본 ko)로 고른다. 바뀌는 것은 Scenario와 설명 열,
-Actual Result의 문장뿐이다. 열 이름과 Status 값(PASS/FAIL/.../미실행)은 언어와 관계없이
-같다. 결과 파일을 읽는 쪽(봇, 집계 스크립트)이 그 값으로 행을 거르기 때문이다.
+Actual Result, Status Meaning의 문장뿐이다. 열 이름과 Status 값(PASS/FAIL/WARN/UNVERIFIED/
+SKIP/BAT_ERROR/미실행)은 언어와 관계없이 같다. 결과 파일을 읽는 쪽(봇, 집계 스크립트)이 그
+값으로 행을 거르기 때문이다. 마지막 열 Status Meaning은 상태를 처음 보는 사람을 위한 설명이다.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from typing import Any
 
 from bat.report import status_book
 from bat.settings import REPORTS_DIR
+from bat.verdict import STATUS_MEANINGS, current_status
 
 RESULT_DIR = REPORTS_DIR / "result"
 DESCRIPTIONS = status_book.TESTS_DIR / "case_descriptions.yaml"
@@ -36,21 +38,24 @@ COLUMNS = [
     ("test_data", "Test Data"),
     ("expected_results", "Expected Results"),
     ("actual_result", "Actual Result"),
+    ("status_meaning", "Status Meaning"),
 ]
 # case_descriptions.yaml에 actual_result가 없을 때 쓴다.
 DEFAULT_ACTUAL = {
     "ko": {
-        "FAIL": "기대 결과와 다르게 동작함",
-        "UNVERIFIED": "확인할 수단이 없어 판정하지 못함",
+        "FAIL": "치명적으로 기대 결과와 다르게 동작함(롤백 사유)",
+        "WARN": "기대 결과와 다르게 동작함(롤백 대상 아님)",
+        "UNVERIFIED": "확인할 수단이나 근거가 없어 판정하지 못함",
         "SKIP": "대상 기능이 탐지하지 않아 판정에서 제외함",
-        "ERROR": "실행 환경 오류로 판정하지 못함",
+        "BAT_ERROR": "테스트 도구·실행 환경 문제로 판정하지 못함(제품 이슈 아님)",
         status_book.NOT_RUN: "미실행",
     },
     "en": {
-        "FAIL": "Behaved differently from the expected result",
-        "UNVERIFIED": "Not judged: there was no means to verify the result",
+        "FAIL": "Critically different from the expected result (rollback)",
+        "WARN": "Behaved differently from the expected result (not a rollback)",
+        "UNVERIFIED": "Not judged: there was no means or evidence to verify the result",
         "SKIP": "Excluded from the verdict: the target feature did not detect it",
-        "ERROR": "Not judged because of an execution environment error",
+        "BAT_ERROR": "Not judged because of a test tool / environment problem (not a product issue)",
         status_book.NOT_RUN: "Not run",
     },
 }
@@ -135,7 +140,7 @@ def run_statuses(run_id: str, directory: Path = REPORTS_DIR) -> dict[str, str]:
         for case in load_cases(run_dir):
             case_id = status_book.current_id(case["case_id"], str(case.get("started_at") or ""))
             if case_id:
-                statuses[case_id] = str(case.get("status") or "")
+                statuses[case_id] = current_status(case.get("status"))
     return statuses
 
 
@@ -163,7 +168,7 @@ def actual_result(status: str, description: dict[str, str], lang: str = DEFAULT_
     if status == "PASS":
         return description.get("expected_results") or DEFAULT_PASS[lang]
     note = description.get("actual_result", "").strip()
-    if status in ("FAIL", "UNVERIFIED", "SKIP") and note:
+    if status in ("FAIL", "WARN", "UNVERIFIED", "SKIP") and note:
         return note
     return DEFAULT_ACTUAL[lang].get(status, status)
 
@@ -186,6 +191,7 @@ def build_rows(statuses: dict[str, str], cases: list[dict[str, str]],
             "scenario": description.get("scenario") or case["scenario"],
             **{key: description.get(key, "") for key in DESCRIPTION_FIELDS},
             "actual_result": actual_result(status, description, lang),
+            "status_meaning": STATUS_MEANINGS[report_lang(lang)].get(status, status),
         })
     return rows
 

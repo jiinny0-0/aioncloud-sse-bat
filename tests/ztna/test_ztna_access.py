@@ -111,6 +111,7 @@ def _row_time(event) -> datetime | None:
 @pytest.mark.case("BAT-ZTNA-001")
 @pytest.mark.verifies(Step.EVENT)
 @pytest.mark.priority("P0")
+@pytest.mark.gate
 @pytest.mark.critical
 @pytest.mark.smoke
 def test_connector_session_is_recorded(case, run_context, lane, auth_log: AuthLogReader, executor):
@@ -253,7 +254,7 @@ def test_connector_session_is_recorded(case, run_context, lane, auth_log: AuthLo
 def test_protected_resource_catalog_is_queryable(case, console):
     """ZTNA의 보호 대상 리소스(tunnel/gateway) 목록을 조회할 수 있다(환경 점검).
 
-    빈 목록도 정상이다. 조회가 답하면 통과이고, 실패하면 예외로 ERROR가 된다.
+    빈 목록도 정상이다. 조회가 답하면 통과이고, 실패하면 예외로 BAT_ERROR가 된다.
     """
     query = """
     query BatZtnaProtectedResources {

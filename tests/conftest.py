@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime
@@ -35,7 +36,7 @@ from bat.report import progress
 from bat.scheduler import build_lanes, concurrency_group, lane_for_product
 from bat.settings import build_run_context, env
 from bat.traffic.browser import BrowserSession
-from bat.verdict import Raised, apply_known_issue, classify
+from bat.verdict import MinorFailure, Raised, apply_gate, apply_known_issue, classify, merge_retry, product_failure
 from tests.support import VerificationUnavailable, environment_error
 
 log = logging.getLogger(__name__)
@@ -124,7 +125,7 @@ def console(run_context, lane, _lane_clients) -> GraphQLClient:
     """콘솔 GraphQL 세션.
 
     REST로 다룰 수 없는 제품만 이것이 필요하다. 캐시된 세션도 콘솔 자격증명도 없으면
-    실행 조건 미비로 ERROR가 된다.
+    실행 조건 미비로 BAT_ERROR가 된다.
     """
     workspace = lane.workspace
     cached = _lane_clients["console"].get(lane.name)
@@ -193,7 +194,7 @@ def executor(lane, _lane_clients):
     """레인 단말에서의 명령 실행.
 
     단말이 없거나 닿지 않는 것은 제품 결함이 아니라 구성 공백이다. 이런 케이스는 실행
-    조건 미비로 ERROR가 된다.
+    조건 미비로 BAT_ERROR가 된다.
     """
     cached = _lane_clients["executor"].get(lane.name)
     if cached:
@@ -324,7 +325,11 @@ def case(request, run_context, lane, collector) -> Iterator[CaseResult]:
         if verifies_marker
         else [],
         diagnostic=request.node.get_closest_marker("diagnostic") is not None,
+        gate=request.node.get_closest_marker("gate") is not None,
     )
+    prior = _prior_attempt(run_context.report_dir, result.case_id)
+    if prior is not None:
+        result.attempts = [prior]
     # 케이스가 실패해도 report hook이 닿을 수 있도록 테스트 본문이 돌기 전에 묶는다.
     # teardown에서 묶으면 너무 늦다.
     request.node._bat_case = result
@@ -333,13 +338,13 @@ def case(request, run_context, lane, collector) -> Iterator[CaseResult]:
     try:
         yield result
     except Exception as exc:
-        result.status = Status.ERROR
+        result.status = Status.BAT_ERROR
         result.error = str(exc)[:1000]
         raise
     finally:
         result.ended_at = datetime.now()
         _take_unraised_cleanup_failures(result)
-        if result.status is Status.ERROR and not result.error:
+        if result.status is Status.BAT_ERROR and not result.error:
             result.error = result.verdict_reason or "case did not set a status"
         collector.add(result)
         progress.mark_running(run_context.report_dir, None)
@@ -355,18 +360,37 @@ def _take_unraised_cleanup_failures(result: CaseResult) -> None:
     UNRAISED_CLEANUP_FAILURES.clear()
 
 
-def _how_it_ended(call) -> tuple[Raised, str]:
+def _prior_attempt(report_dir: Path, case_id: str) -> dict | None:
+    """FAIL 재확인(BAT_ATTEMPT=2)이면 같은 실행에서 1차로 남긴 그 케이스의 결과."""
+    if os.environ.get("BAT_ATTEMPT") != "2":
+        return None
+    path = report_dir / case_id / "result.json"
+    try:
+        first = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return first if first.get("status") == Status.FAIL.value else None
+
+
+def _how_it_ended(call) -> tuple[Raised, str, str]:
+    """(끝난 방식, 메시지, minor). minor는 치명적이지 않은 실패(MinorFailure)의 이유다."""
     if call.excinfo is None:
-        return Raised.NOTHING, ""
+        return Raised.NOTHING, "", ""
     exc = call.excinfo.value
     message = str(exc)[:500]
     if isinstance(exc, VerificationUnavailable):
-        return Raised.UNAVAILABLE, message
+        return Raised.UNAVAILABLE, message, ""
     if isinstance(exc, pytest.skip.Exception):
-        return Raised.SKIP, message
+        return Raised.SKIP, message, ""
+    if isinstance(exc, MinorFailure):
+        return Raised.ASSERTION, message, exc.why
     if isinstance(exc, (AssertionError, pytest.fail.Exception)):
-        return Raised.ASSERTION, message
-    return Raised.ERROR, f"{type(exc).__name__}: {message}"
+        return Raised.ASSERTION, message, ""
+    # 관리 API가 응답하지 않거나 5xx를 줬다: 테스트 도구 문제가 아니라 제품 장애다.
+    down = product_failure(exc)
+    if down:
+        return Raised.ASSERTION, down[:500], ""
+    return Raised.ERROR, f"{type(exc).__name__}: {message}", ""
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
@@ -384,7 +408,7 @@ def pytest_runtest_makereport(item, call):
     if case_result is None:
         return
 
-    raised, message = _how_it_ended(call)
+    raised, message, minor = _how_it_ended(call)
     status, reason = classify(case_result, raised, message)
     known = item.get_closest_marker("known_issue")
     if known:
@@ -395,10 +419,14 @@ def pytest_runtest_makereport(item, call):
         if status is Status.SKIP:
             report.outcome = "skipped"
             report.longrepr = (str(item.path), item.location[1] or 0, reason)
+    # FAIL은 롤백할 만큼 치명적일 때만 남는다(gate 케이스, 전부 실패, 사용자 결과까지 틀림).
+    status, reason = apply_gate(case_result, status, reason, minor=minor)
+    if case_result.attempts:
+        status, reason = merge_retry(case_result.attempts[0], status, reason)
     reason = _with_cleanup_note(status, reason, case_result.cleanup_warnings)
     case_result.status = status
     case_result.verdict_reason = reason
-    if status in (Status.FAIL, Status.ERROR):
+    if status in (Status.FAIL, Status.WARN, Status.BAT_ERROR):
         case_result.error = case_result.error or str(report.longrepr or reason)[:1000]
         if report.passed:
             # 기록만 되고 예외로 올라가지 않은 실패나 끝났다고 주장하지 않은 본문 때문에
@@ -422,22 +450,29 @@ def _with_cleanup_note(status: Status, reason: str, warnings: list[str]) -> str:
     return reason
 
 
+_TESTSTATUS = {
+    Status.UNVERIFIED.value: ("unverified", "U", "UNVERIFIED"),
+    Status.WARN.value: ("warn", "W", "WARN"),
+    Status.BAT_ERROR.value: ("bat_error", "E", "BAT_ERROR"),
+}
+
+
 def pytest_report_teststatus(report, config):
     if report.when == "teardown":
         return None
-    if dict(report.user_properties).get("bat_status") == Status.UNVERIFIED.value:
-        return "unverified", "U", "UNVERIFIED"
-    return None
+    return _TESTSTATUS.get(dict(getattr(report, "user_properties", None) or []).get("bat_status"))
 
 
 def pytest_terminal_summary(terminalreporter):
-    reports = terminalreporter.stats.get("unverified", [])
-    if not reports:
-        return
-    terminalreporter.section("BAT UNVERIFIED (not a pass)")
-    for report in reports:
-        reason = dict(report.user_properties).get("bat_reason", "")
-        terminalreporter.line(f"UNVERIFIED {report.nodeid} - {reason}")
+    for category, title in (("warn", "BAT WARN (not a rollback)"), ("unverified", "BAT UNVERIFIED (not a pass)"),
+                            ("bat_error", "BAT_ERROR (test tool / environment, not the product)")):
+        reports = terminalreporter.stats.get(category, [])
+        if not reports:
+            continue
+        terminalreporter.section(title)
+        for report in reports:
+            props = dict(report.user_properties)
+            terminalreporter.line(f"{props.get('bat_status')} {report.nodeid} - {props.get('bat_reason', '')}")
 
 
 @pytest.hookimpl(tryfirst=True)  # xdist가 그룹을 node id 접미사로 바꾸기 전에
@@ -496,6 +531,8 @@ def pytest_collection_finish(session):
     """
     if session.config.option.collectonly or os.environ.get("PYTEST_XDIST_WORKER", "gw0") != "gw0":
         return
+    if os.environ.get("BAT_PHASE", "main") != "main":  # 기준선·재확인은 본 실행의 계획을 덮지 않는다
+        return
     case_ids = [str(m.args[0]) for m in (i.get_closest_marker("case") for i in session.items) if m]
     if not case_ids:
         return
@@ -540,6 +577,12 @@ def pytest_sessionfinish(session, exitstatus):
         reporter.write_line(f"BAT leftover check: not confirmed, {line}", yellow=True)
     if not found:
         return
+    try:  # 실행 판정(gate)이 읽는다
+        context.report_dir.mkdir(parents=True, exist_ok=True)
+        (context.report_dir / f"leftovers-{os.environ.get('BAT_PHASE', 'main')}.json").write_text(
+            json.dumps(found, ensure_ascii=False, indent=1), encoding="utf-8")
+    except (OSError, AttributeError) as exc:
+        reporter.write_line(f"BAT leftover list not saved: {exc}", yellow=True)
     reporter.section("BAT resources this run left behind (the run fails)", red=True)
     for line in found:
         reporter.write_line(line, red=True)

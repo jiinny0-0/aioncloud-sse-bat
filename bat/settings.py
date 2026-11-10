@@ -202,7 +202,11 @@ class RunContext:
 
     @property
     def report_dir(self) -> Path:
-        return REPORTS_DIR / self.started_at.strftime("%Y-%m-%d") / self.run_id
+        # 날짜는 실행 id(YYYYMMDD-...)에서 딴다. 한 실행의 단계(시작 점검, 본 실행, 재확인)가 자정을
+        # 넘어도 같은 디렉터리에 쓴다.
+        day = self.run_id[:8]
+        date = f"{day[:4]}-{day[4:6]}-{day[6:]}" if day.isdigit() else self.started_at.strftime("%Y-%m-%d")
+        return REPORTS_DIR / date / self.run_id
 
     def workspace_for_lane(self, lane: str) -> Workspace:
         for workspace in self.workspaces:

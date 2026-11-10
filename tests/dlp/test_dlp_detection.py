@@ -83,6 +83,7 @@ def _post_url(case, run_context, host: str, label: str) -> str:
 @pytest.mark.case("BAT-DLP-001")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P0")
+@pytest.mark.gate
 @pytest.mark.critical
 @pytest.mark.smoke
 def test_keyword_detection_blocks_upload(
@@ -179,6 +180,7 @@ def test_regex_detection_blocks_upload(
 @pytest.mark.case("BAT-DLP-005")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P0")
+@pytest.mark.gate
 @pytest.mark.critical
 def test_clean_payload_passes(case, run_context, rest, web_policies, executor, web_log):
     """탐지 조건에 걸리지 않는 데이터는 정상 전송되고 이벤트도 남지 않는다.
@@ -393,6 +395,7 @@ def test_event_carries_enough_to_investigate(
 @pytest.mark.case("BAT-DLP-002")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P0")
+@pytest.mark.gate
 @pytest.mark.critical
 def test_predefined_rule_detects_card_number(
     case, run_context, rest, web_policies, executor, web_log

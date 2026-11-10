@@ -81,14 +81,16 @@ WRAP_FIELDS = {"scenario", "test_steps", "test_parameters", "test_data",
                "expected_results", "actual_results", "note"}
 # bat/verdict.py가 주는 상태에, (그 스테이지에서) 한 번도 안 돈 케이스용 미실행을 더했다.
 # FAIL이 먼저다. 이 파일을 여는 사람은 통과한 것보다 깨진 것을 먼저 보고 싶어 한다.
-STATUS_ORDER = {"FAIL": 0, "ERROR": 1, "UNVERIFIED": 2, "미실행": 3, "SKIP": 4, "PASS": 5}
-STATUSES = ["PASS", "FAIL", "UNVERIFIED", "ERROR", "SKIP", "미실행"]
+STATUS_ORDER = {"FAIL": 0, "WARN": 1, "BAT_ERROR": 2, "UNVERIFIED": 3, "미실행": 4, "SKIP": 5, "PASS": 6}
+STATUSES = ["PASS", "FAIL", "WARN", "UNVERIFIED", "BAT_ERROR", "SKIP", "미실행"]
 NOT_RUN = "미실행"
+LEGACY_STATUS = {"ERROR": "BAT_ERROR"}
 STATUS_COLORS = {  # 채우기, 글꼴
     "PASS": ("C6EFCE", "006100"),
     "FAIL": ("FFC7CE", "9C0006"),
+    "WARN": ("FCE4D6", "C65911"),
     "UNVERIFIED": ("DDEBF7", "1F4E78"),
-    "ERROR": ("F4B084", "833C0B"),
+    "BAT_ERROR": ("F4B084", "833C0B"),
     "SKIP": ("FFEB9C", "9C6500"),
     "미실행": ("D9D9D9", "404040"),
 }
@@ -178,6 +180,7 @@ def _all_cases(tests_dir: Path) -> list[dict[str, Any]]:
                 "scenario": doc.splitlines()[0] if doc else node.name,
                 "scope": next((s for s in SCOPE_NOTES if s in marks), ""),
                 "parked": "parked" in marks or "parked" in module,
+                "gate": "gate" in marks,
             })
     return cases
 
@@ -215,6 +218,8 @@ def read_book(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
     rows = []
     for values in ws.iter_rows(min_row=2, values_only=True):
         row = {k: (v if v is not None else "") for k, v in zip(keys, values) if k}
+        for key in [k for k in row if k == "status" or k.endswith("_status")]:
+            row[key] = LEGACY_STATUS.get(row[key], row[key])  # 예전 ERROR -> BAT_ERROR
         if row.get("case_id"):
             rows.append({h: row.get(h, absent.get(h, "")) for h in headers})
     return rows, stages
@@ -366,6 +371,26 @@ def _build_summary_sheet(wb, rows: list[dict], stages: list[str]) -> None:
         ws.column_dimensions[ws.cell(row=1, column=j).column_letter].width = 11
 
 
+def _build_legend_sheet(wb) -> None:
+    """상태를 처음 보는 사람을 위한 범례: 상태마다 뜻과 롤백 여부."""
+    from openpyxl.styles import Font
+
+    from bat.verdict import STATUS_MEANINGS
+
+    ws = wb.create_sheet("범례")
+    ws.cell(row=1, column=1, value="Status").font = Font(name=FONT_NAME, bold=True)
+    ws.cell(row=1, column=2, value="의미").font = Font(name=FONT_NAME, bold=True)
+    for r, status in enumerate(STATUSES, start=2):
+        cell = ws.cell(row=r, column=1, value=status)
+        _paint(cell, status)
+        ws.cell(row=r, column=2, value=STATUS_MEANINGS["ko"].get(status, status)).font = Font(name=FONT_NAME)
+    note = len(STATUSES) + 3
+    ws.cell(row=note, column=1, value="Priority P0 = gate 케이스(FAIL이 나올 수 있는, 배포 롤백 판정 대상). "
+                                       "그 밖의 케이스는 실패해도 최대 WARN이다.").font = Font(name=FONT_NAME)
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 70
+
+
 def write_rows(rows: list[dict[str, Any]], path: Path, stages: list[str] | None = None) -> Path:
     """`rows`로 엑셀 전체를 다시 만든다.
 
@@ -379,6 +404,7 @@ def write_rows(rows: list[dict[str, Any]], path: Path, stages: list[str] | None 
     wb = Workbook()
     _build_cases_sheet(wb, rows, stages)
     _build_summary_sheet(wb, rows, stages)
+    _build_legend_sheet(wb)
     wb.calculation.fullCalcOnLoad = True
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -454,7 +480,9 @@ def sync_catalog(directory: Path = REPORTS_DIR, tests_dir: Path = TESTS_DIR) -> 
 
 
 def _apply_result(row: dict[str, Any], stage: str, case: dict[str, Any], run_id: str) -> None:
-    row[status_key(stage)] = case.get("status") or ""
+    from bat.verdict import current_status
+
+    row[status_key(stage)] = current_status(case.get("status"))
     row[run_key(stage)] = run_id
     for key in ("product", "priority", "scenario"):
         if not row.get(key) and case.get(key):

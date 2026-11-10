@@ -6,7 +6,7 @@
 없으면 연결된 터널의 interface에서 같은 방법으로. 그 페이지의 <title>, 콘솔이 붙인 도메인
 (커넥터가 직접 답하는 이름), 같은 포트로 열리는 다른 서버도 찾는다. 스테이지 블록의 `ztna:`
 (server_ip, domain, port, page_text, other_ip)와 `ztna_tunnel:`(name, port, page_text)에 적힌
-값이 있으면 그 값이 우선이다. 둘 다 열리는 서버가 없으면 실행 조건 미비(ERROR)다.
+값이 있으면 그 값이 우선이다. 둘 다 열리는 서버가 없으면 실행 조건 미비(BAT_ERROR)다.
 
 BAT가 만드는 접근제어는 우선순위 0으로 올려 콘솔에서 만든 항목보다 먼저 매칭되게 한다.
 같은 서버를 콘솔 항목이 이미 열어 두었을 수 있어서, 접속이 된다는 것만으로는 BAT 규칙이
@@ -35,6 +35,7 @@ from bat.settings import ZtnaTarget, ZtnaTunnelTarget
 from bat.clients.errors import EndpointError
 from bat.traffic.http import BLOCK_STATUS_CODES, is_delivered_status, resolve_ip
 from tests.support import (
+    block_page_rule,
     cleanup_failed,
     describe,
     endpoint_device_id,
@@ -425,7 +426,8 @@ def _device(lane, executor) -> str:
 
 @pytest.mark.case("BAT-ZTNA-009")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
-@pytest.mark.priority("P1")
+@pytest.mark.priority("P0")
+@pytest.mark.gate
 @pytest.mark.smoke
 def test_domain_access_control_opens_the_internal_server(
     case, run_context, lane, executor, ztna_target, access_controls, access_policies, ztna_log
@@ -615,10 +617,20 @@ def test_ip_access_control_block_stays_on_its_ip(
                         if e.raw.get("access_control_name") == control_name
                         and str(e.raw.get("dst_ip") or "").startswith(f"{target.other_ip}:")
                     ]
+                    named = block_page_rule(body) if traffic.blocked else ""
                     case.record(
                         Step.EVENT, ok=bool(rows), kind=Kind.EVIDENCE,
-                        detail=f"{len(rows)} row(s) of {control_name} for {target.other_ip}",
+                        detail=f"{len(rows)} row(s) of {control_name} for {target.other_ip}; "
+                        f"block page names {named or '(no rule name)'}",
                     )
+                    # 다른 서버가 막혔어도 BAT 규칙이 막았다는 근거(차단 페이지의 규칙 이름이나 그
+                    # 규칙의 로그)가 없으면 제품이 범위를 넘었다고 단정할 수 없다.
+                    if traffic.blocked and not _blocked_by(control_name)(traffic, body) and not rows:
+                        unverified(
+                            case, Step.USER_RESULT,
+                            f"{other} answered {describe(traffic)}, but neither the block page "
+                            f"(names {named or 'no rule'}) nor the ZTNA log ties it to {control_name}",
+                        )
                 expect_delivered(
                     case, traffic, expected=f"{other} still opens",
                     failure=f"{control_name} names only {target.server_ip} but also blocked {other}",

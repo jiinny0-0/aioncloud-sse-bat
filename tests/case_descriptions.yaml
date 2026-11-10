@@ -5,6 +5,8 @@
 # en: 아래에는 BAT_REPORT_LANG=en일 때 쓰는 영어판을 같은 키로 둔다. scenario는 영어판에만
 # 있다(한국어는 테스트 docstring 첫 줄). 한국어를 고치면 en도 같이 고친다. 빠진 키는 한국어로
 # 대체되고 결과 CSV를 쓸 때 경고가 남는다(selfcheck가 누락을 확인한다).
+# 단계의 "FAIL"은 기대와 다르다는 뜻이다. 최종 상태는 판정 체계가 정한다: gate 케이스(Priority P0)만
+# FAIL이 될 수 있고, 그 밖의 케이스·일부 대상만 실패·이벤트만 실패·재확인 PASS는 WARN이다.
 
 BAT-BASIC-001:
   test_steps: |-
@@ -34,8 +36,9 @@ BAT-BASIC-002:
     3. web_policies.temporary()로 action_type=BLOCK인 웹 정책을 임시 생성
     4. 생성된 policy_id를 case.policy_ids에 기록
     5. web_policies.get()으로 생성한 정책을 재조회
-    6. 조회된 name/action_type/enable이 요청한 값과 일치하는지 비교
+    6. 조회된 name/action_type/enable이 요청한 값과 일치하는지 비교(다르면 WARN)
     7. with 블록 종료 시 정책 자동 삭제(temporary 컨텍스트)
+    8. 생성이나 재조회 자체가 API에서 거부되면 FAIL(관리 불가), 401/403은 BAT_ERROR
   test_parameters: |-
     Subject: HTTP_HOST
     Condition: IS
@@ -51,8 +54,9 @@ BAT-BASIC-002:
       3. Temporarily create a web policy with action_type=BLOCK via web_policies.temporary()
       4. Record the created policy_id in case.policy_ids
       5. Re-read the created policy with web_policies.get()
-      6. Compare the read name/action_type/enable with the requested values
+      6. Compare the read name/action_type/enable with the requested values (WARN if they differ)
       7. The policy is deleted automatically when the with block ends (temporary context)
+      8. FAIL (management broken) if the API rejects the creation or the read-back itself; 401/403 is BAT_ERROR
     test_parameters: |-
       Subject: HTTP_HOST
       Condition: IS
@@ -63,7 +67,7 @@ BAT-BASIC-002:
 BAT-BASIC-003:
   test_steps: |-
     1. web_log.security_events(lookback_min=1440)으로 최근 24시간 보안 이벤트 조회
-    2. 이벤트가 0건이면 실행 조건 미비로 ERROR 처리(트래픽 부재로 스키마 검증 불가)
+    2. 이벤트가 0건이면 실행 조건 미비로 BAT_ERROR 처리(트래픽 부재로 스키마 검증 불가)
     3. 가장 최신 이벤트(raw)에서 필수 필드(id, time, policy_name, action) 존재 여부 확인
     4. 누락 필드가 없는지 검증
   test_parameters: |-
@@ -75,7 +79,7 @@ BAT-BASIC-003:
     scenario: The security log API can be queried and contains the required fields.
     test_steps: |-
       1. Query security events of the last 24 hours with web_log.security_events(lookback_min=1440)
-      2. If there are 0 events, treat it as an unmet execution condition and mark ERROR (the schema cannot be verified without traffic)
+      2. If there are 0 events, treat it as an unmet execution condition and mark BAT_ERROR (the schema cannot be verified without traffic)
       3. Check that the required fields (id, time, policy_name, action) exist in the latest event (raw)
       4. Verify that no field is missing
     test_parameters: |-
@@ -158,6 +162,89 @@ BAT-BASIC-006:
       POST /sia/v1/web/policy {name:"BAT-BASIC-006-probe-...", action_type:BLOCK, users:[0], rule: HTTP_HOST IS bat-probe.invalid}
       POST /sia/v1/user {login_id:"bat-bas-006-...@bat.local", role:"USER"}
     expected_results: With the connector running, management API write requests are not intercepted by SSE and reach the API.
+BAT-BASIC-007:
+  test_steps: |-
+    1. 콘솔 웹(console_url)에 GET
+    2. REST(Open API) GET /sia/v1/user/group/list (토큰이 없으면 인증 없이 서버 응답만 확인)
+    3. 콘솔 GraphQL에 가벼운 조회(캐시된 세션), 세션이 없으면 로그인
+    4. 하나라도 연결 실패·타임아웃·HTTP 5xx면 서버 다운으로 FAIL(롤백), 401/403·설정 누락이면 BAT_ERROR
+    5. 재확인 뒤에도 FAIL이면 나머지 케이스는 돌리지 않음
+  test_parameters: |-
+    실행 시점: 실행 처음(run_start), 다른 케이스보다 먼저
+    대상: console_url, rest_base_url, graphql_url
+  test_data: 'REST: GET /sia/v1/user/group/list?offset=1&limit=1, GraphQL: { SIA { common { browser_info { id } } } }'
+  expected_results: 콘솔 웹·Open API·콘솔 GraphQL 서버가 모두 응답한다.
+  actual_result: 콘솔·관리 API 서버가 응답하지 않음(서버 다운)
+  en:
+    scenario: The console web, Open API (REST) and console GraphQL servers answer (a server down means rollback).
+    test_steps: |-
+      1. GET the console web (console_url)
+      2. REST (Open API) GET /sia/v1/user/group/list (without a token, only check that the server answers)
+      3. A light query on the console GraphQL (cached session), or sign in when there is no session
+      4. FAIL as a server down (rollback) if any connection fails, times out or answers HTTP 5xx; BAT_ERROR for 401/403 or missing configuration
+      5. If it is still FAIL after the re-check, the other cases are not run
+    test_parameters: |-
+      When: at the start of the run (run_start), before every other case
+      Targets: console_url, rest_base_url, graphql_url
+    test_data: 'REST: GET /sia/v1/user/group/list?offset=1&limit=1, GraphQL: { SIA { common { browser_info { id } } } }'
+    expected_results: The console web, Open API and console GraphQL servers all answer.
+    actual_result: The console / management API servers do not answer (server down)
+BAT-BASIC-008:
+  test_steps: |-
+    1. 커넥터가 실행 중인지 확인(아니면 BAT_ERROR)
+    2. BAT 정책을 만들기 전에 ECHO_HOSTS 세 곳(https://<host>/get)에 curl 요청, 정상 응답이 올 때까지 최대 10초 재시도
+    3. 막히면 차단 페이지가 밝힌 규칙 이름을 기록
+    4. 전부 정상이면 PASS, 일부만 막히거나 닿지 않으면 WARN, 전부 막히거나 닿지 않으면 FAIL(다 막아버림)
+    5. 전부 막혔는데 차단 페이지가 BAT가 아닌 정책 이름을 밝히면 그 사용자 정책 탓이라 UNVERIFIED
+    6. 재확인 뒤에도 FAIL이면 나머지 케이스는 돌리지 않음
+  test_parameters: |-
+    실행 시점: 실행 처음(run_start), 서버 점검 다음
+    대상: ECHO_HOSTS (httpbin.org, postman-echo.com, httpbingo.org)
+  test_data: 'URL: https://<host>/get?bat=baseline-start-<run_id>'
+  expected_results: BAT 정책이 없는 상태에서 일반 대상 요청이 모두 정상 응답한다.
+  actual_result: BAT 정책이 없는데도 일반 대상 요청이 막히거나 닿지 않음
+  en:
+    scenario: At the start of the run, with no BAT policy in place, requests to ordinary targets answer normally (detects everything being blocked).
+    test_steps: |-
+      1. Check that the connector is running (BAT_ERROR if not)
+      2. Before creating any BAT policy, send curl requests to the three ECHO_HOSTS (https://<host>/get), retrying for up to 10 seconds until a normal answer comes back
+      3. If blocked, record the rule name the block page gives
+      4. PASS if all answer normally, WARN if only some are blocked or unreachable, FAIL if all are blocked or unreachable (everything blocked)
+      5. UNVERIFIED if all are blocked but the block page names a policy that is not BAT's (that user policy is the cause)
+      6. If it is still FAIL after the re-check, the other cases are not run
+    test_parameters: |-
+      When: at the start of the run (run_start), after the server check
+      Targets: ECHO_HOSTS (httpbin.org, postman-echo.com, httpbingo.org)
+    test_data: 'URL: https://<host>/get?bat=baseline-start-<run_id>'
+    expected_results: With no BAT policy in place, requests to ordinary targets all answer normally.
+    actual_result: Requests to ordinary targets are blocked or unreachable even with no BAT policy
+BAT-BASIC-009:
+  test_steps: |-
+    1. 커넥터가 실행 중인지 확인(아니면 BAT_ERROR)
+    2. 모든 케이스와 정책 정리가 끝난 뒤 ECHO_HOSTS 세 곳(https://<host>/get)에 curl 요청, 정상 응답이 올 때까지 정책 전파 시간(BAT_POLICY_TIMEOUT_SEC)+10초까지 재시도
+    3. 막히면 차단 페이지가 밝힌 규칙 이름을 기록
+    4. 전부 정상이면 PASS, 일부만 막히거나 닿지 않으면 WARN, 전부 막히거나 닿지 않으면 FAIL(정책 삭제 미반영)
+    5. 전부 막혔는데 차단 페이지가 BAT가 아닌 정책 이름을 밝히면 그 사용자 정책 탓이라 UNVERIFIED
+  test_parameters: |-
+    실행 시점: 실행 마지막(run_end), 모든 케이스와 정리 뒤
+    대상: ECHO_HOSTS (httpbin.org, postman-echo.com, httpbingo.org)
+  test_data: 'URL: https://<host>/get?bat=baseline-end-<run_id>'
+  expected_results: 모든 BAT 정책을 지운 뒤에도 일반 대상 요청이 모두 정상 응답한다.
+  actual_result: BAT 정책을 지운 뒤에도 일반 대상 요청이 막히거나 닿지 않음(정책 삭제 미반영)
+  en:
+    scenario: At the end of the run, after every BAT policy is deleted, requests to ordinary targets still answer normally (detects policy deletion not taking effect).
+    test_steps: |-
+      1. Check that the connector is running (BAT_ERROR if not)
+      2. After every case and policy cleanup, send curl requests to the three ECHO_HOSTS (https://<host>/get), retrying until a normal answer comes back for up to the policy propagation time (BAT_POLICY_TIMEOUT_SEC) + 10 seconds
+      3. If blocked, record the rule name the block page gives
+      4. PASS if all answer normally, WARN if only some are blocked or unreachable, FAIL if all are blocked or unreachable (policy deletion not applied)
+      5. UNVERIFIED if all are blocked but the block page names a policy that is not BAT's (that user policy is the cause)
+    test_parameters: |-
+      When: at the end of the run (run_end), after every case and cleanup
+      Targets: ECHO_HOSTS (httpbin.org, postman-echo.com, httpbingo.org)
+    test_data: 'URL: https://<host>/get?bat=baseline-end-<run_id>'
+    expected_results: After every BAT policy is deleted, requests to ordinary targets all answer normally.
+    actual_result: Requests to ordinary targets are still blocked or unreachable after the BAT policies were deleted (deletion not applied)
 BAT-CASB-001:
   test_steps: |-
     1. 전체 앱 In-App Control LOGGING 정책 생성
@@ -299,7 +386,7 @@ BAT-CASB-004:
 BAT-CASB-005:
   test_steps: |-
     1. SIA.casb.in_app_control 목록 조회
-    2. 조회가 답하면 통과(환경 점검, diagnostic). 조회 실패는 ERROR
+    2. 조회가 답하면 통과(환경 점검, diagnostic). 조회 실패는 BAT_ERROR
   test_parameters: |-
     product: casb
     lane: d
@@ -310,7 +397,7 @@ BAT-CASB-005:
     scenario: The CASB In-App Control policy list can be queried (environment check, not a security behavior).
     test_steps: |-
       1. Query the SIA.casb.in_app_control list
-      2. Pass if the query answers (environment check, diagnostic). A query failure is ERROR
+      2. Pass if the query answers (environment check, diagnostic). A query failure is BAT_ERROR
     test_parameters: |-
       product: casb
       lane: d
@@ -1767,7 +1854,7 @@ BAT-X-009:
     expected_results: Even if GenAI prompt/page blocking does not work in this environment, a web policy that blocks chatgpt.com alone must end the real page load in a block page and leave an event targeting that host in the web security log.
 BAT-X-010:
   test_steps: |-
-    1. GenAI 대상 앱(chatgpt)이 카탈로그에 있는지 확인한다(없으면 ERROR).
+    1. GenAI 대상 앱(chatgpt)이 카탈로그에 있는지 확인한다(없으면 BAT_ERROR).
     2. (평범한 하루) ALLOW_TARGET_URL(https://www.iana.org/)을 브라우저로 방문해 아무것도 막혀 있지 않음을 확인한다.
     3. (민감정보 업로드) 'bat-token' 키워드 룰의 DLP 정책과, 이를 참조하는 DLP_POLICY 웹 BLOCK 정책(risk_level=MAJOR)을 생성한다.
     4. 토큰이 포함된 POST 페이로드로 POST_TARGET_URL(https://httpbin.org/post)에 curl 요청을 보내 차단되는지 확인한다.
@@ -1786,7 +1873,7 @@ BAT-X-010:
   en:
     scenario: While browsing normally, uploading sensitive data, visiting a risky SaaS app and using GenAI are each caught in turn.
     test_steps: |-
-      1. Confirm the GenAI target app (chatgpt) is in the catalog (ERROR if not).
+      1. Confirm the GenAI target app (chatgpt) is in the catalog (BAT_ERROR if not).
       2. (Ordinary day) Visit ALLOW_TARGET_URL (https://www.iana.org/) with the browser and confirm nothing is blocked.
       3. (Sensitive data upload) Create a DLP policy with a 'bat-token' keyword rule and a DLP_POLICY web BLOCK policy that references it (risk_level=MAJOR).
       4. Send a curl request to POST_TARGET_URL (https://httpbin.org/post) with a POST payload containing the token and confirm it is blocked.
@@ -1980,7 +2067,7 @@ BAT-ZTNA-008:
     expected_results: The query works in some shape
 BAT-ZTNA-009:
   test_steps: |-
-    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR). 도메인이 없으면 ERROR
+    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 BAT_ERROR). 도메인이 없으면 BAT_ERROR
     2. 전체 사용자 LOGGING 접근정책을 만든다
     3. 찾은 도메인과 포트로 접근제어를 만들어 그 정책을 연결하고 우선순위를 0으로 올린다
     4. 커넥터 단말에서 <scheme>://<domain>:<port>/ 요청
@@ -1995,7 +2082,7 @@ BAT-ZTNA-009:
   en:
     scenario: With an access control registered by domain, the internal server page (behind a gateway or a tunnel) opens from the connector, and that access is recorded in the ZTNA log under the BAT rule name.
     test_steps: |-
-      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; ERROR if not found). ERROR if there is no domain
+      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; BAT_ERROR if not found). BAT_ERROR if there is no domain
       2. Create an all-users LOGGING access policy
       3. Create an access control with the found domain and port, attach that policy to it, and raise the priority to 0
       4. Request <scheme>://<domain>:<port>/ from the connector endpoint
@@ -2009,8 +2096,8 @@ BAT-ZTNA-009:
     actual_result: The internal server page did not open, or the ZTNA log has no access record under the BAT rule name
 BAT-ZTNA-010:
   test_steps: |-
-    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR). 도메인이 없으면 ERROR
-    1-1. 규칙 없이 <scheme>://<domain>:<port>/ 이 열리는지 확인(안 열리면 ERROR)
+    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 BAT_ERROR). 도메인이 없으면 BAT_ERROR
+    1-1. 규칙 없이 <scheme>://<domain>:<port>/ 이 열리는지 확인(안 열리면 BAT_ERROR)
     2. 전체 사용자 BLOCK 접근정책을 만든다
     3. 도메인 접근제어를 만들어 그 정책을 연결하고 우선순위를 0으로 올린다
     4. 도메인과 서버 IP로 각각 요청해 "blocked by <접근제어 이름>" 차단 페이지 확인
@@ -2026,8 +2113,8 @@ BAT-ZTNA-010:
   en:
     scenario: When a BLOCK access policy is attached to a domain access control, only that server (behind a gateway or a tunnel) is blocked, by both domain and IP, and it opens again once removed.
     test_steps: |-
-      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; ERROR if not found). ERROR if there is no domain
-      1-1. Confirm <scheme>://<domain>:<port>/ opens without a rule (ERROR if it does not open)
+      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; BAT_ERROR if not found). BAT_ERROR if there is no domain
+      1-1. Confirm <scheme>://<domain>:<port>/ opens without a rule (BAT_ERROR if it does not open)
       2. Create an all-users BLOCK access policy
       3. Create a domain access control, attach that policy to it, and raise the priority to 0
       4. Request by domain and by server IP respectively and confirm the "blocked by <access control name>" block page
@@ -2042,7 +2129,7 @@ BAT-ZTNA-010:
     actual_result: The BLOCK of the domain access control did not block that server, or blocked other servers too, or it did not open again after deletion
 BAT-ZTNA-011:
   test_steps: |-
-    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR)
+    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 BAT_ERROR)
     1-1. 전체 사용자 LOGGING 접근정책을 만든다
     2. IP(server_ip:port)로 접근제어를 만들어 그 정책을 연결하고 우선순위를 0으로 올린다
     3. 커넥터 단말에서 <scheme>://<server_ip>:<port>/ 요청
@@ -2057,7 +2144,7 @@ BAT-ZTNA-011:
   en:
     scenario: With an access control registered by IP, the internal server IP (behind a gateway or a tunnel) is reached from the connector, and that access is recorded in the ZTNA log under the BAT rule name.
     test_steps: |-
-      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; ERROR if not found)
+      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; BAT_ERROR if not found)
       1-1. Create an all-users LOGGING access policy
       2. Create an access control by IP (server_ip:port), attach that policy to it, and raise the priority to 0
       3. Request <scheme>://<server_ip>:<port>/ from the connector endpoint
@@ -2071,8 +2158,8 @@ BAT-ZTNA-011:
     actual_result: The internal server IP did not open, or the ZTNA log has no access record under the BAT rule name
 BAT-ZTNA-012:
   test_steps: |-
-    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR). 다른 서버가 없으면 ERROR
-    1-1. 규칙 없이 그 다른 서버(other_ip)가 열리는지 확인(안 열리면 ERROR)
+    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 BAT_ERROR). 다른 서버가 없으면 BAT_ERROR
+    1-1. 규칙 없이 그 다른 서버(other_ip)가 열리는지 확인(안 열리면 BAT_ERROR)
     2. 전체 사용자 BLOCK 접근정책을 만든다
     3. 도메인 없이 IP(server_ip:port)만으로 접근제어를 만들어 연결하고 우선순위를 0으로 올린다
     4. server_ip가 "blocked by <접근제어 이름>"으로 차단되는지 확인
@@ -2087,8 +2174,8 @@ BAT-ZTNA-012:
   en:
     scenario: When BLOCK is attached to an access control registered by IP only, only that IP is blocked, and another internal server on the same port opens.
     test_steps: |-
-      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; ERROR if not found). ERROR if there is no other server
-      1-1. Confirm that other server (other_ip) opens without a rule (ERROR if it does not open)
+      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; BAT_ERROR if not found). BAT_ERROR if there is no other server
+      1-1. Confirm that other server (other_ip) opens without a rule (BAT_ERROR if it does not open)
       2. Create an all-users BLOCK access policy
       3. Create an access control with only the IP (server_ip:port), without a domain, attach it, and raise the priority to 0
       4. Confirm server_ip is blocked with "blocked by <access control name>"
@@ -2102,8 +2189,8 @@ BAT-ZTNA-012:
     actual_result: The access control with only an IP does not look at the IP and matches by port alone, so another internal server on the same port (192.168.3.227:80) was also blocked under that rule name
 BAT-ZTNA-013:
   test_steps: |-
-    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR)
-    1-1. 그 서버(게이트웨이 서버 또는 터널 interface)에 콘솔이 등록한 도메인을 읽는다(없으면 ERROR)
+    1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 BAT_ERROR)
+    1-1. 그 서버(게이트웨이 서버 또는 터널 interface)에 콘솔이 등록한 도메인을 읽는다(없으면 BAT_ERROR)
     2. 단말에서 그 도메인을 조회해 커넥터가 server_ip로 답하는지 확인
     3. 전체 사용자 LOGGING 접근정책을 만든다
     4. 그 도메인으로 접근제어를 만들어 연결하고 우선순위를 0으로 올린다
@@ -2119,8 +2206,8 @@ BAT-ZTNA-013:
   en:
     scenario: The domain registered on a gateway server (or tunnel interface) resolves to that IP on the connector so the page opens in the browser and with curl, and an access control made with that domain records the access.
     test_steps: |-
-      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; ERROR if not found)
-      1-1. Read the domain the console registered for that server (gateway server or tunnel interface) (ERROR if none)
+      1. From the gateway server list (servers with a console domain first, then in id order), or from the interfaces of a connected tunnel when no gateway server opens, find the server and port where a web port (80/8080/8000/443/8443/3000/5000) first opens without any rule, that page's <title>, the domain the console attached to that server, and another server that opens on the same port (a value written in the stage ztna/ztna_tunnel setting takes priority; BAT_ERROR if not found)
+      1-1. Read the domain the console registered for that server (gateway server or tunnel interface) (BAT_ERROR if none)
       2. Look up that domain on the endpoint and confirm the connector answers with server_ip
       3. Create an all-users LOGGING access policy
       4. Create an access control with that domain, attach it, and raise the priority to 0
@@ -2135,7 +2222,7 @@ BAT-ZTNA-013:
     expected_results: The domain registered in the console resolves to that server's IP on the connector, the internal server page opens in both the browser and curl, and the access is left in the ZTNA log under the BAT rule name
 BAT-ZTNA-014:
   test_steps: |-
-    1. 이번 실행 전용 도메인(bat-<run_id>.tunnel.internal)이 단말에서 안 풀리는지 확인(풀리면 ERROR)
+    1. 이번 실행 전용 도메인(bat-<run_id>.tunnel.internal)이 단말에서 안 풀리는지 확인(풀리면 BAT_ERROR)
     2. 그 도메인과 192.0.2.10으로 터널을 등록한다(커넥터 설치 안 함)
     3. 터널이 연결 안 됨(connect_status false)으로 보이고, 인증 파일이 이 워크스페이스용이며 access_id가 있는지 확인
     4. 단말에서 그 도메인이 192.0.2.10으로 풀리는지 확인(커넥터 설정 반영)
@@ -2149,7 +2236,7 @@ BAT-ZTNA-014:
   en:
     scenario: When a tunnel without an installed connector is registered, its domain resolves to the tunnel address on the endpoint but the connection does not succeed, and the name disappears once it is deleted.
     test_steps: |-
-      1. Confirm the domain dedicated to this run (bat-<run_id>.tunnel.internal) does not resolve on the endpoint (ERROR if it resolves)
+      1. Confirm the domain dedicated to this run (bat-<run_id>.tunnel.internal) does not resolve on the endpoint (BAT_ERROR if it resolves)
       2. Register a tunnel with that domain and 192.0.2.10 (no connector installed)
       3. Confirm the tunnel shows as not connected (connect_status false), and that the auth file is for this workspace and has an access_id
       4. Confirm that domain resolves to 192.0.2.10 on the endpoint (connector settings applied)

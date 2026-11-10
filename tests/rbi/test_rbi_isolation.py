@@ -54,7 +54,7 @@ def rb_options_shape() -> dict:
 def test_rbi_policies_are_readable(case, console):
     """RBI 정책 목록을 조회할 수 있다(환경 점검, 보안 동작이 아님).
 
-    조회가 오류 없이 답하면 통과다. 조회가 실패하면 예외로 ERROR가 된다.
+    조회가 오류 없이 답하면 통과다. 조회가 실패하면 예외로 BAT_ERROR가 된다.
     """
     from bat.fixtures.graphql_policies import RbiPolicyReader
 
@@ -73,7 +73,7 @@ def test_rbi_policies_are_readable(case, console):
 
 @pytest.mark.case("BAT-RBI-001")
 @pytest.mark.verifies(Step.USER_RESULT)
-@pytest.mark.priority("P0")
+@pytest.mark.priority("P1")
 @pytest.mark.critical
 def test_specific_website_rule_isolates_the_site(
     case, run_context, rbi_policies, browser_session, rb_options_shape

@@ -53,6 +53,7 @@ pytestmark = [
 @pytest.mark.case("BAT-SWG-001")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P0")
+@pytest.mark.gate
 @pytest.mark.critical
 @pytest.mark.smoke
 def test_http_host_block(case, run_context, web_policies, browser_session, web_log):
@@ -105,6 +106,7 @@ def test_http_host_block(case, run_context, web_policies, browser_session, web_l
 @pytest.mark.case("BAT-SWG-002")
 @pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
 @pytest.mark.priority("P0")
+@pytest.mark.gate
 @pytest.mark.critical
 def test_non_matching_host_allowed(case, run_context, web_policies, browser_session, web_log):
     """정책에 매칭되지 않는 사이트는 정상 접속되고 보안 로그가 남지 않는다.
@@ -373,7 +375,7 @@ def test_host_block_matches_the_hostname_not_the_raw_ip(
                 failure=f"A policy on HTTP_HOST {BLOCK_TARGET_HOST} also blocked the raw-IP request {ip_url}",
             )
             # 판정할 검사는 모두 끝났다. 뒤따르는 것은 근거만 더하므로, 거기서 남은
-            # LOGGING 정책은 ERROR가 아니라 정리 경고다.
+            # LOGGING 정책은 BAT_ERROR가 아니라 정리 경고다.
             pass_case(case)
             if by_ip.delivered:
                 _record_raw_ip_reach(

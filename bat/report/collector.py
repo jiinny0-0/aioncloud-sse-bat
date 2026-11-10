@@ -12,7 +12,7 @@ from typing import Any
 
 from bat.models import CaseResult, Status
 from bat.report.redact import redact
-from bat.verdict import counts_against_run
+from bat.verdict import STATUS_MEANINGS, current_status
 
 log = logging.getLogger(__name__)
 
@@ -45,10 +45,19 @@ class ResultCollector:
         self.report_dir = report_dir
         self.run_id = run_id
         self.profile = profile
-        self.started_at = datetime.now()
+        self.started_at = self._run_started_at(report_dir) or datetime.now()
         self._results: list[CaseResult] = []
         self._lock = threading.Lock()
         self.report_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _run_started_at(report_dir: Path) -> datetime | None:
+        """같은 실행의 앞 단계(시작 점검, 본 실행, 재확인)가 이미 리포트를 썼으면 그 시작 시각."""
+        try:
+            meta = json.loads((report_dir / "run-report.json").read_text(encoding="utf-8"))
+            return datetime.fromisoformat(meta["started_at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
 
     def add(self, result: CaseResult) -> None:
         with self._lock:
@@ -78,7 +87,7 @@ class ResultCollector:
 
     @staticmethod
     def totals_of(cases: list[dict[str, Any]]) -> Counter:
-        return Counter(case["status"] for case in cases)
+        return Counter(current_status(case["status"]) for case in cases)
 
     @staticmethod
     def by_product_of(cases: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
@@ -121,12 +130,13 @@ class ResultCollector:
         json_path = self.report_dir / "run-report.json"
         json_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
         (self.report_dir / "human-summary.md").write_text(
-            self._render_markdown(meta), encoding="utf-8"
+            self.render_markdown(meta), encoding="utf-8"
         )
         log.info("Report written to %s", self.report_dir)
         return json_path
 
-    def _render_markdown(self, meta: dict[str, Any]) -> str:
+    @staticmethod
+    def render_markdown(meta: dict[str, Any]) -> str:
         totals = meta["totals"]
         duration_sec = meta["duration_sec"]
         minutes, seconds = divmod(int(duration_sec), 60)
@@ -137,12 +147,24 @@ class ResultCollector:
             f"Run      : {meta['run_id']}",
             f"Profile  : {meta['profile']}",
             f"Total    : {sum(totals.values())}",
-            f"Passed   : {totals.get('PASS', 0)}",
-            f"Failed   : {totals.get('FAIL', 0)}",
-            f"Unverified: {totals.get('UNVERIFIED', 0)}",
-            f"Skipped  : {totals.get('SKIP', 0)}",
-            f"Errors   : {totals.get('ERROR', 0)}",
+            f"PASS      : {totals.get('PASS', 0)}",
+            f"FAIL      : {totals.get('FAIL', 0)}",
+            f"WARN      : {totals.get('WARN', 0)}",
+            f"UNVERIFIED: {totals.get('UNVERIFIED', 0)}",
+            f"SKIP      : {totals.get('SKIP', 0)}",
+            f"BAT_ERROR : {totals.get('BAT_ERROR', 0) + totals.get('ERROR', 0)}",
             f"Duration : {minutes}m {seconds:02d}s",
+            "",
+        ]
+        gate = meta.get("gate")
+        if gate:
+            lines += [f"## Gate: {gate.get('verdict')}", ""]
+            lines += [f"- {reason}" for reason in gate.get("reasons") or []]
+            lines.append("")
+        lines += [
+            "## Status meanings",
+            "",
+            *[f"- {text}" for key, text in STATUS_MEANINGS["ko"].items() if key != "미실행"],
             "",
             "## By product",
             "",
@@ -156,7 +178,7 @@ class ResultCollector:
         failures = [
             case
             for case in meta["cases"]
-            if case["status"] in ("FAIL", "ERROR")
+            if current_status(case["status"]) in ("FAIL", "WARN", "BAT_ERROR")
         ]
         if failures:
             lines += ["", "## Failures", ""]
@@ -164,7 +186,8 @@ class ResultCollector:
                 lines += [
                     f"### {case['case_id']} — {case['scenario']}",
                     "",
-                    f"- Status       : {case['status']}",
+                    f"- Status       : {current_status(case['status'])}" + (" (gate)" if case.get("gate") else ""),
+                    f"- Reason       : {case.get('verdict_reason') or '-'}",
                     f"- Failure step : {case['failure_step'] or '-'}",
                     f"- Lane         : {case['lane']} / endpoint {case['endpoint'] or '-'}",
                     f"- Workspace    : {case['workspace']}",
@@ -180,13 +203,15 @@ class ResultCollector:
                         )
                 if case["artifacts"]:
                     lines.append(f"- Artifacts    : {', '.join(case['artifacts'])}")
+                for number, attempt in enumerate(case.get("attempts") or [], start=1):
+                    lines.append(f"- Attempt {number}    : {attempt.get('status')} — {attempt.get('verdict_reason') or '-'}")
                 lines.append("")
 
         unverified = [case for case in meta["cases"] if case["status"] == "UNVERIFIED"]
         if unverified:
             lines += ["## Unverified (not a pass)", ""]
             for case in unverified:
-                label = "scenario" if counts_against_run(case) else "diagnostic"
+                label = "gate" if case.get("gate") else ("scenario" if case.get("criteria") else "diagnostic")
                 lines.append(
                     f"- {case['case_id']} [{label}] — {case.get('verdict_reason') or '-'}"
                 )

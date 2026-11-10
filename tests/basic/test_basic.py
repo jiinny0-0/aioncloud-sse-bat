@@ -21,6 +21,7 @@ from bat.fixtures.policies import CleanupWarning, WEB_POLICY_PATH, WebPolicyFact
 from bat.fixtures.testdata import ALLOW_TARGET_URL, BLOCK_TARGET_HOST
 from bat.events.web_log import all_of, matches_policy, matches_target
 from bat.models import Kind, Step
+from bat.verdict import MinorFailure
 from tests.support import (
     cleanup_failed,
     environment_error,
@@ -42,6 +43,7 @@ pytestmark = [
 @pytest.mark.case("BAT-BASIC-001")
 @pytest.mark.diagnostic
 @pytest.mark.priority("P0")
+@pytest.mark.gate
 @pytest.mark.critical
 @pytest.mark.smoke
 def test_api_token_is_accepted(case, rest):
@@ -64,9 +66,16 @@ def test_api_token_is_accepted(case, rest):
 @pytest.mark.case("BAT-BASIC-002")
 @pytest.mark.diagnostic
 @pytest.mark.priority("P0")
+@pytest.mark.gate
 @pytest.mark.critical
 def test_policy_can_be_written_and_read_back(case, run_context, web_policies):
-    """정책을 생성하면 저장된 내용이 요청한 그대로 조회된다."""
+    """정책을 생성하면 저장된 내용이 요청한 그대로 조회된다.
+
+    생성이나 조회 자체가 API에서 거부되면 관리가 안 되는 것이라 FAIL(gate)이고, 저장값 일부가
+    다른 것은 WARN이다. 인증 거부(401/403)는 BAT 쪽 문제라 BAT_ERROR로 둔다.
+    """
+    from bat.clients.errors import ApiError
+
     policy_name = resource_name(case.case_id, run_context.run_id)
     rule = WebPolicyFactory.build_rule(Subject.HTTP_HOST, Condition.IS, [BLOCK_TARGET_HOST])
 
@@ -96,15 +105,23 @@ def test_policy_can_be_written_and_read_back(case, run_context, web_policies):
                     "enable": stored.get("enable"),
                 },
             )
-            assert not mismatches, f"The stored policy differs from the request: {mismatches}"
+            if mismatches:
+                raise MinorFailure(f"The stored policy differs from the request: {mismatches}",
+                                   f"stored values differ in {sorted(mismatches)}")
             pass_case(case)
     except CleanupWarning as warning:
         cleanup_failed(case, warning)
+    except ApiError as exc:
+        if exc.status_code in (401, 403):
+            raise  # 토큰 문제: BAT_ERROR
+        case.record(Step.USER_RESULT, ok=False, kind=Kind.ASSERTION, detail=str(exc)[:300],
+                    expected="the API accepts the policy creation and read-back", actual=str(exc)[:300])
+        raise AssertionError(f"the policy could not be created or read back: {exc}") from exc
 
 
 @pytest.mark.case("BAT-BASIC-003")
 @pytest.mark.diagnostic
-@pytest.mark.priority("P0")
+@pytest.mark.priority("P1")
 @pytest.mark.critical
 def test_security_log_is_readable(case, web_log):
     """보안 로그 API가 조회 가능하고 필수 필드를 포함한다."""
@@ -139,7 +156,8 @@ def test_security_log_is_readable(case, web_log):
 
 @pytest.mark.case("BAT-BASIC-004")
 @pytest.mark.diagnostic
-@pytest.mark.priority("P1")
+@pytest.mark.priority("P0")
+@pytest.mark.gate
 def test_endpoint_is_behind_the_connector(
     case, run_context, executor, web_log, browser_session, web_policies
 ):
