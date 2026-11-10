@@ -167,7 +167,7 @@ BAT-BASIC-007:
     1. 콘솔 웹(console_url)에 GET
     2. REST(Open API) GET /sia/v1/user/group/list (토큰이 없으면 인증 없이 서버 응답만 확인)
     3. 콘솔 GraphQL에 가벼운 조회(캐시된 세션), 세션이 없으면 로그인
-    4. 하나라도 연결 실패·타임아웃·HTTP 5xx면 서버 다운으로 FAIL(롤백), 401/403·설정 누락이면 BAT_ERROR
+    4. 하나라도 연결 실패·타임아웃·HTTP 5xx면 서버 다운으로 FAIL, 401/403·설정 누락이면 BAT_ERROR
     5. 재확인 뒤에도 FAIL이면 나머지 케이스는 돌리지 않음
   test_parameters: |-
     실행 시점: 실행 처음(run_start), 다른 케이스보다 먼저
@@ -176,12 +176,12 @@ BAT-BASIC-007:
   expected_results: 콘솔 웹·Open API·콘솔 GraphQL 서버가 모두 응답한다.
   actual_result: 콘솔·관리 API 서버가 응답하지 않음(서버 다운)
   en:
-    scenario: The console web, Open API (REST) and console GraphQL servers answer (a server down means rollback).
+    scenario: The console web, Open API (REST) and console GraphQL servers answer (detects a server down).
     test_steps: |-
       1. GET the console web (console_url)
       2. REST (Open API) GET /sia/v1/user/group/list (without a token, only check that the server answers)
       3. A light query on the console GraphQL (cached session), or sign in when there is no session
-      4. FAIL as a server down (rollback) if any connection fails, times out or answers HTTP 5xx; BAT_ERROR for 401/403 or missing configuration
+      4. FAIL as a server down if any connection fails, times out or answers HTTP 5xx; BAT_ERROR for 401/403 or missing configuration
       5. If it is still FAIL after the re-check, the other cases are not run
     test_parameters: |-
       When: at the start of the run (run_start), before every other case

@@ -2893,7 +2893,7 @@ def test_result_book_has_only_the_published_columns(tmp_path):
     cases = [{"case_id": f"BAT-SWG-00{i}", "product": "swg", "scenario": f"s{i}"} for i in (1, 2, 3, 4)]
     rows = result_book.build_rows(statuses, cases, descriptions)
     assert [r["status"] for r in rows] == ["PASS", "FAIL", "FAIL", "미실행"]
-    assert [r["actual_result"] for r in rows] == ["차단된다", "차단되지 않음", "치명적으로 기대 결과와 다르게 동작함(롤백 사유)", "미실행"]
+    assert [r["actual_result"] for r in rows] == ["차단된다", "차단되지 않음", "기대 결과와 다르게 동작함(치명적 결함)", "미실행"]
     assert rows[3]["status_meaning"] == "미실행 - 이번 실행에서 돌지 않음"
     assert rows[0]["test_steps"] == "1. 요청" and rows[0]["expected_results"] == "차단된다"
 
@@ -3046,7 +3046,7 @@ def test_result_book_korean_output_is_unchanged(tmp_path):
     assert rows == result_book.build_rows(statuses, cases, descriptions, "ko")
     assert rows[0]["scenario"] == "한국어 시나리오 1" and rows[0]["actual_result"] == "차단된다"
     assert [r["actual_result"] for r in rows[1:]] == [
-        "치명적으로 기대 결과와 다르게 동작함(롤백 사유)", "치명적으로 기대 결과와 다르게 동작함(롤백 사유)",
+        "기대 결과와 다르게 동작함(치명적 결함)", "기대 결과와 다르게 동작함(치명적 결함)",
         "확인할 수단이나 근거가 없어 판정하지 못함",
         "대상 기능이 탐지하지 않아 판정에서 제외함", "미실행", "테스트 도구·실행 환경 문제로 판정하지 못함(제품 이슈 아님)",
         "미실행",
@@ -3080,7 +3080,7 @@ def test_result_book_in_english_keeps_status_values(tmp_path, monkeypatch, capsy
     # 번역이 없는 actual_result는 한국어로 대체된다.
     assert rows[1]["actual_result"] == "차단되지 않음"
     assert [r["actual_result"] for r in rows[2:]] == [
-        "Critically different from the expected result (rollback)",
+        "Behaved differently from the expected result (critical defect)",
         "Not judged: there was no means or evidence to verify the result",
         "Excluded from the verdict: the target feature did not detect it",
         "Not run", "Not judged because of a test tool / environment problem (not a product issue)", "Not run",
@@ -3102,7 +3102,7 @@ def test_result_book_in_english_keeps_status_values(tmp_path, monkeypatch, capsy
     with path.open(encoding="utf-8-sig", newline="") as f:
         table = list(csv.reader(f))
     assert table[0][2] == "Status" and [row[2] for row in table[1:]] == ["PASS", "FAIL", "FAIL"]
-    assert table[1][3] == "English scenario" and table[3][8] == "Critically different from the expected result (rollback)"
+    assert table[1][3] == "English scenario" and table[3][8] == "Behaved differently from the expected result (critical defect)"
     assert table[0][-1] == "Status Meaning" and table[1][-1] == "PASS - behaved as expected"
     warning = capsys.readouterr().err
     assert "no en text for 2 case(s), used Korean" in warning
@@ -4065,7 +4065,7 @@ def test_echo_with_a_bom_or_line_break_is_not_intact():
     assert echoed_file_intact(same, EICAR_LIKE) is True and echo_change(same, EICAR_LIKE) == ""
 
 
-# -- 배포 롤백 판정(gate) ------------------------------------------------------
+# -- 실행 판정(gate) ------------------------------------------------------
 
 GATE_CASES = {
     "BAT-BASIC-001", "BAT-BASIC-002", "BAT-BASIC-004", "BAT-BASIC-007", "BAT-BASIC-008", "BAT-BASIC-009",
@@ -4074,7 +4074,7 @@ GATE_CASES = {
 }
 
 
-def test_gate_cases_are_exactly_the_rollback_set_and_exactly_the_p0_cases():
+def test_gate_cases_are_exactly_the_gate_set_and_exactly_the_p0_cases():
     from bat.report import status_book
 
     cases = status_book._all_cases(status_book.TESTS_DIR)

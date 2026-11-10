@@ -43,16 +43,16 @@ COLUMNS = [
 # case_descriptions.yaml에 actual_result가 없을 때 쓴다.
 DEFAULT_ACTUAL = {
     "ko": {
-        "FAIL": "치명적으로 기대 결과와 다르게 동작함(롤백 사유)",
-        "WARN": "기대 결과와 다르게 동작함(롤백 대상 아님)",
+        "FAIL": "기대 결과와 다르게 동작함(치명적 결함)",
+        "WARN": "기대 결과와 다르게 동작함(확인 필요)",
         "UNVERIFIED": "확인할 수단이나 근거가 없어 판정하지 못함",
         "SKIP": "대상 기능이 탐지하지 않아 판정에서 제외함",
         "BAT_ERROR": "테스트 도구·실행 환경 문제로 판정하지 못함(제품 이슈 아님)",
         status_book.NOT_RUN: "미실행",
     },
     "en": {
-        "FAIL": "Critically different from the expected result (rollback)",
-        "WARN": "Behaved differently from the expected result (not a rollback)",
+        "FAIL": "Behaved differently from the expected result (critical defect)",
+        "WARN": "Behaved differently from the expected result (needs a look)",
         "UNVERIFIED": "Not judged: there was no means or evidence to verify the result",
         "SKIP": "Excluded from the verdict: the target feature did not detect it",
         "BAT_ERROR": "Not judged because of a test tool / environment problem (not a product issue)",

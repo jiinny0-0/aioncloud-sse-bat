@@ -1,10 +1,10 @@
 """서비스 점검: 서버 다운과 기준선("다 막아버림").
 
-배포 롤백 판정에서 가장 먼저 봐야 하는 두 가지다. `bat run`이 다른 케이스보다 먼저(run_start)
+배포 직후 가장 먼저 봐야 하는 두 가지다. `bat run`이 다른 케이스보다 먼저(run_start)
 그리고 모든 케이스와 정리가 끝난 뒤에(run_end) 따로 돌린다. --product로 일부 제품만 돌려도
 항상 돈다.
 
-BAT-BASIC-007  콘솔 웹·REST·GraphQL이 응답하는가. 연결 실패·타임아웃·5xx면 FAIL(롤백),
+BAT-BASIC-007  콘솔 웹·REST·GraphQL이 응답하는가. 연결 실패·타임아웃·5xx면 FAIL,
                인증·설정 문제면 BAT_ERROR.
 BAT-BASIC-008  실행 처음, BAT 정책이 없는 상태에서 일반 대상이 정상 응답하는가.
 BAT-BASIC-009  실행 마지막, 모든 BAT 정책을 지운 뒤에도 일반 대상이 정상 응답하는가.
@@ -63,7 +63,7 @@ RETRY_GAP_SEC = 3
 @pytest.mark.gate
 @pytest.mark.run_start
 def test_management_servers_answer(case, run_context, lane):
-    """콘솔 웹·Open API(REST)·콘솔 GraphQL 서버가 응답한다(서버 다운이면 롤백)."""
+    """콘솔 웹·Open API(REST)·콘솔 GraphQL 서버가 응답한다(서버 다운 감지)."""
     probes = probe_servers(run_context.profile, lane.workspace)
     for probe in probes:
         case.record(

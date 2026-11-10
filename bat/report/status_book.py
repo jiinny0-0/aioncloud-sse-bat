@@ -372,7 +372,7 @@ def _build_summary_sheet(wb, rows: list[dict], stages: list[str]) -> None:
 
 
 def _build_legend_sheet(wb) -> None:
-    """상태를 처음 보는 사람을 위한 범례: 상태마다 뜻과 롤백 여부."""
+    """상태를 처음 보는 사람을 위한 범례: 상태마다 뜻."""
     from openpyxl.styles import Font
 
     from bat.verdict import STATUS_MEANINGS
@@ -385,7 +385,7 @@ def _build_legend_sheet(wb) -> None:
         _paint(cell, status)
         ws.cell(row=r, column=2, value=STATUS_MEANINGS["ko"].get(status, status)).font = Font(name=FONT_NAME)
     note = len(STATUSES) + 3
-    ws.cell(row=note, column=1, value="Priority P0 = gate 케이스(FAIL이 나올 수 있는, 배포 롤백 판정 대상). "
+    ws.cell(row=note, column=1, value="Priority P0 = gate 케이스(FAIL이 나올 수 있는 핵심 케이스). "
                                        "그 밖의 케이스는 실패해도 최대 WARN이다.").font = Font(name=FONT_NAME)
     ws.column_dimensions["A"].width = 14
     ws.column_dimensions["B"].width = 70

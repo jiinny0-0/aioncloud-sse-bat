@@ -419,7 +419,7 @@ def pytest_runtest_makereport(item, call):
         if status is Status.SKIP:
             report.outcome = "skipped"
             report.longrepr = (str(item.path), item.location[1] or 0, reason)
-    # FAIL은 롤백할 만큼 치명적일 때만 남는다(gate 케이스, 전부 실패, 사용자 결과까지 틀림).
+    # FAIL은 치명적일 때만 남는다(gate 케이스, 전부 실패, 사용자 결과까지 틀림).
     status, reason = apply_gate(case_result, status, reason, minor=minor)
     if case_result.attempts:
         status, reason = merge_retry(case_result.attempts[0], status, reason)
@@ -464,7 +464,7 @@ def pytest_report_teststatus(report, config):
 
 
 def pytest_terminal_summary(terminalreporter):
-    for category, title in (("warn", "BAT WARN (not a rollback)"), ("unverified", "BAT UNVERIFIED (not a pass)"),
+    for category, title in (("warn", "BAT WARN (needs a look)"), ("unverified", "BAT UNVERIFIED (not a pass)"),
                             ("bat_error", "BAT_ERROR (test tool / environment, not the product)")):
         reports = terminalreporter.stats.get(category, [])
         if not reports:

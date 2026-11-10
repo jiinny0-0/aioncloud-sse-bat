@@ -1,4 +1,4 @@
-"""케이스의 상태와 실행 전체의 롤백 판정(gate)을 정하는 유일한 곳.
+"""케이스의 상태와 실행 전체의 판정(gate)을 정하는 유일한 곳.
 
 케이스 상태는 세 단계로 정한다.
 
@@ -14,7 +14,7 @@
    BAT_ERROR   제품이 아니라 BAT 도구·실행 환경 문제다. 실행 조건 미비(environment_error),
                인증·설정 오류, 테스트 코드의 예상하지 못한 예외, 완료를 주장하지 않은 본문.
 2. apply_known_issue: 사용자가 버그로 보지 않기로 한 증상의 FAIL은 SKIP이다.
-3. apply_gate: FAIL은 롤백할 만큼 치명적인 경우에만 남는다. gate 케이스가 아니거나,
+3. apply_gate: FAIL은 치명적인 경우에만 남는다. gate 케이스가 아니거나,
    일부 대상만 실패했거나(MinorFailure), 사용자 결과는 맞고 이벤트만 실패했으면 WARN이다.
    그 뒤 FAIL은 한 번 더 돌려 보고(merge_retry) 재확인에서도 FAIL일 때만 최종 FAIL이다.
 
@@ -35,8 +35,8 @@ _CRITERIA_VALUES = {step.value for step in CRITERIA_STEPS}
 STATUS_MEANINGS = {
     "ko": {
         "PASS": "PASS - 기대대로 동작",
-        "FAIL": "FAIL - 치명적 결함(배포 롤백 사유)",
-        "WARN": "WARN - 기대와 다르게 동작, 확인 필요(롤백 대상 아님)",
+        "FAIL": "FAIL - 치명적 결함",
+        "WARN": "WARN - 기대와 다르게 동작, 확인 필요",
         "UNVERIFIED": "UNVERIFIED - 판정 근거 부족·확인 수단 없음(확인 필요)",
         "SKIP": "SKIP - 일부러 실행·판정하지 않음(알려진 이슈 등)",
         "BAT_ERROR": "BAT_ERROR - 테스트 도구/환경 문제(제품 이슈 아님)",
@@ -44,8 +44,8 @@ STATUS_MEANINGS = {
     },
     "en": {
         "PASS": "PASS - behaved as expected",
-        "FAIL": "FAIL - critical defect (deployment rollback)",
-        "WARN": "WARN - behaved unexpectedly, needs a look (not a rollback)",
+        "FAIL": "FAIL - critical defect",
+        "WARN": "WARN - behaved unexpectedly, needs a look",
         "UNVERIFIED": "UNVERIFIED - not enough evidence or no means to check (needs a look)",
         "SKIP": "SKIP - deliberately not run or judged (known issue etc.)",
         "BAT_ERROR": "BAT_ERROR - test tool / environment problem (not a product issue)",
@@ -175,7 +175,7 @@ def _only_the_event_failed(case: CaseResult) -> bool:
 
 
 def apply_gate(case: CaseResult, status: Status, reason: str, *, minor: str = "") -> tuple[Status, str]:
-    """FAIL을 롤백할 만큼 치명적인 경우에만 남기고 나머지는 WARN으로 내린다.
+    """FAIL을 치명적인 경우에만 남기고 나머지는 WARN으로 내린다.
 
     gate 케이스가 아니면 WARN. gate 케이스여도 일부만 실패했거나(minor) 이벤트만 실패했으면
     WARN이다. FAIL이 아닌 상태는 그대로다.
@@ -223,7 +223,7 @@ def _line(case: dict[str, Any]) -> str:
 
 
 def run_gate(cases: Iterable[dict[str, Any]], notes: Iterable[str] = ()) -> tuple[Gate, list[str]]:
-    """실행 전체의 롤백 판정.
+    """실행 전체의 판정. 값 이름은 [BAT-GATE] 줄에 그대로 나간다(봇이 구분에 씀).
 
     ROLLBACK  최종 FAIL이 하나라도 있다(서버 다운 포함).
     REVIEW    FAIL은 없지만 WARN·UNVERIFIED가 있거나, gate 케이스가 BAT_ERROR로 확인되지
