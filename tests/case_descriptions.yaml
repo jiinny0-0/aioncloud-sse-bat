@@ -167,7 +167,7 @@ BAT-BASIC-007:
     1. 콘솔 웹(console_url)에 GET
     2. REST(Open API) GET /sia/v1/user/group/list (토큰이 없으면 인증 없이 서버 응답만 확인)
     3. 콘솔 GraphQL에 가벼운 조회(캐시된 세션), 세션이 없으면 로그인
-    4. 하나라도 연결 실패·타임아웃·HTTP 5xx면 서버 다운으로 FAIL, 401/403·설정 누락이면 BAT_ERROR
+    4. 하나라도 연결 실패·타임아웃·HTTP 5xx면 서버 다운으로 FAIL, 401/403·설정 누락이면 BAT_ERROR. 단, 서버에서 응답을 하나도 못 받았으면(연결 실패·타임아웃) 먼저 이 PC의 네트워크(기본 게이트웨이)를 확인해 끊겼으면 서버 다운이 아니라 BAT_ERROR
     5. 재확인 뒤에도 FAIL이면 나머지 케이스는 돌리지 않음
   test_parameters: |-
     실행 시점: 실행 처음(run_start), 다른 케이스보다 먼저
@@ -181,7 +181,7 @@ BAT-BASIC-007:
       1. GET the console web (console_url)
       2. REST (Open API) GET /sia/v1/user/group/list (without a token, only check that the server answers)
       3. A light query on the console GraphQL (cached session), or sign in when there is no session
-      4. FAIL as a server down if any connection fails, times out or answers HTTP 5xx; BAT_ERROR for 401/403 or missing configuration
+      4. FAIL as a server down if any connection fails, times out or answers HTTP 5xx; BAT_ERROR for 401/403 or missing configuration. But if no server answered at all (connection failure, timeout), first check this PC's own network (default gateway); if it is down, BAT_ERROR instead of a server down
       5. If it is still FAIL after the re-check, the other cases are not run
     test_parameters: |-
       When: at the start of the run (run_start), before every other case
@@ -194,7 +194,7 @@ BAT-BASIC-008:
     1. 커넥터가 실행 중인지 확인(아니면 BAT_ERROR). curl이 요청을 보내지도 못하면(사용법 오류, 실행 파일 없음) 제품 응답이 없어 BAT_ERROR
     2. BAT 정책을 만들기 전에 ECHO_HOSTS 세 곳(https://<host>/get)에 curl 요청, 정상 응답이 올 때까지 최대 10초 재시도
     3. 막히면 차단 페이지가 밝힌 규칙 이름을 기록
-    4. 전부 정상이면 PASS, 일부만 막히거나 닿지 않으면 WARN, 전부 막히거나 닿지 않으면 FAIL(다 막아버림)
+    4. 전부 정상이면 PASS, 일부만 막히거나 닿지 않으면 WARN, 전부 막히거나 닿지 않으면 FAIL(다 막아버림). 단, 서버에서 응답을 하나도 못 받았으면(연결 실패·타임아웃) 먼저 이 PC의 네트워크(기본 게이트웨이)를 확인해 끊겼으면 서버 다운이 아니라 BAT_ERROR
     5. 전부 막혔는데 차단 페이지가 BAT가 아닌 정책 이름을 밝히면 그 사용자 정책 탓이라 UNVERIFIED
     6. 재확인 뒤에도 FAIL이면 나머지 케이스는 돌리지 않음
   test_parameters: |-
@@ -209,7 +209,7 @@ BAT-BASIC-008:
       1. Check that the connector is running (BAT_ERROR if not). If curl cannot even send the request (usage error, executable missing), there is no product answer, so BAT_ERROR
       2. Before creating any BAT policy, send curl requests to the three ECHO_HOSTS (https://<host>/get), retrying for up to 10 seconds until a normal answer comes back
       3. If blocked, record the rule name the block page gives
-      4. PASS if all answer normally, WARN if only some are blocked or unreachable, FAIL if all are blocked or unreachable (everything blocked)
+      4. PASS if all answer normally, WARN if only some are blocked or unreachable, FAIL if all are blocked or unreachable (everything blocked). But if no server answered at all (connection failure, timeout), first check this PC's own network (default gateway); if it is down, BAT_ERROR instead of a server down
       5. UNVERIFIED if all are blocked but the block page names a policy that is not BAT's (that user policy is the cause)
       6. If it is still FAIL after the re-check, the other cases are not run
     test_parameters: |-
@@ -223,7 +223,7 @@ BAT-BASIC-009:
     1. 커넥터가 실행 중인지 확인(아니면 BAT_ERROR). curl이 요청을 보내지도 못하면(사용법 오류, 실행 파일 없음) 제품 응답이 없어 BAT_ERROR
     2. 모든 케이스와 정책 정리가 끝난 뒤 ECHO_HOSTS 세 곳(https://<host>/get)에 curl 요청, 정상 응답이 올 때까지 정책 전파 시간(BAT_POLICY_TIMEOUT_SEC)+10초까지 재시도
     3. 막히면 차단 페이지가 밝힌 규칙 이름을 기록
-    4. 전부 정상이면 PASS, 일부만 막히거나 닿지 않으면 WARN, 전부 막히거나 닿지 않으면 FAIL(정책 삭제 미반영)
+    4. 전부 정상이면 PASS, 일부만 막히거나 닿지 않으면 WARN, 전부 막히거나 닿지 않으면 FAIL(정책 삭제 미반영). 단, 서버에서 응답을 하나도 못 받았으면(연결 실패·타임아웃) 먼저 이 PC의 네트워크(기본 게이트웨이)를 확인해 끊겼으면 서버 다운이 아니라 BAT_ERROR
     5. 전부 막혔는데 차단 페이지가 BAT가 아닌 정책 이름을 밝히면 그 사용자 정책 탓이라 UNVERIFIED
   test_parameters: |-
     실행 시점: 실행 마지막(run_end), 모든 케이스와 정리 뒤
@@ -237,7 +237,7 @@ BAT-BASIC-009:
       1. Check that the connector is running (BAT_ERROR if not). If curl cannot even send the request (usage error, executable missing), there is no product answer, so BAT_ERROR
       2. After every case and policy cleanup, send curl requests to the three ECHO_HOSTS (https://<host>/get), retrying until a normal answer comes back for up to the policy propagation time (BAT_POLICY_TIMEOUT_SEC) + 10 seconds
       3. If blocked, record the rule name the block page gives
-      4. PASS if all answer normally, WARN if only some are blocked or unreachable, FAIL if all are blocked or unreachable (policy deletion not applied)
+      4. PASS if all answer normally, WARN if only some are blocked or unreachable, FAIL if all are blocked or unreachable (policy deletion not applied). But if no server answered at all (connection failure, timeout), first check this PC's own network (default gateway); if it is down, BAT_ERROR instead of a server down
       5. UNVERIFIED if all are blocked but the block page names a policy that is not BAT's (that user policy is the cause)
     test_parameters: |-
       When: at the end of the run (run_end), after every case and cleanup

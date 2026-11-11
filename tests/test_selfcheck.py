@@ -4167,9 +4167,12 @@ def _minor_failure():
     ],
     ids=["minor", "connect", "timeout", "5xx", "401", "400", "auth"],
 )
-def test_management_api_down_is_a_product_failure_and_auth_is_a_bat_error(make, raised, minor):
+def test_management_api_down_is_a_product_failure_and_auth_is_a_bat_error(make, raised, minor, monkeypatch):
+    import tests.conftest as conftest
+    from bat.health import PcNetwork
     from tests.conftest import _how_it_ended
 
+    monkeypatch.setattr(conftest, "pc_network", lambda executor: PcNetwork(True, "gateway answers"))
     try:
         raise make()
     except BaseException:
@@ -4323,3 +4326,119 @@ def test_a_baseline_whose_curl_never_ran_is_a_bat_error(monkeypatch):
     with pytest.raises(EnvironmentNotReady, match="never sent"):
         service._check_targets(case, context, _CurlRun(exit_code=2, stderr="curl: (2) no URL specified"),
                                "start", 0)
+
+
+# -- 서버 응답이 없을 때: 서버 다운인가, 이 PC 네트워크가 끊겼나 ----------------------
+
+def test_pc_network_script_is_one_line_without_double_quotes():
+    from bat.health import PC_NETWORK_SCRIPT
+
+    # LocalExecutor가 powershell -Command "..."로 감싸고 cmd.exe가 줄바꿈에서 명령을 끊는다.
+    assert "\n" not in PC_NETWORK_SCRIPT and "\r" not in PC_NETWORK_SCRIPT and '"' not in PC_NETWORK_SCRIPT
+
+
+@pytest.mark.parametrize("stdout, ok", [
+    ("GATEWAY 10.0.62.1 PING True ARP True\r\n", True),
+    ("GATEWAY 10.0.62.1 PING False ARP True", True),  # ping을 막은 게이트웨이
+    ("GATEWAY 10.0.62.1 PING True ARP False", True),
+    ("GATEWAY 10.0.62.1 PING False ARP False", False),
+    ("NOGATEWAY", False),
+    ("", None),
+    ("Get-NetRoute : not recognized", None),
+], ids=["both", "arp-only", "ping-only", "dead-gateway", "no-gateway", "empty", "garbage"])
+def test_pc_network_reading(stdout, ok):
+    from bat.health import parse_pc_network
+
+    assert parse_pc_network(stdout).ok is ok
+
+
+def test_pc_network_check_that_cannot_run_is_unknown():
+    from bat.health import pc_network
+
+    class Broken:
+        def run_powershell(self, script, timeout_sec=60):
+            raise OSError("powershell missing")
+
+    assert pc_network(Broken()).ok is None
+
+
+@pytest.mark.parametrize("network_ok, raised", [(False, Raised.ERROR), (True, Raised.ASSERTION), (None, Raised.ASSERTION)],
+                         ids=["pc-down", "pc-up", "pc-unknown"])
+def test_no_answer_from_the_api_is_a_bat_error_only_when_this_pc_is_offline(network_ok, raised, monkeypatch):
+    import tests.conftest as conftest
+    from bat.health import PcNetwork
+    from tests.conftest import _how_it_ended
+
+    monkeypatch.setattr(conftest, "pc_network", lambda executor: PcNetwork(network_ok, "gateway x"))
+    try:
+        raise httpx.ConnectError("refused")
+    except BaseException:
+        info = pytest.ExceptionInfo.from_current()
+    got = _how_it_ended(SimpleNamespace(excinfo=info))
+    assert got[0] is raised and "gateway x" in got[1]
+
+
+def test_a_5xx_never_blames_this_pc(monkeypatch):
+    """5xx는 서버까지 닿은 것이라 PC 네트워크를 보지 않고 제품 장애다."""
+    import tests.conftest as conftest
+    from tests.conftest import _how_it_ended
+
+    def must_not_run(executor):
+        raise AssertionError("PC network checked for a 5xx")
+
+    monkeypatch.setattr(conftest, "pc_network", must_not_run)
+    try:
+        raise ApiError("HTTP 503", status_code=503)
+    except BaseException:
+        info = pytest.ExceptionInfo.from_current()
+    assert _how_it_ended(SimpleNamespace(excinfo=info))[0] is Raised.ASSERTION
+
+
+def _service_case(case_id):
+    return CaseResult(case_id=case_id, product="basic", scenario="s", criteria=["user_visible_result"])
+
+
+@pytest.mark.parametrize("probes, network_ok, expect", [
+    # 응답 없음 + PC 끊김 → BAT_ERROR
+    ([("console", "DOWN", False), ("rest", "DOWN", False), ("graphql", "DOWN", False)], False, "env"),
+    # 응답 없음 + PC 정상 → 서버 다운 FAIL
+    ([("console", "DOWN", False), ("rest", "DOWN", False), ("graphql", "DOWN", False)], True, "fail"),
+    # 5xx가 하나라도 있으면 서버까지 닿은 것 → PC와 무관하게 FAIL
+    ([("console", "DOWN", True), ("rest", "DOWN", False), ("graphql", "OK", True)], False, "fail"),
+], ids=["no-answer-pc-down", "no-answer-pc-up", "5xx"])
+def test_server_down_check_blames_this_pc_only_when_it_is_offline(probes, network_ok, expect, monkeypatch):
+    import tests.basic.test_service as service
+    from bat.health import PcNetwork, Probe
+    from tests.support import EnvironmentNotReady
+
+    monkeypatch.setattr(service, "probe_servers",
+                        lambda profile, workspace: [Probe(n, s, "x", responded=r) for n, s, r in probes])
+    monkeypatch.setattr(service, "pc_network", lambda executor: PcNetwork(network_ok, "gateway x"))
+    monkeypatch.setattr(service, "runner_executor", lambda: None)
+    run_context = SimpleNamespace(profile=None)
+    lane = SimpleNamespace(workspace=None)
+    raised = EnvironmentNotReady if expect == "env" else AssertionError
+    with pytest.raises(raised) as caught:
+        service.test_management_servers_answer(_service_case("BAT-BASIC-007"), run_context, lane)
+    if expect == "fail":
+        assert not isinstance(caught.value, EnvironmentNotReady)
+
+
+@pytest.mark.parametrize("stdout, network_ok, expect", [
+    ("\n000", False, "env"),   # 응답 없음 + PC 끊김 → BAT_ERROR
+    ("\n000", True, "fail"),   # 응답 없음 + PC 정상 → FAIL
+    ("oops\n502", False, "fail"),  # 응답(5xx)이 왔으면 PC와 무관하게 FAIL
+], ids=["no-answer-pc-down", "no-answer-pc-up", "5xx"])
+def test_baseline_blames_this_pc_only_when_nothing_answered_and_it_is_offline(stdout, network_ok, expect, monkeypatch):
+    import tests.basic.test_service as service
+    from bat.health import PcNetwork
+    from tests.support import EnvironmentNotReady
+
+    monkeypatch.setattr(service, "connector_state", lambda executor, process: "Running")
+    monkeypatch.setattr(service, "pc_network", lambda executor: PcNetwork(network_ok, "gateway x"))
+    context = SimpleNamespace(profile=SimpleNamespace(connector_process="U+SASE"), run_id=RUN_ID)
+    raised = EnvironmentNotReady if expect == "env" else AssertionError
+    with pytest.raises(raised) as caught:
+        service._check_targets(_service_case("BAT-BASIC-008"), context, _CurlRun(exit_code=7, stdout=stdout), "start", 0)
+    if expect == "fail":
+        assert not isinstance(caught.value, EnvironmentNotReady)

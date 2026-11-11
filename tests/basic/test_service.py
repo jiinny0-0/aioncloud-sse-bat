@@ -11,6 +11,8 @@ BAT-BASIC-009  실행 마지막, 모든 BAT 정책을 지운 뒤에도 일반 �
                정리 뒤에도 막혀 있으면 정책 삭제가 반영되지 않은 것이다.
 기준선은 전부 막히면 FAIL, 일부만 막히면 WARN, 커넥터가 꺼져 있거나 curl이 요청을 보내지 못했으면
 (사용법 오류, 실행 파일 없음) BAT_ERROR다.
+서버에서 응답을 하나도 못 받았으면(연결 실패·타임아웃) 이 PC의 네트워크(기본 게이트웨이)를 먼저
+본다. 끊겼으면 서버 다운이 아니라 BAT_ERROR다.
 """
 from __future__ import annotations
 
@@ -31,7 +33,9 @@ from bat.health import (
     USER_POLICY,
     BaselineOutcome,
     judge_baseline,
+    pc_network,
     probe_servers,
+    runner_executor,
 )
 from bat.models import Kind, Step
 from bat.verdict import MinorFailure
@@ -72,6 +76,9 @@ def test_management_servers_answer(case, run_context, lane):
         )
     down = [p for p in probes if p.state == DOWN]
     summary = "; ".join(f"{p.name} {p.state}: {p.detail}" for p in probes)
+    if down and not any(p.responded for p in down):
+        # 응답이 하나도 없었다: 서버가 죽었는지 이 PC 네트워크가 끊겼는지부터 가른다.
+        _blame_pc_network_or_go_on(case, runner_executor(), summary)
     case.record(
         Step.USER_RESULT, ok=not down, kind=Kind.ASSERTION,
         detail=summary, expected="console, REST and GraphQL answer", actual=[f"{p.name}={p.state}" for p in probes],
@@ -81,6 +88,14 @@ def test_management_servers_answer(case, run_context, lane):
     if config:
         environment_error(f"servers are up, but BAT cannot use them (auth/config): {summary}")
     pass_case(case)
+
+
+def _blame_pc_network_or_go_on(case, executor, summary: str) -> None:
+    """서버 응답이 없을 때 이 PC의 네트워크를 본다. 끊겼으면 BAT_ERROR, 아니면 판정을 계속한다."""
+    network = pc_network(executor)
+    case.record(Step.ACTION, ok=network.ok is True, kind=Kind.EVIDENCE, detail=f"PC network: {network.detail}")
+    if network.ok is False:
+        environment_error(f"no server answered, but this PC's own network is down ({network.detail}): {summary}")
 
 
 def _check_targets(case, run_context, executor, phase: str, budget_sec: float) -> None:
@@ -103,13 +118,16 @@ def _check_targets(case, run_context, executor, phase: str, budget_sec: float) -
                 break
             time.sleep(RETRY_GAP_SEC)
         rule = block_page_rule(body) if traffic.blocked else ""
-        outcomes.append(BaselineOutcome(host, traffic.delivered, traffic.detail, rule))
+        outcomes.append(BaselineOutcome(host, traffic.delivered, traffic.detail, rule,
+                                        responded=bool(traffic.status_code)))
         case.record(
             Step.ACTION, ok=traffic.delivered, kind=Kind.EVIDENCE,
             detail=f"{url}: {traffic.detail}" + (f", block page names {rule!r}" if rule else ""),
         )
 
     verdict, summary = judge_baseline(outcomes, is_bat_resource)
+    if verdict == ALL_FAILED and not any(o.responded for o in outcomes):
+        _blame_pc_network_or_go_on(case, executor, summary)
     if verdict == USER_POLICY:
         unverified(case, Step.USER_RESULT,
                    f"every target was blocked, but by a policy that is not BAT's: {summary}")

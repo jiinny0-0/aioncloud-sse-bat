@@ -219,7 +219,15 @@ def cmd_doctor(profile: str) -> int:
     probes = health.probe_servers(context.profile, workspace)
     for probe in probes:
         print(f"Server       : {probe.state:<6} {probe.name} - {probe.detail}")
-    if any(p.state == health.DOWN for p in probes):
+    down = [p for p in probes if p.state == health.DOWN]
+    if down and not any(p.responded for p in down):
+        # 응답이 하나도 없었다: 서버 다운인지 이 PC 네트워크가 끊긴 건지 먼저 가른다.
+        network = health.pc_network(health.runner_executor())
+        print(f"PC network   : {network.detail}")
+        if network.ok is False:
+            print(f"\nDoctor       : THIS PC'S NETWORK IS DOWN, not the server (exit {health.DOCTOR_CONFIG})")
+            return health.DOCTOR_CONFIG
+    if down:
         print(f"\nDoctor       : SERVER DOWN (exit {health.DOCTOR_SERVER_DOWN})")
         return health.DOCTOR_SERVER_DOWN
 

@@ -33,6 +33,7 @@ from bat.fixtures.policies import UNRAISED_CLEANUP_FAILURES, DlpPolicyFactory, W
 from bat.models import CaseResult, Status
 from bat.report.collector import ResultCollector
 from bat.report import progress
+from bat.health import no_response, pc_network, runner_executor
 from bat.scheduler import build_lanes, concurrency_group, lane_for_product
 from bat.settings import build_run_context, env
 from bat.traffic.browser import BrowserSession
@@ -389,6 +390,12 @@ def _how_it_ended(call) -> tuple[Raised, str, str]:
     # 관리 API가 응답하지 않거나 5xx를 줬다: 테스트 도구 문제가 아니라 제품 장애다.
     down = product_failure(exc)
     if down:
+        if no_response(exc):
+            # 응답이 하나도 없었으면 이 PC 네트워크가 끊긴 것일 수도 있다. 그러면 제품 장애가 아니다.
+            network = pc_network(runner_executor())
+            if network.ok is False:
+                return Raised.ERROR, f"{down} — but this PC's own network is down ({network.detail})"[:500], ""
+            down = f"{down} [PC network: {network.detail}]"
         return Raised.ASSERTION, down[:500], ""
     return Raised.ERROR, f"{type(exc).__name__}: {message}", ""
 
