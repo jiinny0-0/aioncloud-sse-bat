@@ -1,0 +1,564 @@
+﻿Case ID,Product,Status,Scenario,Test Steps,Test Parameters,Test Data,Expected Results,Actual Result
+BAT-BASIC-001,basic,미실행,Open API 토큰으로 인증된 요청이 정상 처리된다.,"1. Open API 토큰이 설정된 REST 클라이언트로 GET /sia/v1/user/group/list 요청
+2. 응답 payload가 dict(JSON 객체) 타입인지 확인
+3. 결과를 기록하고 케이스 PASS 처리","Endpoint: GET /sia/v1/user/group/list
+Params: offset=1, limit=1","offset: 1, limit: 1 (고정 리터럴, rest.get 호출 params)","API 응답이 dict 형태의 JSON 객체여야 하며, 이는 요청이 실제로 API까지 도달해 정상 처리되었음을 의미한다.",미실행
+BAT-BASIC-002,basic,미실행,정책을 생성하면 저장된 내용이 요청한 그대로 조회된다.,"1. case_id와 run_id를 조합해 정책 이름 생성(resource_name)
+2. Subject=HTTP_HOST, Condition=IS, value=[BLOCK_TARGET_HOST] rule 생성
+3. web_policies.temporary()로 action_type=BLOCK인 웹 정책을 임시 생성
+4. 생성된 policy_id를 case.policy_ids에 기록
+5. web_policies.get()으로 생성한 정책을 재조회
+6. 조회된 name/action_type/enable이 요청한 값과 일치하는지 비교
+7. with 블록 종료 시 정책 자동 삭제(temporary 컨텍스트)","Subject: HTTP_HOST
+Condition: IS
+Action Type: BLOCK
+Value: BLOCK_TARGET_HOST","policy_name: 동적 생성(resource_name(case_id, run_id) 조합, 예 BAT-BASIC-002-<run_id>), rule value: [""httpbin.org""](BLOCK_TARGET_HOST), action_type: BLOCK","생성 요청 직후 재조회한 정책의 name, action_type(BLOCK), enable(true)이 요청한 값과 정확히 일치해야 한다.",미실행
+BAT-BASIC-003,basic,미실행,보안 로그 API가 조회 가능하고 필수 필드를 포함한다.,"1. web_log.security_events(lookback_min=1440)으로 최근 24시간 보안 이벤트 조회
+2. 이벤트가 0건이면 실행 조건 미비로 ERROR 처리(트래픽 부재로 스키마 검증 불가)
+3. 가장 최신 이벤트(raw)에서 필수 필드(id, time, policy_name, action) 존재 여부 확인
+4. 누락 필드가 없는지 검증","Lookback: 24시간(1440분)
+Required fields: id, time, policy_name, action","lookback_min=1440 (고정 리터럴), required 필드 튜플 (""id"", ""time"", ""policy_name"", ""action"")","최근 24시간 내 보안 이벤트가 조회되고, 가장 최신 이벤트에 id/time/policy_name/action 필드가 모두 포함되어야 한다.",미실행
+BAT-BASIC-004,basic,미실행,테스트 단말의 트래픽이 실제로 SSE를 경유한다.,"1. 커넥터 프로세스가 실행 중인지 확인
+2. ALLOW_TARGET_URL 호스트(www.iana.org)에 HTTP_HOST LOGGING 정책을 만든다
+3. 단말 브라우저로 마커를 단 ALLOW_TARGET_URL을 전파 시간 동안 되풀이해 방문한다
+4. 그 마커가 든 행이 이 정책 id로 보안 로그에 찍히는지 확인한다(이 단말의 트래픽이 SSE를 지난다는 근거). 행의 device_id·사용자·출발지 IP는 근거로 남긴다
+5. 정책 삭제","Connector process: AIConnector for Client
+Target URL: ALLOW_TARGET_URL
+Lookback: 24시간(1440분)","ALLOW_TARGET_URL = ""https://www.iana.org/""","커넥터 프로세스가 실행 중이고, 단말이 보낸 마커 요청이 LOGGING 정책의 보안 로그 행으로 찍힌다(트래픽이 실제로 SSE를 경유).",미실행
+BAT-BASIC-005,basic,미실행,이전 실행이 남긴 BAT 리소스가 없다.,"1. 웹, DLP, GenAI, CASB 두 종류, RBI, DNS/Application Firewall, ZTNA 접근제어·터널·접근정책 목록을 모두 읽음(웹·DLP는 total로 전체를 읽었는지 확인)
+2. 이번 실행이 아닌 BAT 리소스가 있으면 FAIL
+3. 남은 것은 없지만 읽지 못한 목록이 있으면 UNVERIFIED","목록: 웹(GET /sia/v1/web/policy/list, limit 500), DLP(GET /sia/v1/dlp/policy, limit 100), GraphQL 정책 목록 9종
+Filter: BAT 이름 규칙이면서 이번 실행(run_id)이 아닌 것(GenAI는 description의 이름)",이번 실행의 run_id(같은 실행의 리소스는 제외),이전 실행이 남긴 BAT 리소스가 어떤 정책 종류에도 없다.,미실행
+BAT-BASIC-006,basic,미실행,커넥터가 켜진 상태에서도 관리 API 요청이 SSE에 가로채이지 않는다.,"1. 커넥터 실행 중인지 확인
+2. POST /sia/v1/web/policy(비활성 probe 정책)와 POST /sia/v1/user(probe 사용자)를 보냄
+3. SSE 차단 페이지(오류 코드든 2xx든 HTML)면 가로챔, API의 JSON 응답(오류 포함)이면 도달로 판정
+4. probe 정책과 사용자를 지우고 사라졌는지 다시 확인(실패하면 정리 경고)","Connector process: AIConnector for Client (고정)
+Target API: POST /sia/v1/web/policy, POST /sia/v1/user","POST /sia/v1/web/policy {name:""BAT-BASIC-006-probe-..."", action_type:BLOCK, users:[0], rule: HTTP_HOST IS bat-probe.invalid}
+POST /sia/v1/user {login_id:""bat-bas-006-...@bat.local"", role:""USER""}",커넥터가 켜진 상태에서 관리 API 쓰기 요청이 SSE에 가로채이지 않고 API에 도달한다.,미실행
+BAT-CASB-001,casb,미실행,"CASB 정책을 생성하면 요청한 내용대로 저장되고, 삭제하면 사라진다.","1. 전체 앱 In-App Control LOGGING 정책 생성
+2. 목록을 다시 읽어 action_type(LOGGING)·risk_level(Minor)이 요청값과 같은지 비교(다르면 FAIL, 읽지 못하면 UNVERIFIED)
+3. 정책 삭제(목록에서 사라졌는지 다시 읽어 확인)","product: casb
+lane: d
+policy_type: in_app_control
+action_type: LOGGING
+risk_level: Minor
+users: [0] (전체 사용자)
+user_groups: [0] (전체)","정책명: BAT-CASB-001-<run_id>
+application: [{""id"": 1, ""saas_desc_id"": 1, ""function"": [2, 6, 5, 7]}] (전체 앱)","In-App Control 정책이 요청한 동작·위험도로 저장되고, 삭제하면 목록에서 사라진다.",미실행
+BAT-CASB-002,casb,미실행,"CASB SaaS Access 정책을 생성하면 요청한 내용대로 저장되고, 삭제하면 사라진다.","1. Notion 앱 SaaS Access LOGGING 정책 생성
+2. 목록을 다시 읽어 action_type(LOGGING)·risk_level(Minor)·application([Notion id])이 요청값과 같은지 비교
+3. 정책 삭제(목록에서 사라졌는지 다시 읽어 확인)","product: casb
+lane: d
+policy_type: saas_access
+action_type: LOGGING
+risk_level: Minor
+application: [3] (Notion)","정책명은 resource_name(case_id, run_id)로 동적 생성. application=[CASB_SAAS_APP_ID]=[3](bat/fixtures/testdata.py의 CASB_SAAS_APPS[""Notion""]).","SaaS Access 정책이 요청한 동작·위험도·앱으로 저장되고, 삭제하면 목록에서 사라진다.",미실행
+BAT-CASB-003,casb,미실행,CASB SaaS Access가 지정한 SaaS 앱만 탐지하고 다른 앱은 건드리지 않는다.,"1. Notion으로 좁힌 SaaS Access LOGGING 정책 생성
+2. 브라우저로 Notion과 GitHub를 방문해 둘 다 렌더링되는지 확인
+3. 이 정책의 Notion 행 확인
+4. 표지로 Notion을 한 번 더 방문해 그 새 행이 나타난 뒤, 이 정책의 행 중 Notion 외 앱이 없는지 확인(표지 행이 안 보이면 UNVERIFIED)
+5. 정책 삭제","product: casb
+lane: d
+policy_type: saas_access
+action_type: LOGGING
+risk_level: Minor
+application: [3] (Notion만 스코프)
+event_timeout_sec: run_context.event_poll_timeout_sec","CASB_SAAS_APP_ID=3(Notion), CASB_SAAS_APP_NAME=""Notion"", CASB_SAAS_URL=""https://www.notion.so/"", CASB_OTHER_APP_URL=""https://github.com/""(bat/fixtures/testdata.py). 정책명은 resource_name()으로 동적 생성.","지정한 앱만 기록되고, 다른 앱(GitHub)은 렌더링되며 이 정책으로 기록되지 않는다.",미실행
+BAT-CASB-004,casb,미실행,"CASB SaaS Access를 BLOCK으로 걸면 해당 앱 접속이 실제로 막히고, 그 요청이 BLOCK으로 기록된다.","1. resource_name()으로 BAT-CASB-004-<run_id> 정책명을 만든다.
+2. saas_access.temporary()로 application=[CASB_SAAS_APP_ID](Notion), action_type=BLOCK, risk_level=Major인 정책을 생성한다.
+3. visit_until_blocked()으로 CASB_SAAS_URL(Notion)을 브라우저로 반복 방문하며 차단 페이지가 뜨는지 run_context.policy_propagation_timeout_sec 동안 재시도한다(결과는 기록만 하고 통과/실패 판정에는 쓰지 않음).
+4. await_casb_event()로 casb_security_log에서 이 정책명에 대한 이벤트(기대 서비스명 Notion)를 폴링 대기한다.
+5. 이벤트의 action 필드가 BLOCK인지 확인하고 어서션한다.
+6. 통과 후 temporary() 종료로 정책을 삭제한다.","product: casb
+lane: d
+policy_type: saas_access
+action_type: BLOCK
+risk_level: Major
+application: [3] (Notion)
+propagation_timeout_sec: run_context.policy_propagation_timeout_sec
+event_timeout_sec: run_context.event_poll_timeout_sec","CASB_SAAS_APP_ID=3(Notion), CASB_SAAS_URL=""https://www.notion.so/"". 정책명은 resource_name()으로 동적 생성.",BLOCK 정책이 걸린 상태에서 Notion 방문 트래픽에 대해 casb_security_log 이벤트의 action이 반드시 BLOCK으로 기록되어야 한다(화면상 차단 여부는 판정 기준이 아님).,미실행
+BAT-CASB-005,casb,미실행,"CASB In-App Control 정책 목록을 조회할 수 있다(환경 점검, 보안 동작이 아님).","1. SIA.casb.in_app_control 목록 조회
+2. 조회가 답하면 통과(환경 점검, diagnostic). 조회 실패는 ERROR","product: casb
+lane: d
+조회 대상: SIA.casb.in_app_control (읽기 전용, 정책 생성/삭제 없음)",별도 리터럴 데이터 없음 — 테넌트에 이미 존재하는 In-App Control 정책 목록을 그대로 조회.,In-App Control 목록 조회가 오류 없이 응답한다(보안 동작이 아닌 환경 점검).,미실행
+BAT-DLP-001,dlp,미실행,DLP 키워드 룰에 걸리는 데이터를 전송하면 차단되고 이벤트가 남는다.,"1. DLP 키워드 룰 정책과 그것을 연결한 BLOCK 웹 정책 생성
+2. 대상 호스트(ECHO_HOSTS)마다 마커를 단 /post로 키워드 데이터를 POST해 차단될 때까지 반복
+3. 그 요청 자신의 DLP 정책 행(마커)과 식별 정보 확인
+4. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
+5. 정책 삭제","DLP rule type: keyword
+Target: https://<호스트>/post (httpbin.org, postman-echo.com, httpbingo.org)
+Marker: case_id+run_id 조합의 고유 토큰","DLP keyword rule: [""bat-token"", [token]]
+POST body: token을 포함한 payload",키워드가 든 업로드가 호스트마다 차단되고 그 요청의 행이 남는다.,미실행
+BAT-DLP-002,dlp,미실행,내장 탐지 룰(카드번호)이 실제 전송에서 동작한다.,"1. 내장 탐지 룰 중 카드번호(Visa 우선) 룰로 DLP 정책과 연결 BLOCK 웹 정책 생성
+2. 대상 호스트마다 마커를 단 /post로 테스트 카드번호를 POST해 차단될 때까지 반복
+3. 그 요청 자신의 DLP 정책 행(마커) 확인
+4. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
+5. 정책 삭제","DLP rule type: PREDEFINED
+웹 정책 action_type: BLOCK
+웹 정책 risk_level: MAJOR
+웹 정책 rule subject: DLP_POLICY, condition: IS
+전송 방식: POST (curl)","predefined 룰 code: predefined_rules() 조회 결과 중 코드/표시명에 'visa' 또는 'card'를 포함하는 항목(런타임에 결정, 하드코딩 아님)
+전송 페이로드: card=4111-1111-1111-1111 (SYNTHETIC_CARD, Luhn 유효하나 테스트 전용으로 영구 예약된 번호)
+대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
+정책/DLP 이름: resource_name(case.case_id, run_id)로 런마다 동적 생성",테스트 카드번호 업로드가 호스트마다 차단되고 그 요청의 행이 남는다.,미실행
+BAT-DLP-003,dlp,미실행,DLP 정규식 룰에 매칭되는 데이터가 차단된다.,"1. DLP 정규식 룰 정책과 연결 BLOCK 웹 정책 생성
+2. 대상 호스트마다 마커를 단 /post로 정규식에 맞는 데이터를 POST해 차단될 때까지 반복
+3. 그 요청 자신의 DLP 정책 행(마커) 확인
+4. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
+5. 정책 삭제","DLP rule type: REGEX
+DLP rule name: bat-code
+웹 정책 action_type: BLOCK
+웹 정책 risk_level: MAJOR
+웹 정책 rule subject: DLP_POLICY, condition: IS
+전송 방식: POST (curl)","정규식 패턴: CUSTOM_REGEX = r""BATCODE-[0-9]{4}-[A-Z]{3}""
+전송 페이로드: regex_sample() 결과 — 예: code=BATCODE-1234-ZZZ 형태(숫자부는 uuid4 기반으로 매 실행마다 동적 생성, 접미사는 항상 ZZZ)
+대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
+정책/DLP 이름: resource_name(case.case_id, run_id)로 런마다 동적 생성",정규식에 맞는 업로드가 호스트마다 차단되고 그 요청의 행이 남는다.,미실행
+BAT-DLP-004,dlp,미실행,민감 문자열이 포함된 파일을 업로드하면 차단된다.,"1. 키워드가 든 합성 파일(BAT-DLP-004-<run_id>.txt)을 단말에 씀
+2. DLP 키워드 룰 정책과 연결 BLOCK 웹 정책 생성
+3. 대상 호스트마다 마커를 단 /post로 파일을 업로드해 차단될 때까지 반복
+4. 그 업로드 요청 자신의 행(마커)을 찾고, 행의 file_name이 업로드한 파일 이름과 같은지 비교(다르면 FAIL, 없으면 UNVERIFIED)
+5. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
+6. 정책과 파일 삭제","DLP rule type: KEYWORD
+DLP rule name: bat-token
+웹 정책 action_type: BLOCK
+웹 정책 risk_level: MAJOR
+웹 정책 rule subject: DLP_POLICY, condition: IS
+전송 방식: 파일 업로드 (multipart, https://<호스트>/post (httpbin.org, postman-echo.com, httpbingo.org))","키워드: marker(case_id, run_id) 결과 — 'BATSENSITIVE' + case_id(하이픈 제거) + run_id 앞 12자(런마다 동적 생성)
+업로드 파일 본문: upload_file_body(token) — ""BAT synthetic document\nThis file exists only to exercise DLP upload detection.\nmarker: <token>\n""
+업로드 파일명: {case.case_id}-{run_context.run_id}.txt
+대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED","키워드가 든 파일 업로드가 차단되고, 그 요청의 행이 업로드한 파일 이름을 기록한다.",미실행
+BAT-DLP-005,dlp,미실행,탐지 조건에 걸리지 않는 데이터는 정상 전송되고 이벤트도 남지 않는다.,"1. 키워드 룰(이름 'bat-token', 키워드는 런별 마커 토큰)을 가진 DLP 정책을 생성한다.
+2. 이 DLP 정책을 참조하는 DLP_POLICY rule을 가진 웹 정책을 BLOCK/MAJOR로 생성한다.
+3. 양성 대조: 키워드 페이로드를 마커를 단 https://httpbin.org/post로 보내 차단되고, 그 요청(마커) 자신의 이벤트가 이 정책 id로 남는지 확인한다.
+4. 키워드가 없는 깨끗한 페이로드를 대상 호스트 세 곳(httpbin.org, postman-echo.com, httpbingo.org)의 /post로 각자 마커를 달아 3회씩 보내 매번 정상 전달되는지 확인한다(한 번이라도 차단되면 FAIL).
+5. 표지 요청: 키워드 페이로드를 마커를 단 httpbin.org/post로 한 번 더 보내 그 행이 로그에 나타날 때까지 기다린다(안 나타나면 UNVERIFIED).
+6. 그 다음 깨끗한 요청들의 마커가 든 행이 이 정책으로 하나도 없는지 확인한다(부재 검증).
+7. with 블록 종료 시 웹 정책과 DLP 정책을 자동 삭제한다.
+8. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED","DLP rule type: KEYWORD
+DLP rule name: bat-token
+웹 정책 action_type: BLOCK
+웹 정책 risk_level: MAJOR
+웹 정책 rule subject: DLP_POLICY, condition: IS
+전송 방식: POST (post_payload, 단발성)","키워드(미사용 대조값): marker(case_id, run_id) 결과(런마다 동적 생성)
+전송 페이로드: clean_payload() = ""note=quarterly review&owner=bat-suite&secret=nothing-to-see-here"" (키워드 미포함)
+대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED","정책이 키워드 데이터를 실제로 막는 상태에서, 키워드가 없는 정상 페이로드는 매번 차단되지 않고 전달되어야 하며 그 요청들에 대해 이 웹 정책의 보안 이벤트가 남지 않아야 한다(오탐 없음).",미실행
+BAT-DLP-006,dlp,미실행,정책을 비활성화하면 같은 데이터가 다시 정상 전송된다.,"1. DLP 키워드 룰 정책과 연결 BLOCK 웹 정책 생성
+2. 대상 호스트마다 마커를 단 키워드 POST가 차단되고 그 요청 자신의 정책 행이 남는지 확인
+3. 웹 정책 비활성화 후 다시 읽어 enable=false로 저장됐는지 확인
+4. 호스트마다 전파 예산 안에 통과가 시작되고, 예산이 지난 뒤 3번 연속 통과하는지 확인
+5. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
+6. 정책 삭제","DLP rule type: KEYWORD
+DLP rule name: bat-token
+웹 정책 action_type: BLOCK
+웹 정책 risk_level: MAJOR
+웹 정책 rule subject: DLP_POLICY, condition: IS
+정책 상태 전환: enable=True → enable=False (PATCH /sia/v1/web/policy/{id}/enable)","키워드: marker(case_id, run_id) 결과(런마다 동적 생성)
+전송 페이로드: keyword_payload(token) = ""note=quarterly review&secret=<token>&owner=bat-suite"" (활성화/비활성화 양쪽에 동일 페이로드 재사용)
+대상 URL: https://<호스트>/post, 대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 정책은 하나이고 호스트마다 전송·차단·이벤트(그 호스트의 이벤트)를 확인한다. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED",정책이 막던 데이터가 비활성화(재조회로 확인) 후 다시 통과하고 그대로 유지된다.,미실행
+BAT-DLP-007,dlp,미실행,DLP 이벤트에 사용자·단말·정책·행위·대상이 모두 기록된다.,"1. DLP 키워드 룰 정책과 연결 BLOCK 웹 정책 생성
+2. 마커를 단 키워드 POST가 차단되고 그 요청 자신의 행을 찾음
+3. 행의 상세 필드와 이벤트 상세 조회 결과를 근거로 기록
+4. 행의 device_id가 이 단말 id(설정값 또는 하드웨어 UUID), user_name이 같은 단말 인증 로그의 user_name, policy_name/action이 이 정책·BLOCK인지 값으로 비교(다르거나 비어 있으면 FAIL)
+5. 정책 삭제","DLP rule type: KEYWORD
+DLP rule name: bat-token
+웹 정책 action_type: BLOCK
+웹 정책 risk_level: MAJOR
+웹 정책 rule subject: DLP_POLICY, condition: IS
+검증 대상 이벤트 필드: user_name, policy_name, action (필수), file_name 등은 details_of로 추가 기록","키워드: marker(case_id, run_id) 결과(런마다 동적 생성)
+전송 페이로드: keyword_payload(token) = ""note=quarterly review&secret=<token>&owner=bat-suite""
+대상 URL: https://httpbin.org/post (POST_TARGET_URL)","DLP 이벤트에 그 요청의 대상, 이 단말, 실제 사용자, 정책, 행위가 맞는 값으로 기록된다.",미실행
+BAT-DLP-008,dlp,미실행,한 DLP 정책에 여러 룰을 넣으면 그 중 어느 룰에 걸려도 차단된다.,"1. 키워드 룰과 정규식 룰을 함께 담은 DLP 정책 하나와 연결 BLOCK 웹 정책 생성
+2. 마커 keyword를 단 키워드 전용 POST가 차단되고 그 요청 자신의 행이 남는지 확인
+3. 마커 regex를 단 정규식 전용 POST가 차단되고 그 요청 자신의 행이 남는지 확인
+4. 정책 삭제","DLP rules: keyword(""bat-token"", token) + regex(""bat-regex"", CUSTOM_REGEX), 한 정책에 동시 등록","키워드 payload: token 포함 문자열
+정규식 payload: CUSTOM_REGEX에 매칭되는 샘플 문자열","한 정책의 두 룰이 각자 자기 데이터를 막고, 요청마다 행이 남는다.",미실행
+BAT-FW-001,fwaas,미실행,DNS Firewall로 도메인을 차단하면 실제로 이름 해석이 실패하고 이벤트가 남는다.,"1. 정책 전에 대상 도메인(ECHO_HOSTS)마다 이름이 해석되는지 확인(기준선, 해석 안 되면 그 대상은 UNVERIFIED)
+2. rule FQDN IS [httpbin.org, postman-echo.com, httpbingo.org]로 BLOCK DNS Firewall 정책 생성
+3. 도메인마다 nslookup이 실패(또는 lguplus의 DNS 차단 페이지 주소)할 때까지 전파 시간 동안 반복 조회
+4. 그 조회 뒤 이 정책의 새 DNS 로그 행(A 레코드, 조회 전후 행 id로 가림)이 BLOCK으로 남는지 확인(행이 없으면 해석 실패를 정책 차단으로 인정하지 않음, FAIL)
+5. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
+6. 정책 삭제(목록에서 사라졌는지 다시 읽어 확인)","subject: FQDN
+condition: IS
+action_type: BLOCK
+kind(이벤트 로그 종류): dns","rule value: ECHO_HOSTS(httpbin.org, postman-echo.com, httpbingo.org)
+정책명: BAT-FW-001-<run_id>(동적 생성, resource_name)
+조회 로그: SIA.log.dns_security_log","정책 전에는 해석되던 대상 도메인들이 정책 뒤 해석에 실패하고, 도메인마다 그 조회의 BLOCK 행이 DNS 보안로그에 남는다.",미실행
+BAT-FW-002,fwaas,미실행,DNS Firewall 정책을 지우면 도메인 이름 해석이 다시 정상 동작한다.,"1. 정책 전에 대상 도메인(ECHO_HOSTS)마다 이름이 해석되는지 확인(기준선)
+2. FQDN BLOCK DNS Firewall 정책 생성 후 도메인마다 해석 실패와 그 조회의 정책 행(A 레코드)을 확인
+3. 정책 삭제(목록에서 사라졌는지 다시 읽어 확인)
+4. 도메인마다 주소가 담긴 응답이 다시 올 때까지 반복 조회
+5. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED","subject: FQDN
+condition: IS
+action_type: BLOCK(생성 후 삭제)","rule value: ECHO_HOSTS(httpbin.org, postman-echo.com, httpbingo.org)
+정책명: BAT-FW-002-<run_id>(동적 생성)","정책이 실제로 막았다는 것(해석 실패 + 정책 행)을 보인 뒤, 삭제하면 도메인마다 이름 해석이 다시 정상 동작한다.",미실행
+BAT-FW-003,fwaas,미실행,Application Firewall로 목적지를 차단하면 연결이 실제로 끊기고 이벤트가 남는다.,"1. httpbin.org를 IP 하나로 해석하고, 정책 전에 그 IP로 붙인(pin_ip) 요청이 응답하는지 확인(기준선)
+2. source 0.0.0.0/0, destination [그 IP]로 BLOCK Application Firewall 정책 생성
+3. 그 IP로 붙인 curl 요청의 연결이 끊길(000) 때까지 반복
+4. 이 정책의 새 방화벽 로그 행이 dst_ip가 그 IP인 BLOCK으로 남는지 확인(행이 없으면 연결 실패를 정책 차단으로 인정하지 않음)
+5. 정책 삭제(목록에서 사라졌는지 다시 읽어 확인)","subject.source.ip_address: [""0.0.0.0/0""]
+subject.destination.ip_address: [동적 resolve된 destination_ip]
+action_type: BLOCK
+kind(이벤트 로그 종류): firewall","대상 URL: https://httpbin.org/get(BLOCK_TARGET_URL)
+대상 호스트: httpbin.org(BLOCK_TARGET_HOST), resolve_ip로 얻은 실제 IP(동적)
+source_ips: [""0.0.0.0/0""]
+정책명: BAT-FW-003-<run_id>(동적 생성)","정책 전에는 응답하던 목적지 IP로의 연결이 정책 뒤 끊기고, dst_ip가 그 IP인 BLOCK 행이 방화벽 보안로그에 남는다.",미실행
+BAT-FW-004,fwaas,미실행,Application Firewall 정책을 지우면 목적지로의 연결이 다시 정상 동작한다.,"1. httpbin.org IP로 붙인 요청이 정책 전에 응답하는지 확인(기준선)
+2. 그 IP로 BLOCK Application Firewall 정책 생성, 연결 끊김과 dst_ip가 그 IP인 정책 행 확인
+3. 정책 삭제(목록에서 사라졌는지 다시 읽어 확인)
+4. 그 IP로 붙인 요청이 전달(delivered)될 때까지 반복. 끝내 연결이 끊겨 있으면 FAIL, 연결은 되지만 403·5xx면 UNVERIFIED","subject.source.ip_address: [""0.0.0.0/0""]
+subject.destination.ip_address: [동적 resolve된 destination_ip]
+action_type: BLOCK(생성 후 삭제)","대상 URL: https://httpbin.org/get(BLOCK_TARGET_URL)
+대상 호스트: httpbin.org(BLOCK_TARGET_HOST), resolve_ip로 얻은 실제 IP(동적)
+source_ips: [""0.0.0.0/0""]
+정책명: BAT-FW-004-<run_id>(동적 생성)","차단 단계에서 연결 끊김과 정책 행이 확인되고, 정책 삭제 후 같은 IP로의 요청이 다시 정상 응답(전달)된다.",미실행
+BAT-FW-005,fwaas,미실행,프로토콜을 지정한 Application Firewall 정책은 그 프로토콜만 막는다.,"1. httpbin.org IP로 붙인 HTTP 요청이 정책 전에 응답하는지, 그 IP로의 ping이 응답하는지 확인(기준선)
+2. source 0.0.0.0/0, destination [그 IP], protocol 1(ICMP)로 BLOCK Application Firewall 정책 생성
+3. 그 IP로 붙인 HTTP 요청이 전파 예산 내내와 그 뒤 3번 연속 전달되는지 확인(끊기면 FAIL)
+4. 양성 확인: 같은 IP로의 ping이 막히고 이 정책의 방화벽 행(dst_ip)이 남는지 확인. 정책 전에도 ping이 응답하지 않았거나 정책 뒤에도 응답하면 정책 적용을 보일 수 없어 UNVERIFIED
+5. 정책 삭제","protocol: 1(ICMP) — 17(UDP)/6(TCP)/253(미할당)도 별도 실측, 전부 결과 동일
+source_ips: [""0.0.0.0/0""], destination_ips: [resolved IP]",BLOCK_TARGET_URL (HTTP/TCP 요청),"ICMP로 좁힌 정책이 걸려 있어도 HTTP(TCP)는 계속 통과하고, 같은 목적지의 ICMP는 막히며 그 정책의 행이 남는다.",미실행
+BAT-FW-006,fwaas,미실행,DNS Firewall 한 rule에 도메인 여러 개를 넣으면 그 도메인들만 막히고 나머지는 통과한다.,"1. 정책 전에 httpbin.org, example.com, www.iana.org가 해석되는지 확인(기준선)
+2. rule FQDN IS [httpbin.org, example.com]으로 BLOCK DNS Firewall 정책 생성
+3. httpbin.org와 example.com 각각 해석 실패와 그 조회 뒤 이 정책의 새 DNS 로그 행(A 레코드, 조회 전후 행 id로 가림)이 BLOCK으로 남는지 확인(행이 없으면 해석 실패를 정책 차단으로 인정하지 않음, FAIL)
+4. 목록에 없는 www.iana.org는 계속 해석되는지 확인(막히면 FAIL)
+5. 정책 삭제","Subject: FQDN, value: [httpbin.org, example.com]","httpbin.org, example.com(차단 대상) / www.iana.org(비교 대상, 목록 밖)",한 rule에 넣은 두 도메인만 해석이 실패하고(각자 정책 행이 남음) 목록에 없는 도메인은 계속 해석된다.,미실행
+BAT-FW-007,fwaas,미실행,DNS Firewall로 상위(apex) 도메인을 막아도 하위(서브) 도메인은 별도 취급된다.,"1. 정책 전에 iana.org와 www.iana.org가 해석되는지 확인(기준선)
+2. rule FQDN IS [iana.org]로 BLOCK DNS Firewall 정책 생성
+3. iana.org 해석 실패와 그 조회 뒤 이 정책의 새 DNS 로그 행(A 레코드, 조회 전후 행 id로 가림)이 BLOCK으로 남는지 확인(행이 없으면 해석 실패를 정책 차단으로 인정하지 않음, FAIL)
+4. www.iana.org는 계속 해석되는지 확인(막히면 FAIL)
+5. 정책 삭제","Subject: FQDN, value: [iana.org]","iana.org(apex, 차단 대상), www.iana.org(서브도메인, 비교 대상)",apex(iana.org)만 막고(정책 행 남음) 서브도메인(www.iana.org)은 해석된다.,미실행
+BAT-FW-009,fwaas,미실행,DNS Firewall의 FQDN 조건은 대소문자와 무관하게 매칭된다.,"1. 정책 전에 대상 도메인(ECHO_HOSTS)마다 대문자 이름이 해석되는지 확인(기준선)
+2. 도메인을 소문자로 넣은 FQDN BLOCK DNS Firewall 정책 생성
+3. 도메인마다 대문자 이름의 해석 실패와 그 조회 뒤 이 정책의 새 DNS 로그 행(A 레코드, 조회 전후 행 id로 가림)이 BLOCK으로 남는지 확인(행이 없으면 해석 실패를 정책 차단으로 인정하지 않음, FAIL)
+4. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
+5. 정책 삭제","Subject: FQDN, value: [httpbin.org, postman-echo.com, httpbingo.org]","HTTPBIN.ORG, POSTMAN-ECHO.COM, HTTPBINGO.ORG (대문자 조회)",소문자로 막은 도메인을 대문자로 조회해도 해석이 실패하고 그 조회의 정책 행이 남는다.,미실행
+BAT-FW-010,fwaas,미실행,"DNS Firewall 정책에 지정한 사용자에게만 적용되고, 다른 사용자에게는 적용되지 않는다.","1. 정책 전에 httpbin.org가 해석되는지 확인(기준선)
+2. LOGGING probe 정책으로 DNS 로그에서 커넥터 사용자 id를 알아냄
+3. 다른 사용자 id로 좁힌 BLOCK 정책: 전파 예산 내내와 그 뒤 3번 연속 해석되는지 확인(한 번이라도 막히면 FAIL)
+4. 커넥터 사용자 id로 좁힌 BLOCK 정책: 해석 실패와 그 조회 뒤 이 정책의 새 DNS 로그 행(A 레코드, 조회 전후 행 id로 가림)이 BLOCK으로 남는지 확인(행이 없으면 해석 실패를 정책 차단으로 인정하지 않음, FAIL)
+5. 정책 삭제","Subject: FQDN, users: [다른 id] 그리고 [실사용자 id]",httpbin.org,"다른 사용자로 좁힌 정책은 이 단말을 막지 않고, 커넥터 사용자로 좁힌 정책은 막으며 그 정책 행이 남는다.",미실행
+BAT-FW-011,fwaas,미실행,DNS Firewall 차단은 A 레코드뿐 아니라 AAAA(IPv6) 조회도 막는다.,"1. 정책 전 기준선: 도메인마다 AAAA 조회가 IPv6 주소를 돌려주는지 확인(없던 도메인은 그 도메인만 UNVERIFIED)
+2. FQDN=[example.com, example.net, postman-echo.com] BLOCK 정책 하나 생성(AAAA 레코드가 실제로 있는 도메인. httpbin.org는 AAAA가 없어 제외)
+3. 도메인마다 A 레코드 조회 차단 확인
+4. 도메인마다 AAAA(IPv6) 조회도 차단되는지 확인(실패 문구가 있거나 기준선에 있던 IPv6 주소가 없어지면 차단)
+5. 그 AAAA 조회 뒤 이 정책의 새 DNS 로그 행이 record_type AAAA, action BLOCK으로 남는지 확인(조회 전후 행 id로 그 조회의 행을 가림)
+6. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED","Subject: FQDN, value: [example.com, example.net, postman-echo.com]","nslookup -type=AAAA <도메인> (example.com, example.net, postman-echo.com, 모두 AAAA 레코드가 있는 도메인)","A/AAAA 둘 다 막히고 AAAA 차단이 DNS 로그에 record_type AAAA, action BLOCK으로 남는다 - 듀얼스택 우회 불가",미실행
+BAT-FW-012,fwaas,미실행,`*.domain`처럼 와일드카드로 값을 넣으면 서브도메인 전체를 막을 수 있다.,"1. 정책 전에 www.iana.org와 iana.org가 해석되는지 확인(기준선)
+2. rule FQDN IS [*.iana.org]로 BLOCK DNS Firewall 정책 생성
+3. www.iana.org 해석 실패와 그 조회 뒤 이 정책의 새 DNS 로그 행(A 레코드, 조회 전후 행 id로 가림)이 BLOCK으로 남는지 확인(행이 없으면 해석 실패를 정책 차단으로 인정하지 않음, FAIL)
+4. iana.org는 계속 해석되는지 확인(막히면 FAIL)
+5. 정책 삭제","Subject: FQDN, value: [*.iana.org]","www.iana.org(서브도메인, 차단 대상), iana.org(apex, 비교 대상)",와일드카드 값은 서브도메인만 막고(정책 행 남음) apex는 막지 않는다.,미실행
+BAT-FW-013,fwaas,미실행,DNS 보안로그 이벤트에 사용자·출발지 IP·국가 등 조사에 필요한 정보가 담겨 있다.,"1. 정책 전에 httpbin.org가 해석되는지 확인(기준선)
+2. httpbin.org에 LOGGING 웹 정책을 걸고, 이 단말이 보낸 마커 요청의 웹 보안로그 행을 받아 둠(비교 기준). 못 받으면 UNVERIFIED
+3. rule FQDN IS [httpbin.org]로 BLOCK DNS Firewall 정책 생성, 해석 실패와 그 조회의 정책 행 확인
+4. DNS 행의 user_id/user_name/src_ip(포트 제외)/src_country_code가 기준 웹 행과 같은지 비교(다르거나 비어 있으면 FAIL)
+5. 정책 삭제","Subject: FQDN, value: [httpbin.org]",httpbin.org,DNS 차단 행의 사용자·출발지 IP·국가가 같은 단말의 웹 보안로그 행과 같은 값으로 기록된다.,미실행
+BAT-GEN-001,genai,미실행,"GenAI 키워드 탐지 정책을 생성하면 요청한 내용대로 저장되고, 삭제하면 사라진다.","1. ChatGPT 앱으로 GENAI_REQUEST_KEYWORD IN [password] LOGGING GenAI 정책 생성
+2. 목록을 다시 읽어 action_type(LOGGING), 키워드 rule 값([password]), 대상 앱(gen_ai_app)이 요청값과 같은지 비교
+3. 정책 삭제(목록에서 사라졌는지 다시 읽어 확인)","subject: GENAI_REQUEST_KEYWORD
+condition: IN
+action_type: LOGGING
+risk_level: Minor
+blockpage_id: 0
+gen_ai_app: [find_app(""chatgpt"")로 동적 조회된 앱 id]","value: [""password""]
+rule id: 1
+policy_name: resource_name(case.case_id, run_context.run_id)로 실행 시마다 동적 생성(BAT-GEN-001-<run_id> 형태)","GenAI 키워드 정책이 요청한 동작·키워드·앱으로 저장되고, 삭제하면 목록에서 사라진다.",미실행
+BAT-SWG-001,swg,미실행,HTTP Host 조건으로 차단한 사이트가 실제로 차단되고 보안 로그에 남는다.,"대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 아래를 반복한다.
+1. HTTP_HOST 조건(IS, 그 호스트)으로 BLOCK 웹 정책을 생성한다
+2. 실제 브라우저로 https://<호스트>/get을 차단될 때까지 재시도 방문한다
+3. 응답이 차단 페이지임을 확인한다
+4. 보안 로그에서 정책명·action=BLOCK·대상 호스트가 일치하는 이벤트를 대기한다
+5. 이벤트에서 접속 사용자 식별 정보를 기록한다
+6. 정책을 삭제한다(temporary 컨텍스트 종료)
+7. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED","subject: HTTP_HOST
+condition: IS
+action_type: BLOCK
+risk_level: MAJOR","대상 호스트(ECHO_HOSTS)=""httpbin.org, postman-echo.com, httpbingo.org"", 방문 URL=""https://<호스트>/get"", 정책명은 resource_name(case_id, run_id, 호스트 이름)으로 실행마다 동적 생성","HTTP_HOST 조건으로 지정한 호스트를 BLOCK하면 실제 브라우저 접속이 차단 페이지로 이어지고, 보안 로그에 BLOCK 액션과 해당 호스트가 기록된 이벤트가 남아야 한다.",미실행
+BAT-SWG-002,swg,미실행,정책에 매칭되지 않는 사이트는 정상 접속되고 보안 로그가 남지 않는다.,"1. HTTP_HOST 조건(IS, httpbin.org)으로 BLOCK 웹 정책을 생성한다
+2. 양성 대조: 마커를 단 httpbin.org 요청이 차단되고, 그 요청(마커) 자신의 BLOCK 이벤트가 이 정책 id로 남는지 확인한다
+3. 정책과 무관한 사이트 여러 곳(https://www.iana.org/, https://example.net/, https://example.com/)을 각자 마커를 달아 브라우저로 방문해 모두 정상 접속되는지 확인한다
+4. 표지 요청: 마커를 단 httpbin.org 요청을 한 번 더 보내 그 행이 로그에 나타날 때까지 기다린다(안 나타나면 UNVERIFIED)
+5. 그 다음 무관한 사이트 요청들의 마커가 든 행이 이 정책으로 하나도 없는지 확인한다(부재 검증)
+6. 정책을 삭제한다
+7. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED","subject: HTTP_HOST
+condition: IS
+action_type: BLOCK","정책 대상 BLOCK_TARGET_HOST=""httpbin.org"", 실제 방문 URL(UNRELATED_URLS)=""https://www.iana.org/"", ""https://example.net/"", ""https://example.com/""","정책이 적용 중(대상 호스트 차단·이벤트 확인)인 상태에서 조건에 매칭되지 않는 사이트는 정상적으로 로드되고, 그 요청들에 대해 이 정책의 보안 이벤트가 전혀 발생하지 않아야 한다.",미실행
+BAT-SWG-003,swg,미실행,내장 HTTP 카테고리 조건이 실제 트래픽에 매칭되고 이벤트에 기록된다.,"1. 대상 호스트(ECHO_HOSTS)마다 LOGGING probe 정책으로 그 호스트의 카테고리를 알아냄(못 알아낸 호스트는 UNVERIFIED)
+2. 그 카테고리 id로 HTTP_CATEGORY LOGGING 정책 생성
+3. 마커를 단 URL을 브라우저로 방문해 렌더링되는지 확인
+4. 그 방문 자신의 행(마커)이 이 정책으로 남고, 행의 categories에 설정한 카테고리 id가 있는지 확인
+5. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED
+6. 정책 삭제","1단계 probe: subject HTTP_HOST, condition IS, action_type LOGGING, risk_level MINOR
+2단계 본정책: subject HTTP_CATEGORY, condition IN, action_type LOGGING, risk_level MINOR","대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 각 호스트 방문 시 실제로 매칭되는 카테고리 id는 probe 이벤트에서 동적으로 발견(하드코딩 아님)","내장 카테고리 조건이 그 방문에 매칭되어 행이 남고, 행의 카테고리가 정책에 설정한 카테고리 id와 같다.",미실행
+BAT-SWG-004,swg,미실행,"정책에 지정한 사용자에게만 적용되고, 다른 사용자에게는 적용되지 않는다.","1. HTTP_HOST 조건(IS, httpbin.org)의 LOGGING probe 정책으로 커넥터가 로그인된 사용자(id/name)를 알아낸다
+2. /sia/v1/user/all 목록에서 커넥터 사용자가 아닌 다른 사용자(bystander) id를 찾는다
+3. bystander id에만 스코프된 HTTP_HOST BLOCK 정책을 생성하고, 전파 시간 내내 그리고 그 뒤 3회까지 BLOCK_TARGET_URL을 되풀이해 방문해 한 번도 차단되지 않는지 확인한다
+4. 해당 정책을 삭제하고, 이번엔 커넥터 사용자 id에만 스코프된 동일 조건 BLOCK 정책을 생성한다
+5. 같은 URL을 재방문해 차단됨을 확인한다
+6. 보안 로그 이벤트의 user_id가 커넥터 사용자 id와 일치하는지 확인한다
+7. 정책을 삭제한다","subject: HTTP_HOST
+condition: IS
+action_type: BLOCK
+users: [bystander_id] → 이후 [connector_user_id]
+user_groups: []","BLOCK_TARGET_HOST=""httpbin.org"". 커넥터 사용자 id/이름과 bystander id는 probe 이벤트 및 /sia/v1/user/all 조회로 실행마다 동적으로 발견","정책이 지정한 사용자가 아닐 때는 트래픽이 차단되지 않고, 커넥터 자신의 사용자로 스코프를 바꾸면 차단되며 보안 로그 이벤트의 user_id가 그 사용자와 일치해야 한다.",미실행
+BAT-SWG-005,swg,미실행,직접 만든 카테고리에 URL을 등록하면 그 카테고리 정책으로 차단된다.,"대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 아래를 반복한다.
+1. 커스텀 카테고리를 생성한다(CustomCategoryFactory)
+2. 그 카테고리에 그 호스트를 등록하는 user rule을 생성한다(UserRuleFactory)
+3. HTTP_CATEGORY 조건(IN, 해당 카테고리 id)으로 BLOCK 웹 정책을 생성한다
+4. 브라우저로 https://<호스트>/get을 차단될 때까지 재시도 방문한다
+5. 차단됨을 확인한다
+6. 보안 로그에서 정책명·대상 호스트가 일치하는 이벤트를 확인한다
+7. 정책 → user rule → 카테고리 순으로 정리한다
+8. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED","subject: HTTP_CATEGORY
+condition: IN
+action_type: BLOCK","category_name/policy_name은 resource_name()으로 동적 생성, 카테고리에 등록한 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org, 방문 URL=""https://<호스트>/get""",직접 만든 카테고리에 대상 호스트를 등록하고 그 카테고리를 조건으로 건 정책이 실제 트래픽을 차단하고 보안 로그에 남아야 한다.,미실행
+BAT-SWG-008,swg,미실행,"커넥터를 켠 상태에서 허용된 트래픽도 로그에 기록되고, 사용자가 식별된다.","1. HTTP_HOST 조건(IS, httpbin.org)으로 LOGGING 정책을 생성한다
+2. 브라우저로 BLOCK_TARGET_URL을 방문한다
+3. 정상 허용(페이지 로드)됨을 확인한다
+4. 보안 로그에서 정책명·action=LOGGING·대상 호스트가 일치하는 이벤트를 대기한다
+5. 이벤트의 user_name이 비어있지 않은지 확인한다
+6. 정책을 삭제한다","subject: HTTP_HOST
+condition: IS
+action_type: LOGGING
+risk_level: MINOR","BLOCK_TARGET_HOST=""httpbin.org"", BLOCK_TARGET_URL=""https://httpbin.org/get""","커넥터가 연결된 상태에서는 허용된(차단되지 않은) 트래픽도 LOGGING 액션으로 보안 로그에 기록되고, 이벤트에 접속 사용자 이름이 채워져 있어야 한다.",미실행
+BAT-SWG-009,swg,미실행,"새로 만든 사용자를 정책 대상으로 지정할 수 있고, 삭제까지 정상 처리된다.","1. 테스트 사용자 생성 후 다시 읽어 login_id가 같은지 확인
+2. 그 사용자만 대상으로 한(user_groups 비움) HTTP_HOST BLOCK 웹 정책 생성
+3. 정책을 다시 읽어 users가 정확히 그 사용자, user_groups가 비어 있음, action_type BLOCK인지 비교(다르면 FAIL)
+4. 정책과 사용자 삭제","새 사용자 login_id: bat-<case_id>-<run_id>@bat.local, role: USER
+웹 정책 대상: users=[새 사용자 id], user_groups=[]","POST /sia/v1/user {login_id, first_name:""BAT"", last_name:""Tester"", role:""USER""}","새로 만든 사용자가 요청한 값 그대로 저장되고, 그 사용자만 대상으로 한 정책이 요청한 대상·동작으로 저장된다.",미실행
+BAT-SWG-010,swg,미실행,"겹치는 ALLOW/BLOCK의 판정은 우선순위가 정하고, 순서를 바꾸면 결과도 바뀐다.","1. 같은 호스트(httpbin.org)에 ALLOW와 BLOCK 웹 정책 생성
+2. BLOCK을 우선순위 1로: 마커를 단 curl 요청이 차단되고 그 요청 자신의 BLOCK 정책 행이 남는지 확인
+3. ALLOW를 우선순위 1로 바꿈(REST로는 priority를 다시 읽을 수 없어 트래픽으로 확인)
+4. 전파 예산 안에 통과가 시작되고, 예산이 지난 뒤 3번 연속 통과하는지 확인
+5. 정책 삭제","subject: HTTP_HOST
+condition: IS
+action_type: ALLOW와 BLOCK(동일 rule 재사용)
+risk_level(BLOCK): MAJOR
+priority 1차: BLOCK=1,ALLOW=2 / 2차: ALLOW=1,BLOCK=2","BLOCK_TARGET_HOST=""httpbin.org"", BLOCK_TARGET_URL=""https://httpbin.org/get"" (curl 기반 트래픽, 브라우저 아님)","우선순위가 높은 정책이 판정을 정하고, 순서를 바꾸면 결과가 바뀌어 그대로 유지된다.",미실행
+BAT-SWG-011,swg,미실행,SOURCE_IP로 이 러너의 출발지 IP를 차단하면 실제로 막히고 보안로그·감사로그 둘 다에 남는다.,"1. LOGGING 정책(HTTP_HOST)으로 이 러너 트래픽을 발생시켜 보안로그에서 src_ip 식별
+2. SOURCE_IP LOGGING 정책 생성(식별된 src_ip/32) — BLOCK 아님, 자기잠금 방지(5.39)
+3. 대상 URL 재방문, 정상 로드(차단 아님) 확인
+4. 보안로그 + 감사로그 둘 다에서 이벤트 확인
+5. 정책 삭제","Subject: SOURCE_IP, Condition: IS, Value: ""<src_ip>/32"" (discovery 단계에서 동적으로 결정)","discovery로 얻은 이 러너의 실제 출발지 IP (고정값 아님, 실행마다 다를 수 있음)",조건이 실제 트래픽과 매칭되어 보안로그·감사로그에 LOGGING 이벤트로 남는다(차단 여부는 검증 안 함),미실행
+BAT-SWG-012,swg,미실행,SOURCE_IP_GEO로 이 러너가 실제로 접속해오는 국가가 조건과 매칭되는지 확인한다.,"1. LOGGING 정책(HTTP_HOST)으로 이 러너 트래픽을 발생시켜 보안로그에서 자기 트래픽의 src_country_code를 식별
+2. SOURCE_IP_GEO BLOCK 정책 생성(식별된 국가코드)
+3. 대상 URL 재방문해 차단 확인
+4. 보안로그 + 감사로그 둘 다에서 이벤트 확인
+5. 정책 삭제","Subject: SOURCE_IP_GEO, Condition: IN(IS는 거부됨), Value: [<ISO 국가코드>]",discovery로 얻은 이 러너의 실제 접속 출발 국가코드 (고정값 아님),차단 확인 + 보안로그 이벤트 + 감사로그 이벤트 모두 성공,미실행
+BAT-SWG-013,swg,미실행,DESTINATION_IP_GEO로 목적지 사이트의 호스팅 국가가 조건과 매칭되는지 확인한다.,"1. LOGGING 정책(HTTP_HOST)으로 이 러너 트래픽을 발생시켜 보안로그에서 목적지 dst_country_code를 식별
+2. DESTINATION_IP_GEO BLOCK 정책 생성(식별된 국가코드)
+3. 대상 URL 재방문해 차단 확인
+4. 보안로그 + 감사로그 둘 다에서 이벤트 확인
+5. 정책 삭제","Subject: DESTINATION_IP_GEO, Condition: IN(IS는 거부됨), Value: [<ISO 국가코드>]",discovery로 얻은 목적지 사이트의 호스팅 국가코드 (고정값 아님),LOGGING 조건(DESTINATION_IP_GEO IN country)이 실제 트래픽과 매칭되어 보안로그·감사로그에 남는다(2026-10-06부로 BLOCK에서 LOGGING으로 전환 — 국가 단위 차단은 넓은 조건으로 취급),미실행
+BAT-SWG-014,swg,미실행,"HTTP_URL로 특정 URL 하나만 막으면 그 URL만 막히고, 같은 호스트의 다른 경로는 통과한다.","대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 아래를 반복한다.
+1. HTTP_URL 조건(IS, https://<호스트>/get 전체 URL)으로 BLOCK 웹 정책을 생성한다
+2. 브라우저로 그 URL을 차단될 때까지 재시도 방문해 차단됨을 확인한다
+3. 같은 호스트의 다른 경로(https://<호스트>/headers)를 방문해 정상 로드되는지 확인한다
+4. 보안 로그에서 정책명이 일치하는 이벤트를 대기한다
+5. audit_log에서 정책명을 포함하는 생성 기록을 확인한다
+6. 정책을 삭제한다
+7. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED","subject: HTTP_URL
+condition: IS
+action_type: BLOCK
+risk_level: MAJOR
+value: 스킴 포함 전체 URL","대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. 차단 대상 ""https://<호스트>/get"", 허용돼야 하는 같은 호스트의 다른 경로 ""https://<호스트>/headers""","HTTP_URL 조건으로 정확한 URL 하나만 지정한 BLOCK 정책은 그 URL만 차단하고 같은 호스트의 다른 경로는 통과시켜야 하며, 보안 로그와 감사 로그 양쪽에 생성 기록이 남아야 한다.",미실행
+BAT-SWG-015,swg,미실행,HTTP_UPLOADFILE_EXTENSION으로 특정 확장자 업로드만 막으면 그 확장자만 막힌다.,"1. HTTP_UPLOADFILE_EXTENSION IN [txt] BLOCK 웹 정책 생성
+2. 마커를 단 URL로 .txt 파일 업로드가 차단될 때까지 반복
+3. 마커가 다른 URL로 .csv 업로드가 통과하는지 확인
+4. 막힌 .txt 업로드 요청 자신의 행(마커)과 감사로그 확인
+5. 정책 삭제","subject: HTTP_UPLOADFILE_EXTENSION
+condition: IN
+action_type: BLOCK
+risk_level: MAJOR
+value: [""txt""] (점 없이)","POST_TARGET_URL=""https://httpbin.org/post"", 차단 대상 파일=""<case_id>-<run_id>.txt"", 허용 대상 파일=""<case_id>-<run_id>.csv"", 둘 다 내용은 ""BAT upload-extension probe\n""",".txt 업로드만 막히고 그 요청의 행이 남으며, .csv 업로드는 통과한다.",미실행
+BAT-SWG-016,swg,미실행,ANTI_VIRUS 시그니처를 켜면 EICAR 테스트 파일 업로드가 차단된다.,"1. ANTI_VIRUS 시그니처 모듈 정책(BLOCK) 생성
+2. EICAR 테스트 문자열을 바이트 그대로(앞 BOM·끝 줄바꿈 없이) 단말 임시 파일에 쓰고, 그대로 있는지 확인한 뒤 곧바로 curl로 업로드하고 지움. 단말 백신이 파일을 막거나 지워 올리지 못하면 UNVERIFIED(환경)
+3. 업로드가 차단되는지 최대 20초 반복 확인
+4. 끝까지 차단되지 않으면 마지막 업로드의 httpbin 에코가 보낸 바이트와 정확히 같은지 확인(그대로 전달됐으면 ANTI_VIRUS 미동작으로 FAIL, 응답이 없거나 전송 경로가 내용을 바꿨으면 UNVERIFIED)
+5. 보안로그 + 감사로그 확인, 정책 삭제","Signature module: ANTI_VIRUS
+Upload filename: eicar.txt(eicar.com도 별도 실측)
+Target: POST_TARGET_URL",EICAR_STRING (업계 표준 68바이트 EICAR 테스트 문자열 — 실제 악성코드 아님),EICAR 업로드가 ANTI_VIRUS 시그니처에 의해 차단된다(차단 없이 내용 그대로 전달되면 FAIL),미실행
+BAT-SWG-017,swg,미실행,BLOCK_CNC_TRAFFIC을 켜면 Signature Management C&C 차단 목록에 등록된 대상 접속이 차단된다.,"1. www.example.org를 C&C deny 목록에 추가
+2. 모듈 LOGGING 사본으로 목록 밖 매칭이 없는지 확인
+3. BLOCK_CNC_TRAFFIC BLOCK 정책 생성
+4. 마커를 단 www.example.org 요청이 차단되고 그 요청 자신의 정책 행이 남는지 확인
+5. 정책 삭제, deny 목록에서 제거","Signature module: BLOCK_CNC_TRAFFIC
+Signature pattern: C&C deny_list += www.example.org","www.example.org (BAT 전용 등록 값, 케이스가 끝나면 제거)
+대조 호스트: httpbin.org",C&C 목록에 등록한 대상 접속이 차단되고 그 요청의 행이 남는다.,미실행
+BAT-SWG-018,swg,미실행,"HTTP_PATH로 특정 경로만 막으면 그 경로만 막히고, 같은 호스트의 다른 경로는 통과한다.","1. HTTP_PATH=/get BLOCK 정책 생성(경로 조건은 호스트를 가리지 않으므로 정책 하나)
+2. 대상 호스트(httpbin.org, postman-echo.com, httpbingo.org)마다 https://<호스트>/get 접속 -> 차단 확인
+3. 같은 호스트의 https://<호스트>/headers(다른 경로) 접속 -> 통과 확인
+4. 호스트마다 그 호스트의 보안로그 이벤트 확인, 감사로그 확인, 정책 삭제
+5. 대상별 결과가 모두 기대대로면 PASS, 하나라도 어긋나면 FAIL, 어긋남 없이 확인 못 한 대상만 있으면 UNVERIFIED","Subject: HTTP_PATH, Condition: IS, value: [""/get""]","대상 호스트(ECHO_HOSTS)=httpbin.org, postman-echo.com, httpbingo.org. https://<호스트>/get (차단 대상), https://<호스트>/headers (같은 호스트, 다른 경로)",/get만 차단되고 같은 호스트의 다른 경로(/headers)는 영향받지 않는다,미실행
+BAT-SWG-019,swg,미실행,HTTP_METHOD 조건이 실제 트래픽의 메서드와 매칭되는지 확인한다.,"1. HTTP_METHOD=POST LOGGING 정책 생성(BLOCK 아님: 러너 자신의 POST까지 막음)
+2. 마커를 단 POST https://httpbin.org/post를 전파 시간 동안 되풀이해 보내, 그중 하나가 이 정책 id로 기록될 때까지 본다(러너 자신의 API POST 행은 마커가 없어 인정하지 않음)
+3. 기록된 그 요청이 차단되지 않았는지(LOGGING이라 통과) + 그 요청 자신의 LOGGING 이벤트 확인
+4. 음성 대조: 마커를 단 GET https://httpbin.org/get을 보내고, 그 뒤 보낸 POST 표지의 행이 나타난 다음 GET의 행이 이 정책으로 없는지 확인
+5. 감사로그 확인, 정책 삭제","Subject: HTTP_METHOD, Condition: IN, value: [""POST""], action_type: LOGGING",POST https://httpbin.org/post (bat=probe),"마커를 단 POST 요청이 조건과 매칭되어 그 요청의 LOGGING 이벤트가 남고 트래픽은 차단되지 않으며, 같은 호스트로 보낸 GET은 이 정책에 기록되지 않는다",미실행
+BAT-SWG-020,swg,미실행,"DESTINATION_IP로 특정 IP 하나만 막으면 그 IP만 막히고, 다른 목적지는 통과한다.","1. httpbin.org를 IP 하나로 해석하고 DESTINATION_IP IS [그 IP] BLOCK 웹 정책 생성
+2. 그 IP로 붙인(pin_ip) 마커 요청이 차단되는지 확인
+3. 다른 IP인 example.com은 통과하는지 확인
+4. 차단된 요청 자신의 정책 행(마커)과 감사로그 확인
+5. 정책 삭제","Subject: DESTINATION_IP, Condition: IS, value: [해석된 IP 1개]","httpbin.org의 실제 IP (매 실행 시 nslookup으로 동적 확인), https://example.com/(비교 대상)","지정한 IP로 가는 요청만 막히고 그 요청의 행이 남으며, 다른 IP는 통과한다.",미실행
+BAT-SWG-021,swg,미실행,BLOCK_RISKY_WEBSITES를 켜면 Signature Management Risky Website 차단 목록에 등록된 대상 접속이 차단된다.,"1. www.example.org를 Risky Website deny 목록에 추가
+2. 모듈 LOGGING 사본으로 목록 밖(www.wikipedia.org) 매칭이 없는지 확인. 매칭되면 BLOCK 없이 FAIL
+3. BLOCK_RISKY_WEBSITES BLOCK 정책 생성
+4. 마커를 단 www.example.org 요청이 차단되고 그 요청 자신의 정책 행이 남는지 확인
+5. 정책 삭제, deny 목록에서 제거","Signature module: BLOCK_RISKY_WEBSITES
+Signature pattern: Risky Website deny_list += www.example.org","www.example.org (BAT 전용 등록 값, 케이스가 끝나면 제거)
+대조 호스트: www.wikipedia.org",Risky Website 목록에 등록한 대상 접속이 차단되고 그 요청의 행이 남는다.,미실행
+BAT-SWG-022,swg,미실행,"HTTP_HOST로 막은 호스트명은 차단되고, 같은 목적지를 IP로 직접 접속하면 통과한다.","1. httpbin.org를 IP로 해석하고 HTTP_HOST IS [httpbin.org] BLOCK 웹 정책 생성
+2. 마커를 단 호스트명 요청이 차단되고 그 요청 자신의 정책 행이 남는지 확인
+3. 같은 목적지를 IP로 직접 요청해 통과(전달)하는지 확인(막히면 FAIL, 응답이 없으면 UNVERIFIED)
+4. SSE가 IP 요청을 보는지는 LOGGING DESTINATION_IP 정책으로 근거만 남김
+5. 정책 삭제","Subject: HTTP_HOST, condition: IS, value: [httpbin.org], action: BLOCK","https://httpbin.org/get
+https://<httpbin.org IP>/get","호스트명 요청은 막히고(그 요청의 행이 남음), HTTP_HOST가 매칭하지 않는 IP 직접 요청은 통과한다.",미실행
+BAT-SWG-023,swg,미실행,HTTP_HOST 조건은 대소문자와 무관하게 매칭된다 — 호스트를 대문자 그대로 보내는 클라이언트(curl 등)도 막혀야 한다.,"1. HTTP_HOST IS [httpbin.org](소문자) BLOCK 웹 정책 생성
+2. curl로 https://HTTPBIN.ORG/get?bat=...-curl 요청(대문자 Host 그대로 전송)
+3. 브라우저로 마커가 다른 같은 주소 방문해 결과 기록(근거로만 남김)
+4. curl이 차단되면 그 요청 자신의 정책 행까지 확인해 PASS, curl이 응답을 받으면 우회 확인(FAIL), curl이 응답을 받지 못하면 UNVERIFIED
+5. 정책 삭제","Subject: HTTP_HOST, condition: IS, value: [httpbin.org], action: BLOCK",https://HTTPBIN.ORG/get,대문자 Host로 보낸 요청도 차단되고 그 요청의 행이 남는다(curl이 응답을 받으면 FAIL. 단 curl만 통과하고 브라우저는 막히는 증상은 known_issue로 SKIP),미실행
+BAT-X-001,cross,미실행,DLP 탐지로 걸리는 웹정책보다 우선순위 높은 ALLOW가 있어도 DLP 차단은 유지된다.,"1. DLP 키워드 룰 정책 생성
+2. 그 DLP를 참조하는 웹 정책(BLOCK, risk MAJOR) 생성
+3. 토큰 포함 payload 전송해 DLP 단독으로 차단되는지 먼저 확인(사전조건)
+4. 같은 호스트를 대상으로 한 ALLOW 웹 정책을 추가 생성, 우선순위를 BLOCK보다 높게 설정
+5. 같은 토큰 payload를 다시 전송
+6. 보안로그 확인, 전부 삭제","우선순위: ALLOW=1, DLP-linked BLOCK=2 (낮은 숫자가 먼저 평가됨)","DLP keyword rule token
+ALLOW rule: HTTP_HOST IS BLOCK_TARGET_HOST",우선순위 높은 ALLOW가 있어도 DLP 탐지 차단은 유지된다(차단됨),미실행
+BAT-X-002,cross,미실행,같은 호스트를 허용하는 웹정책이 있어도 DNS Firewall 차단은 유지된다.,"1. 정책 전에 example.com이 해석되고 웹 요청이 응답하는지 확인(기준선)
+2. example.com HTTP_HOST ALLOW 웹 정책을 우선순위 1로 두고, example.com FQDN BLOCK DNS Firewall 정책 생성
+3. nslookup 해석 실패와 그 조회의 DNS 정책 행으로 DNS 정책 적용을 확인
+4. 단말 DNS 캐시를 비우고 마커를 단 웹 요청을 보냄
+5. 그 요청이 해석 실패(연결 없음)나 DNS 차단 페이지면 PASS, 전달되면 FAIL, 그 밖의 응답이면 UNVERIFIED
+6. 정책 삭제","web_policy: action_type=ALLOW, subject=HTTP_HOST, condition=IS, value=[example.com], priority=1
+dns_firewall: action_type=BLOCK, rule.subject=FQDN, rule.condition=IS, rule.value=[example.com]","SECOND_HOST=example.com, 정책 이름은 resource_name(case_id, run_id, 'allow'/'dns')으로 실행마다 동적 생성",같은 호스트를 허용하는 웹 ALLOW가 있어도 실제 웹 요청이 DNS 계층에서 막힌다.,미실행
+BAT-X-003,cross,미실행,같은 호스트를 허용하는 웹정책이 있어도 Application Firewall 차단은 유지된다.,"1. 정책 전에 example.com이 해석되는지, 그 IP로 붙인 요청이 응답하는지 확인(기준선)
+2. example.com HTTP_HOST ALLOW 웹 정책을 우선순위 1로 두고, 그 IP로 BLOCK Application Firewall 정책 생성
+3. 그 IP로 붙인 요청의 연결 끊김과 dst_ip가 그 IP인 방화벽 정책 행 확인
+4. 정책 삭제","web_policy: action_type=ALLOW, subject=HTTP_HOST, condition=IS, value=[example.com], priority=1
+application_firewall: action_type=BLOCK, subject.source.ip_address=[0.0.0.0/0], subject.destination.ip_address=[resolve_ip(example.com)]","SECOND_HOST=example.com, SECOND_URL=https://example.com/, destination_ip은 resolve_ip()로 실행 시점에 동적 확인, 정책 이름은 resource_name()으로 동적 생성",웹 ALLOW가 있어도 목적지 IP로의 연결이 끊기고 방화벽 정책의 행이 남는다.,미실행
+BAT-X-005,cross,미실행,두 계층이 같이 막고 있을 때 한쪽을 지워도 다른 쪽 차단은 그대로다.,"1. 정책 전에 example.com이 해석되는지, 그 IP로 붙인 요청이 응답하는지 확인(기준선)
+2. 그 IP로 BLOCK Application Firewall 정책과 example.com FQDN BLOCK DNS Firewall 정책을 함께 생성
+3. 어느 한 계층이 막는지 확인하고, DNS 정책의 해석 실패와 그 조회의 DNS 행 확인
+4. DNS 정책 삭제(목록에서 사라졌는지 확인) 후 이름이 다시 해석되는지 확인(삭제 반영, 막혀 있으면 FAIL)
+5. 그 IP로 붙인 요청이 여전히 끊기고 방화벽 정책의 새 행(dst_ip)이 남는지 확인
+6. 방화벽 정책 삭제","application_firewall: action_type=BLOCK, subject.source.ip_address=[0.0.0.0/0], subject.destination.ip_address=[resolve_ip(example.com)]
+dns_firewall: action_type=BLOCK, rule.subject=FQDN, rule.value=[example.com]","SECOND_HOST=example.com, SECOND_URL=https://example.com/, destination_ip은 resolve_ip()로 동적 확인, 정책 이름은 resource_name()으로 동적 생성",DNS 정책을 지우면 이름은 다시 해석되지만 방화벽 정책의 차단은 그대로 유지되고 그 행이 남는다.,미실행
+BAT-X-006,cross,미실행,CASB 앱 차단은 같은 호스트를 허용하는 우선순위 높은 웹정책이 있어도 유지된다.,"1. CASB SaaS Access BLOCK 정책(application=[CASB_SAAS_APP_ID], risk_level=Major)을 생성해 Notion 앱을 차단한다.
+2. 그 안에서 같은 CASB_SAAS_HOST(www.notion.so)를 허용하는 HTTP_HOST ALLOW 웹정책을 생성하고 우선순위를 1(최우선)로 설정한다.
+3. 실제 브라우저(Playwright)로 CASB_SAAS_URL을 방문해 차단 페이지 여부를 기록한다(화면 결과는 기록만, 단언하지 않음 — CASB 차단은 간헐적이므로).
+4. casb_log(casb_security_log)에서 CASB 정책명으로 이벤트를 폴링하고 in_app_service가 CASB_SAAS_APP_NAME(Notion)인지 확인한다.
+5. 이벤트의 action 필드가 'BLOCK'인지 확인한다(우선순위 높은 웹 ALLOW가 CASB 판정을 무력화하지 않았는지가 핵심 단언).
+6. 두 정책을 정리(삭제)한다.","saas_access: action_type=BLOCK, risk_level=Major, application=[CASB_SAAS_APP_ID]
+web_policy: action_type=ALLOW, subject=HTTP_HOST, condition=IS, value=[www.notion.so], priority=1","CASB_SAAS_APP_ID=3(Notion), CASB_SAAS_APP_NAME='Notion', CASB_SAAS_HOST='www.notion.so', CASB_SAAS_URL='https://www.notion.so/', 정책 이름은 resource_name()으로 동적 생성",같은 호스트를 허용하는 우선순위 1의 웹 ALLOW 정책이 있어도 casb_security_log에 기록된 이벤트의 action은 BLOCK이어야 한다(화면 차단 여부는 판정에 쓰지 않음).,미실행
+BAT-X-007,cross,미실행,DNS Firewall이 막은 요청은 DNS 보안 로그에만 남고 웹 보안 로그에는 남지 않는다.,"1. 정책 전에 example.com이 해석되는지 확인(기준선)
+2. example.com에 LOGGING 웹 정책(대조)을 걸고, 마커를 단 요청이 그 정책으로 웹 로그에 찍히는지 확인(양성 대조, 안 찍히면 UNVERIFIED)
+3. example.com FQDN BLOCK DNS Firewall 정책 생성, 해석 실패와 그 조회의 DNS 행 확인
+4. 단말 DNS 캐시를 비우고 마커를 단 요청을 보냄(결과는 근거로 기록)
+5. 실제 IP로 붙인 표지 요청의 행이 대조 정책으로 나타난 뒤, DNS로 막힌 요청의 웹 로그 행이 어느 정책으로도 없는지 확인
+6. 정책 삭제","dns_firewall: action_type=BLOCK, rule.subject=FQDN, rule.condition=IS, rule.value=[example.com]","SECOND_HOST=example.com, 정책 이름은 resource_name(case_id, run_id)로 동적 생성",DNS로 막힌 요청은 DNS 보안로그에만 남고 웹 보안로그에는 어떤 행도 남지 않는다.,미실행
+BAT-X-008,cross,미실행,DNS Firewall이 막으면 요청이 DLP 검사 단계까지 가지도 못한다.,"1. SECOND_HOST가 정상 해석될 때까지 대기한다.
+2. 'bat-token' 키워드 룰(DLP 고유 토큰 포함)을 가진 DLP 정책을 생성한다.
+3. 그 DLP 정책을 참조하는 DLP_POLICY rule의 웹 BLOCK 정책(risk_level=MAJOR)을 생성한다.
+4. 토큰이 포함된 POST 페이로드로 SECOND_URL에 curl 요청을 보내, DLP 단독으로 403 차단 페이지가 뜨는지 먼저 확인한다(선행 검증).
+5. 같은 SECOND_HOST를 막는 DNS Firewall BLOCK 정책을 추가로 생성한다(DLP와 DNS 두 계층이 동시에 걸린 상태).
+6. nslookup으로 SECOND_HOST 조회가 차단되는지, 그 DNS 정책의 이벤트가 남는지 확인한다.
+7. 단말 DNS 캐시를 비운 뒤(ipconfig /flushdns) 마커를 단 SECOND_URL로 토큰 포함 POST를 보내 통과하지 않는지 확인한다.
+8. 그 요청 뒤에 DNS Firewall 정책의 새 행이 생겼는지 확인한다(없으면 FAIL: DNS 계층에서 막히지 않음).
+9. 표지 요청: 토큰 포함 POST를 마커를 단 httpbin.org/post로 보내 그 DLP 행이 나타난 다음, 7번 요청의 마커가 든 DLP 웹정책 행이 없는지 확인한다(있으면 FAIL: DLP 검사까지 감).
+10. 두 정책(DLP 연결 웹 정책, DNS Firewall 정책)과 DLP 정책을 정리(삭제)한다.","dlp_policy: rule=keyword_rule('bat-token', [token])
+web_policy: action_type=BLOCK, risk_level=MAJOR, rule=DLP_POLICY rule(dlp_policy_id)
+dns_firewall: action_type=BLOCK, rule.subject=FQDN, rule.value=[example.com]
+traffic: method=POST, data=keyword_payload(token)","SECOND_HOST=example.com, SECOND_URL=https://example.com/, token=marker(case_id, run_id)로 동적 생성된 'BATSENSITIVE...' 문자열, payload='note=quarterly review&secret=<token>&owner=bat-suite'","DLP 연결 웹 정책과 DNS Firewall 정책이 동시에 걸려 있을 때 토큰이 포함된 요청은 통과하지 않고, 그 요청은 DNS Firewall 행을 새로 남기며 DLP 웹정책 행은 남기지 않는다(DNS 계층에서 먼저 막힘).",미실행
+BAT-X-009,cross,미실행,GenAI 정책이 못 막는 AI 서비스도 웹정책 호스트 차단으로는 막힌다.,"1. HTTP_HOST가 chatgpt.com인 BLOCK 웹정책을 생성한다.
+2. 실제 브라우저로 https://chatgpt.com/ 을 방문해 차단 페이지가 뜰 때까지 재시도한다.
+3. 차단 페이지가 표시되는지 확인한다(GenAI 전용 정책이 아니라 웹 계층 호스트 차단으로 막혔는지가 핵심).
+4. web_log에서 정책명과 대상(chatgpt.com, target_in_search=True)으로 이벤트를 폴링해 확인한다.
+5. 정책을 정리(삭제)한다.","web_policy: action_type=BLOCK, subject=HTTP_HOST, condition=IS, value=[chatgpt.com]","host='chatgpt.com', 정책 이름은 resource_name(case_id, run_id)로 동적 생성","GenAI 프롬프트/페이지 차단이 이 환경에서 동작하지 않더라도, chatgpt.com을 막는 웹정책만으로 실제 페이지 로딩이 차단 페이지로 끝나고 웹 보안 로그에 해당 호스트를 대상으로 한 이벤트가 남아야 한다.",미실행
+BAT-X-011,cross,미실행,의심 정황 이후 DLP·CASB 차단을 동시에 걸어도 각자 자기 트래픽만 정확히 막는다.,"1. DLP 키워드 룰을 연결한 웹 BLOCK 정책과 Notion SaaS Access BLOCK 정책을 함께 생성
+2. 채널 A: 마커를 단 DLP 키워드 POST가 차단되고 그 요청 자신의 DLP 정책 행이 남는지 확인
+3. 채널 B: Notion 방문을 BAT-CASB-004와 같은 방식(전파 예산, 그 뒤 5번 차단, 요청마다 자기 BLOCK 행)으로 판정
+4. 교차 음성 대조 1: 그 뒤 CASB 요청들의 행이 들어온 시점에 DLP 업로드 요청의 행이 CASB 로그에 없는지 확인
+5. 교차 음성 대조 2: DLP 표지 요청의 행이 나타난 뒤 CASB 방문 요청들의 행이 DLP 웹 정책으로 없는지 확인
+6. 정책 삭제","dlp: rule=keyword_rule('bat-token', [token]) + web BLOCK(risk_level=MAJOR, DLP_POLICY rule), traffic=POST to POST_TARGET_URL
+casb: saas_access BLOCK, application=[CASB_SAAS_APP_ID], risk_level=Major, 방문 URL=CASB_SAAS_URL
+검증: dlp_event.policy_name != casb_name AND casb_event.rule_name != dlp_block_name","token=marker(case_id, run_id)로 동적 생성, payload='note=quarterly review&secret=<token>&owner=bat-suite', CASB_SAAS_APP_ID=3(Notion), 정책 이름은 resource_name()으로 동적 생성","두 차단 채널이 동시에 켜져 있어도 각자 자기 요청만 막고 기록하며, 상대 채널의 요청은 자기 로그에 남기지 않는다.",미실행
+BAT-ZTNA-001,ztna,PASS,"커넥터가 연결된 상태이고, 그 인증이 감사 로그에 기록되어 있다.","1. 커넥터 프로세스가 실행 중인지 확인
+2. 이 단말의 device_id(설정값 또는 하드웨어 UUID)로 인증 로그 조회. 이 단말의 행이 나올 때까지 1일 → 7일 → 30일로 범위를 넓힘(서버가 넓힌 조회를 거부하면 거기서 멈추고 근거로 기록)
+3. 이 단말의 가장 최근 행이 연결 해제(AUTH_DISCONNECT_*)면 FAIL
+4. 로그인 또는 터널 연결 행이 있으면 PASS(범위를 다 넓혀도 없으면 UNVERIFIED). 그 행이 며칠 전인지, 이번 실행 전인지는 근거로 기록","process_name: AIConnector for Client
+lookback: 1일, 7일, 30일 순서(행이 한 페이지보다 많으면 마지막 페이지도 읽음)
+identity fields: user, device, src_ip, result, os","CONNECTOR_PROCESS 상수 ""AIConnector for Client"", AUTH_LOOKBACK_DAYS=(1, 7, 30), identity 값은 auth_log에서 실시간으로 조회되는 최신 인증 이벤트(고정 리터럴 아님)","커넥터가 실행 중이고, 이 단말의 가장 최근 인증 기록이 연결 해제가 아니며 로그인·터널 연결 행이 남아 있다.","커넥터가 실행 중이고, 이 단말의 가장 최근 인증 기록이 연결 해제가 아니며 로그인·터널 연결 행이 남아 있다."
+BAT-ZTNA-002,ztna,PASS,"ZTNA 접근 정책을 BLOCK·ALLOW로 만들면 각각 요청한 내용대로 저장되고, 삭제하면 사라진다.","1. country AQ rule로 BLOCK 접근 정책 생성, 다시 읽어 action_type과 국가(AQ)가 요청값과 같은지 비교
+2. 삭제 후 목록에서 사라졌는지 확인
+3. ALLOW로 같은 절차 반복","action_type: BLOCK
+rule: {country: [""AQ""]}
+검증 대상: 생성 직후 list() 포함 여부, 삭제 후 list() 미포함 여부","policy_name은 resource_name(""BAT-ZTNA-005"", run_id)으로 동적 생성, rule={""country"": [""AQ""]}","BLOCK·ALLOW 접근 정책이 각각 요청한 동작·국가로 저장되고, 삭제하면 사라진다.","BLOCK·ALLOW 접근 정책이 각각 요청한 동작·국가로 저장되고, 삭제하면 사라진다."
+BAT-ZTNA-003,ztna,PASS,실제 커넥터 사용자를 대상으로 한 접근 정책이 정상 생성된다.,"1. 인증 로그에서 디렉터리 실사용자 id를 찾음
+2. 그 사용자 id와 country AQ rule로 BLOCK 접근 정책 생성
+3. 다시 읽어 action_type(BLOCK), rule의 사용자 id, 국가(AQ)가 요청값과 같은지 비교
+4. 정책 삭제","action_type: BLOCK
+rule: {user_id: [실제 auth_log에서 얻은 user_id], country: [""AQ""]}
+검증 대상: list() 결과에 정책명 포함 여부","user_id는 auth_log 최신 인증 이벤트(또는 사용자 디렉터리 역질의)에서 동적으로 얻은 실제 값, country=[""AQ""] 고정, policy_name은 resource_name(""BAT-ZTNA-006"", run_id)으로 동적 생성",실사용자를 대상으로 한 접근 정책이 요청한 사용자·국가·동작으로 저장된다.,실사용자를 대상으로 한 접근 정책이 요청한 사용자·국가·동작으로 저장된다.
+BAT-ZTNA-004,ztna,PASS,ZTNA의 보호 대상 리소스(tunnel/gateway) 목록을 조회할 수 있다(환경 점검).,"1. SIA.ztna tunnel/gateway 목록 조회
+2. 조회가 답하면 통과(환경 점검, diagnostic). 빈 목록도 통과","조회 필드: tunnel.list{id,name,description}, gateway.list{id,name,description}
+검증 대상: 두 결과가 모두 list 타입인지 여부","별도 입력 데이터 없음(조회 전용 쿼리), 이 테넌트에서 실측된 응답은 tunnel.list=[], gateway.list=[] (둘 다 빈 배열)",보호 대상 리소스 목록 조회가 오류 없이 응답한다(환경 점검).,보호 대상 리소스 목록 조회가 오류 없이 응답한다(환경 점검).
+BAT-ZTNA-005,ztna,PASS,인증 로그에서 실사용자를 찾아 정책을 걸고 지운 뒤에도 커넥터 세션은 멀쩡하다.,"1. 인증 로그에서 디렉터리 실사용자 id를 찾음
+2. 그 사용자 id와 country AQ rule로 BLOCK 접근 정책 생성, 다시 읽어 동작·사용자 id·국가 비교
+3. 정책 삭제(목록에서 사라졌는지 확인)
+4. 커넥터가 여전히 실행 중이고, ALLOW_TARGET 호스트에 건 LOGGING 웹 정책으로 이 단말의 마커 요청이 보안 로그에 찍히는지 확인(트래픽이 여전히 SSE를 지남)
+5. LOGGING 정책 삭제","Rule: user_ids=[실사용자 id], countries=[AQ]
+비교 대상: connector service state(Running), auth_log 이벤트 수(사전/사후)",인증 로그에서 동적으로 얻은 실사용자 id (고정값 아님),"실사용자 id로 만든 정책이 요청한 값으로 저장되고, 지운 뒤에도 이 단말의 트래픽이 SSE를 정상 경유한다.","실사용자 id로 만든 정책이 요청한 값으로 저장되고, 지운 뒤에도 이 단말의 트래픽이 SSE를 정상 경유한다."
+BAT-ZTNA-006,ztna,PASS,accessControl(개별 보호 리소스)의 세부 필드를 전부 읽을 수 있다(환경 점검).,"1. SIA.ztna.accessControl 세부 필드 조회
+2. 조회가 답하면 통과, 항목이 있으면 첫 항목에 id/name/enable/type/application이 있는지 확인(환경 점검, diagnostic)",없음(조회 전용),"lguplus(qa2): Access Test Web Server(HTTPS), DNS(TCP), FTP(TCP) 3개 리소스",접근제어 목록과 세부 필드를 조회할 수 있다(환경 점검).,접근제어 목록과 세부 필드를 조회할 수 있다(환경 점검).
+BAT-ZTNA-008,ztna,PASS,`SIA.ztna.dynamic_connector`도 tunnel/gateway와 같은 방식으로 조회할 수 있다.,"1. dynamic_connector 필드를 여러 선택 형태로 시도
+2. 조회 가능한지 확인",없음,없음,어떤 형태로든 조회가 된다,어떤 형태로든 조회가 된다
+BAT-ZTNA-009,ztna,PASS,"도메인으로 등록한 접근제어로 커넥터에서 내부 서버(게이트웨이 또는 터널 뒤) 페이지가 열리고, 그 접속이 BAT 규칙 이름으로 ZTNA 로그에 남는다.","1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR). 도메인이 없으면 ERROR
+2. 전체 사용자 LOGGING 접근정책을 만든다
+3. 찾은 도메인과 포트로 접근제어를 만들어 그 정책을 연결하고 우선순위를 0으로 올린다
+4. 커넥터 단말에서 <scheme>://<domain>:<port>/ 요청
+5. ZTNA 로그(service_security_log)에서 BAT 접근제어 이름의 AP_LOGGING 행 확인
+6. 접근제어, 접근정책 삭제","접근제어: type HTTP, application [{domain, port, target_type: gateway 또는 tunnel, target_id: 게이트웨이 서버 id 또는 터널 interface id}], user/user_group [0], priority 0
+접근정책: action LOGGING, rules [{user_id: [0]}]",lguplus: web.qa2.internal:80 → 192.168.3.106 (Retro Computing Archive),"페이지가 열리고(page_text 포함), ZTNA 로그에 BAT 접근제어·접근정책 이름, 목적지 <server_ip>:<port>, 이 단말 device_id의 AP_LOGGING 행이 남는다","페이지가 열리고(page_text 포함), ZTNA 로그에 BAT 접근제어·접근정책 이름, 목적지 <server_ip>:<port>, 이 단말 device_id의 AP_LOGGING 행이 남는다"
+BAT-ZTNA-010,ztna,PASS,"도메인 접근제어에 BLOCK 접근정책을 연결하면 그 서버(게이트웨이 또는 터널 뒤)만 도메인·IP 모두 차단되고, 지우면 다시 열린다.","1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR). 도메인이 없으면 ERROR
+1-1. 규칙 없이 <scheme>://<domain>:<port>/ 이 열리는지 확인(안 열리면 ERROR)
+2. 전체 사용자 BLOCK 접근정책을 만든다
+3. 도메인 접근제어를 만들어 그 정책을 연결하고 우선순위를 0으로 올린다
+4. 도메인과 서버 IP로 각각 요청해 ""blocked by <접근제어 이름>"" 차단 페이지 확인
+5. 같은 포트의 다른 내부 서버(찾았거나 설정된 other_ip)는 열리는지 확인
+6. ZTNA 로그에서 BAT 접근제어 이름의 AP_BLOCK 행 확인
+7. 접근제어, 접근정책 삭제 후 페이지가 다시 열리는지 확인","접근제어: type HTTP, application [{domain, port, target_type: gateway 또는 tunnel, target_id}], priority 0
+접근정책: action BLOCK, rules [{user_id: [0]}]","lguplus: web.qa2.internal / 192.168.3.106:80 차단 대상, 192.168.3.227:80 범위 확인","그 서버만 도메인·IP 모두 차단 페이지가 뜨고 다른 내부 서버는 열리며, AP_BLOCK 행이 남고, 삭제하면 다시 열린다","그 서버만 도메인·IP 모두 차단 페이지가 뜨고 다른 내부 서버는 열리며, AP_BLOCK 행이 남고, 삭제하면 다시 열린다"
+BAT-ZTNA-011,ztna,PASS,"IP로 등록한 접근제어로 커넥터에서 내부 서버(게이트웨이 또는 터널 뒤) IP에 접속되고, 그 접속이 BAT 규칙 이름으로 ZTNA 로그에 남는다.","1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR)
+1-1. 전체 사용자 LOGGING 접근정책을 만든다
+2. IP(server_ip:port)로 접근제어를 만들어 그 정책을 연결하고 우선순위를 0으로 올린다
+3. 커넥터 단말에서 <scheme>://<server_ip>:<port>/ 요청
+4. ZTNA 로그에서 BAT 접근제어 이름의 AP_LOGGING 행 확인
+5. 접근제어, 접근정책 삭제","접근제어: type HTTP, application [{ip, port, target_type: gateway 또는 tunnel, target_id}], priority 0
+접근정책: action LOGGING, rules [{user_id: [0]}]",lguplus: 192.168.3.106:80,"페이지가 열리고, ZTNA 로그에 BAT 접근제어 이름, 목적지 <server_ip>:<port>, 이 단말 device_id의 AP_LOGGING 행이 남는다","페이지가 열리고, ZTNA 로그에 BAT 접근제어 이름, 목적지 <server_ip>:<port>, 이 단말 device_id의 AP_LOGGING 행이 남는다"
+BAT-ZTNA-012,ztna,FAIL,"IP로만 등록한 접근제어에 BLOCK을 연결하면 그 IP만 막히고, 같은 포트의 다른 내부 서버는 열린다.","1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR). 다른 서버가 없으면 ERROR
+1-1. 규칙 없이 그 다른 서버(other_ip)가 열리는지 확인(안 열리면 ERROR)
+2. 전체 사용자 BLOCK 접근정책을 만든다
+3. 도메인 없이 IP(server_ip:port)만으로 접근제어를 만들어 연결하고 우선순위를 0으로 올린다
+4. server_ip가 ""blocked by <접근제어 이름>""으로 차단되는지 확인
+5. other_ip는 계속 열리는지 확인
+6. 접근제어, 접근정책 삭제","접근제어: type HTTP, application [{ip, port, target_type: gateway 또는 tunnel, target_id}] (domain 없음), priority 0
+접근정책: action BLOCK, rules [{user_id: [0]}]","lguplus: 192.168.3.106:80 차단 대상, 192.168.3.227:80 범위 확인","규칙에 적은 IP만 차단되고, 같은 포트의 다른 내부 서버는 열린다","IP만 넣은 접근제어가 IP를 보지 않고 포트만으로 매칭돼, 같은 포트의 다른 내부 서버(192.168.3.227:80)까지 그 규칙 이름으로 차단됨"
+BAT-ZTNA-013,ztna,PASS,"게이트웨이 서버(또는 터널 interface)에 등록한 도메인이 커넥터에서 그 IP로 풀려 브라우저와 curl로 페이지가 열리고, 그 도메인으로 만든 접근제어가 접속을 기록한다.","1. 게이트웨이 서버 목록(콘솔 도메인이 있는 서버 먼저, 그 안에서 id 순)에서, 열리는 서버가 없으면 연결된 터널의 interface에서 규칙 없이 웹 포트(80/8080/8000/443/8443/3000/5000)가 처음 열리는 서버·포트와 그 페이지 <title>, 그 서버(또는 interface)에 콘솔이 붙인 도메인, 같은 포트로 열리는 다른 서버를 찾는다(스테이지 ztna·ztna_tunnel 설정에 적힌 값 우선, 못 찾으면 ERROR)
+1-1. 그 서버(게이트웨이 서버 또는 터널 interface)에 콘솔이 등록한 도메인을 읽는다(없으면 ERROR)
+2. 단말에서 그 도메인을 조회해 커넥터가 server_ip로 답하는지 확인
+3. 전체 사용자 LOGGING 접근정책을 만든다
+4. 그 도메인으로 접근제어를 만들어 연결하고 우선순위를 0으로 올린다
+5. curl과 브라우저로 <scheme>://<도메인>:<port>/ 을 열어 내부 서버 페이지가 열리는지 확인
+6. ZTNA 로그에 BAT 접근제어 이름, AP_LOGGING, server_ip:port, 이 단말 device_id 행이 남는지 확인
+7. 접근제어, 접근정책 삭제","게이트웨이 서버: SIA.ztna.gateway.list.servers {id, ip, domain}
+접근제어: type HTTP, application [{domain, port, target_type: gateway 또는 tunnel, target_id}], priority 0
+접근정책: action LOGGING, rules [{user_id: [0]}]","lguplus: 게이트웨이 Openstack Test Env 서버 4 (192.168.3.106, 도메인 test.com), 페이지 문구 Retro Computing Archive","콘솔에 등록한 도메인이 커넥터에서 그 서버 IP로 풀리고, 브라우저와 curl 모두 내부 서버 페이지가 열리며, ZTNA 로그에 BAT 규칙 이름으로 접속이 남는다","콘솔에 등록한 도메인이 커넥터에서 그 서버 IP로 풀리고, 브라우저와 curl 모두 내부 서버 페이지가 열리며, ZTNA 로그에 BAT 규칙 이름으로 접속이 남는다"
+BAT-ZTNA-014,ztna,PASS,"커넥터를 설치하지 않은 터널을 등록하면 그 도메인이 단말에서 터널 주소로 풀리지만 접속은 되지 않고, 지우면 이름이 사라진다.","1. 이번 실행 전용 도메인(bat-<run_id>.tunnel.internal)이 단말에서 안 풀리는지 확인(풀리면 ERROR)
+2. 그 도메인과 192.0.2.10으로 터널을 등록한다(커넥터 설치 안 함)
+3. 터널이 연결 안 됨(connect_status false)으로 보이고, 인증 파일이 이 워크스페이스용이며 access_id가 있는지 확인
+4. 단말에서 그 도메인이 192.0.2.10으로 풀리는지 확인(커넥터 설정 반영)
+5. 192.0.2.10으로 접속되지 않는지 확인
+6. 터널 삭제 후 그 도메인이 더 이상 풀리지 않는지 확인","터널: create(name, description, interface [{ip: 192.0.2.10, domain}]), delete(id: [id])
+인증 파일: tunnel.authFile(id).file_content (base64 JSON: workspace, access_id, client_type, vpn_type, pqc), 값은 기록하지 않음","lguplus: 192.0.2.10(문서용 대역), bat-<run_id>.tunnel.internal","등록한 터널의 도메인이 바로 커넥터에 내려가 단말에서 터널 주소로 풀리지만 연결 안 된 터널로는 접속되지 않고, 터널을 지우면 그 이름이 사라진다","등록한 터널의 도메인이 바로 커넥터에 내려가 단말에서 터널 주소로 풀리지만 연결 안 된 터널로는 접속되지 않고, 터널을 지우면 그 이름이 사라진다"
