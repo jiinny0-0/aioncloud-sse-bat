@@ -4328,6 +4328,23 @@ def test_a_baseline_whose_curl_never_ran_is_a_bat_error(monkeypatch):
                                "start", 0)
 
 
+def test_sweep_deletes_only_bat_dlp_policies():
+    from bat.cli import _sweep_dlp
+
+    class Rest:
+        deleted = None
+
+        def get(self, path, params=None):
+            return {"total": 2, "items": [{"id": 7, "name": f"BAT-DLP-001-{RUN_ID}"}, {"id": 8, "name": "고객 DLP"}]}
+
+        def delete(self, path, json=None):
+            Rest.deleted = (path, json)
+
+    assert _sweep_dlp(Rest(), SimpleNamespace(name="qa2"), delete=False) == 1 and Rest.deleted is None
+    assert _sweep_dlp(Rest(), SimpleNamespace(name="qa2"), delete=True) == 1
+    assert Rest.deleted == ("/sia/v1/dlp/policy", {"policy_ids": [7]})
+
+
 # -- 서버 응답이 없을 때: 서버 다운인가, 이 PC 네트워크가 끊겼나 ----------------------
 
 def test_pc_network_script_is_one_line_without_double_quotes():

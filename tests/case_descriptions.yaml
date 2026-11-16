@@ -348,9 +348,9 @@ BAT-CASB-004:
   test_steps: |-
     1. resource_name()으로 BAT-CASB-004-<run_id> 정책명을 만든다.
     2. saas_access.temporary()로 application=[CASB_SAAS_APP_ID](Notion), action_type=BLOCK, risk_level=Major인 정책을 생성한다.
-    3. visit_until_blocked()으로 CASB_SAAS_URL(Notion)을 브라우저로 반복 방문하며 차단 페이지가 뜨는지 run_context.policy_propagation_timeout_sec 동안 재시도한다(결과는 기록만 하고 통과/실패 판정에는 쓰지 않음).
-    4. await_casb_event()로 casb_security_log에서 이 정책명에 대한 이벤트(기대 서비스명 Notion)를 폴링 대기한다.
-    5. 이벤트의 action 필드가 BLOCK인지 확인하고 어서션한다.
+    3. 정책 변경 시각부터 전파 기한(BAT_POLICY_TIMEOUT_SEC) 동안 요청마다 ?bat=<정책명>-<n> 마커를 붙여 실제 브라우저(Playwright)로 CASB_SAAS_URL을 방문한다. 기한 안에 돌아온 요청이 한 번은 차단되고, 그 뒤 다시 렌더링되지 않아야 한다.
+    4. 기한이 지난 뒤 요청 5번(CASB_HOLD_REQUESTS)이 전부 차단 화면이고, 각 요청의 마커가 든 casb_security_log 행(in_app_service Notion)이 BLOCK이어야 PASS. 하나라도 렌더링되면 FAIL, 응답이 없거나 그 요청의 행이 없으면 UNVERIFIED.
+    5. 판정은 expect_casb_block()이 한다(화면 차단과 그 요청 자신의 BLOCK 행을 둘 다 본다).
     6. 통과 후 temporary() 종료로 정책을 삭제한다.
   test_parameters: |-
     product: casb
@@ -362,15 +362,15 @@ BAT-CASB-004:
     propagation_timeout_sec: run_context.policy_propagation_timeout_sec
     event_timeout_sec: run_context.event_poll_timeout_sec
   test_data: CASB_SAAS_APP_ID=3(Notion), CASB_SAAS_URL="https://www.notion.so/". 정책명은 resource_name()으로 동적 생성.
-  expected_results: BLOCK 정책이 걸린 상태에서 Notion 방문 트래픽에 대해 casb_security_log 이벤트의 action이 반드시 BLOCK으로 기록되어야 한다(화면상 차단 여부는 판정 기준이 아님).
+  expected_results: BLOCK 정책이 걸린 상태에서 전파 기한 뒤 Notion 방문이 매번 차단 화면이고, 각 요청이 자기 마커가 든 BLOCK 행을 casb_security_log에 남긴다.
   en:
     scenario: When CASB SaaS Access is set to BLOCK, access to that app is actually blocked, and that request is logged as BLOCK.
     test_steps: |-
       1. Build the policy name BAT-CASB-004-<run_id> with resource_name().
       2. Create a policy with application=[CASB_SAAS_APP_ID] (Notion), action_type=BLOCK, risk_level=Major via saas_access.temporary().
-      3. With visit_until_blocked(), repeatedly visit CASB_SAAS_URL (Notion) with the browser and retry for run_context.policy_propagation_timeout_sec until the block page appears (the result is only recorded and is not used for the pass/fail verdict).
-      4. With await_casb_event(), poll casb_security_log for an event for this policy name (expected service name Notion).
-      5. Check and assert that the event's action field is BLOCK.
+      3. From the time the policy changed, for the propagation deadline (BAT_POLICY_TIMEOUT_SEC), visit CASB_SAAS_URL with a real browser (Playwright), adding a ?bat=<policy name>-<n> marker to each request. A request that returns within the deadline must be blocked at least once, and the page must not render again after that.
+      4. After the deadline, all 5 requests (CASB_HOLD_REQUESTS) must show the block page, and each request's casb_security_log row carrying its marker (in_app_service Notion) must be BLOCK for a PASS. FAIL if any renders; UNVERIFIED if there is no answer or that request has no row.
+      5. expect_casb_block() makes the verdict (it checks both the block page and that request's own BLOCK row).
       6. After passing, delete the policy when temporary() exits.
     test_parameters: |-
       product: casb
@@ -382,7 +382,7 @@ BAT-CASB-004:
       propagation_timeout_sec: run_context.policy_propagation_timeout_sec
       event_timeout_sec: run_context.event_poll_timeout_sec
     test_data: CASB_SAAS_APP_ID=3 (Notion), CASB_SAAS_URL="https://www.notion.so/". The policy name is generated dynamically with resource_name().
-    expected_results: With the BLOCK policy in place, the action of the casb_security_log event for the Notion visit traffic must be recorded as BLOCK (whether the screen is blocked is not a verdict criterion).
+    expected_results: With the BLOCK policy in place, after the propagation deadline every Notion visit shows the block page and each request leaves a BLOCK row with its own marker in casb_security_log.
 BAT-CASB-005:
   test_steps: |-
     1. SIA.casb.in_app_control 목록 조회
@@ -1746,29 +1746,29 @@ BAT-X-006:
   test_steps: |-
     1. CASB SaaS Access BLOCK 정책(application=[CASB_SAAS_APP_ID], risk_level=Major)을 생성해 Notion 앱을 차단한다.
     2. 그 안에서 같은 CASB_SAAS_HOST(www.notion.so)를 허용하는 HTTP_HOST ALLOW 웹정책을 생성하고 우선순위를 1(최우선)로 설정한다.
-    3. 실제 브라우저(Playwright)로 CASB_SAAS_URL을 방문해 차단 페이지 여부를 기록한다(화면 결과는 기록만, 단언하지 않음 — CASB 차단은 간헐적이므로).
-    4. casb_log(casb_security_log)에서 CASB 정책명으로 이벤트를 폴링하고 in_app_service가 CASB_SAAS_APP_NAME(Notion)인지 확인한다.
-    5. 이벤트의 action 필드가 'BLOCK'인지 확인한다(우선순위 높은 웹 ALLOW가 CASB 판정을 무력화하지 않았는지가 핵심 단언).
+    3. ALLOW를 우선순위 1로 올린 시각부터 잰다(CASB 정책 생성 시각도 기록). 정책 변경 시각부터 전파 기한(BAT_POLICY_TIMEOUT_SEC) 동안 요청마다 ?bat=<정책명>-<n> 마커를 붙여 실제 브라우저(Playwright)로 CASB_SAAS_URL을 방문한다. 기한 안에 돌아온 요청이 한 번은 차단되고, 그 뒤 다시 렌더링되지 않아야 한다.
+    4. 기한이 지난 뒤 요청 5번(CASB_HOLD_REQUESTS)이 전부 차단 화면이고, 각 요청의 마커가 든 casb_security_log 행(in_app_service Notion)이 BLOCK이어야 PASS. 하나라도 렌더링되면 FAIL, 응답이 없거나 그 요청의 행이 없으면 UNVERIFIED.
+    5. 판정은 BAT-CASB-004와 같은 expect_casb_block(). 실패해도 원인을 ALLOW로 단정하지 않는다(ALLOW 없는 CASB-004에서도 같은 렌더링이 나왔음). 같은 실행의 CASB-004와 함께 읽는다.
     6. 두 정책을 정리(삭제)한다.
   test_parameters: |-
     saas_access: action_type=BLOCK, risk_level=Major, application=[CASB_SAAS_APP_ID]
     web_policy: action_type=ALLOW, subject=HTTP_HOST, condition=IS, value=[www.notion.so], priority=1
   test_data: CASB_SAAS_APP_ID=3(Notion), CASB_SAAS_APP_NAME='Notion', CASB_SAAS_HOST='www.notion.so', CASB_SAAS_URL='https://www.notion.so/', 정책 이름은 resource_name()으로 동적 생성
-  expected_results: 같은 호스트를 허용하는 우선순위 1의 웹 ALLOW 정책이 있어도 casb_security_log에 기록된 이벤트의 action은 BLOCK이어야 한다(화면 차단 여부는 판정에 쓰지 않음).
+  expected_results: 같은 호스트를 허용하는 우선순위 1의 웹 ALLOW 정책이 있어도 전파 기한 뒤 Notion 방문이 매번 차단 화면이고, 각 요청이 자기 마커가 든 BLOCK 행을 casb_security_log에 남긴다.
   en:
     scenario: The CASB app block is maintained even if a higher-priority web policy allowing the same host exists.
     test_steps: |-
       1. Create a CASB SaaS Access BLOCK policy (application=[CASB_SAAS_APP_ID], risk_level=Major) to block the Notion app.
       2. Alongside it, create an HTTP_HOST ALLOW web policy that allows the same CASB_SAAS_HOST (www.notion.so) and set its priority to 1 (highest).
-      3. Visit CASB_SAAS_URL with a real browser (Playwright) and record whether a block page appears (the screen result is only recorded, not asserted - because CASB blocking is intermittent).
-      4. Poll casb_log (casb_security_log) for an event by the CASB policy name and confirm that in_app_service is CASB_SAAS_APP_NAME (Notion).
-      5. Confirm that the action field of the event is 'BLOCK' (the key assertion is that the higher-priority web ALLOW did not nullify the CASB verdict).
+      3. Time is measured from when the ALLOW was raised to priority 1 (the CASB policy creation time is also recorded). From the time the policy changed, for the propagation deadline (BAT_POLICY_TIMEOUT_SEC), visit CASB_SAAS_URL with a real browser (Playwright), adding a ?bat=<policy name>-<n> marker to each request. A request that returns within the deadline must be blocked at least once, and the page must not render again after that.
+      4. After the deadline, all 5 requests (CASB_HOLD_REQUESTS) must show the block page, and each request's casb_security_log row carrying its marker (in_app_service Notion) must be BLOCK for a PASS. FAIL if any renders; UNVERIFIED if there is no answer or that request has no row.
+      5. The verdict is the same expect_casb_block() as BAT-CASB-004. A failure is not blamed on the ALLOW (the same rendering happened in CASB-004, which has no ALLOW); read it together with CASB-004 in the same run.
       6. Clean up (delete) the two policies.
     test_parameters: |-
       saas_access: action_type=BLOCK, risk_level=Major, application=[CASB_SAAS_APP_ID]
       web_policy: action_type=ALLOW, subject=HTTP_HOST, condition=IS, value=[www.notion.so], priority=1
     test_data: CASB_SAAS_APP_ID=3 (Notion), CASB_SAAS_APP_NAME='Notion', CASB_SAAS_HOST='www.notion.so', CASB_SAAS_URL='https://www.notion.so/', policy names are generated dynamically with resource_name()
-    expected_results: Even with a priority-1 web ALLOW policy that allows the same host, the action of the event recorded in casb_security_log must be BLOCK (whether the screen is blocked is not used for the verdict).
+    expected_results: Even with a priority-1 web ALLOW policy that allows the same host, after the propagation deadline every Notion visit shows the block page and each request leaves a BLOCK row with its own marker in casb_security_log.
 BAT-X-007:
   test_steps: |-
     1. 정책 전에 example.com이 해석되는지 확인(기준선)

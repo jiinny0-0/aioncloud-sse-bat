@@ -79,9 +79,11 @@ def test_casb_block_survives_a_higher_priority_web_allow(
                     propagation_timeout_sec=run_context.policy_propagation_timeout_sec,
                     event_timeout_sec=run_context.event_poll_timeout_sec,
                     expected_service=CASB_SAAS_APP_NAME,
-                    failure=f"A higher-priority web ALLOW on {CASB_SAAS_HOST} got past the "
-                    f"CASB block -- as with BAT-X-001, a broad ALLOW policy can silently "
-                    f"disable another product's enforcement",
+                    # 원인을 ALLOW로 단정하지 않는다: ALLOW가 없는 BAT-CASB-004에서도 같은
+                    # 렌더링이 나왔다(겹치는 SaaS Access 정책 등). CASB-004와 함께 읽는다.
+                    failure=f"The CASB block did not hold while a priority-1 web ALLOW on "
+                    f"{CASB_SAAS_HOST} was in place. This alone does not show the ALLOW caused it: "
+                    f"compare with BAT-CASB-004 (same block, no ALLOW) in the same run",
                 )
                 pass_case(case)
 

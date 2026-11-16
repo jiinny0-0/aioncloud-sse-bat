@@ -37,7 +37,9 @@ STOPPING_CASES = ("BAT-BASIC-007", "BAT-BASIC-008")
 # FAIL 재확인 전에 기다리는 시간: 1차에서 지운 정책이 전파될 시간.
 RETRY_WAIT_SEC = int(os.getenv("BAT_RETRY_WAIT_SEC", "30"))
 
-# 케이스당 초. qa 직렬 실행에서 잰 값이다(5초 단위로 올림).
+# 케이스당 초(5초 단위로 올림). ZTNA는 lguplus 20261110-141151 실측, 나머지는 qa 직렬 실행에서
+# 잰 옛 값이다. 2026-11-09에 판정을 강화한 뒤(기준선, 마커 이벤트, 상태 유지 3회)로는 전체 실행
+# 실측이 아직 없어 그대로 둔다.
 ESTIMATED_SECONDS = {
     "BAT-BASIC-001": 5, "BAT-BASIC-002": 5, "BAT-BASIC-003": 5, "BAT-BASIC-004": 30, "BAT-BASIC-005": 10,
     "BAT-BASIC-006": 8, "BAT-BASIC-007": 5, "BAT-BASIC-008": 15, "BAT-BASIC-009": 15,
@@ -54,10 +56,10 @@ ESTIMATED_SECONDS = {
     "BAT-RBI-001": 25, "BAT-RBI-002": 5,
     "BAT-CASB-001": 5, "BAT-CASB-002": 5, "BAT-CASB-003": 25, "BAT-CASB-004": 55, "BAT-CASB-005": 5,
     "BAT-GEN-001": 5,
-    "BAT-ZTNA-001": 5, "BAT-ZTNA-002": 5, "BAT-ZTNA-003": 5, "BAT-ZTNA-004": 5, "BAT-ZTNA-005": 35,
-    "BAT-ZTNA-006": 5, "BAT-ZTNA-008": 5, "BAT-ZTNA-009": 30,
-    "BAT-ZTNA-010": 40, "BAT-ZTNA-011": 30, "BAT-ZTNA-012": 25, "BAT-ZTNA-013": 40,
-    "BAT-ZTNA-014": 60,
+    "BAT-ZTNA-001": 5, "BAT-ZTNA-002": 5, "BAT-ZTNA-003": 5, "BAT-ZTNA-004": 5, "BAT-ZTNA-005": 5,
+    "BAT-ZTNA-006": 5, "BAT-ZTNA-008": 5, "BAT-ZTNA-009": 20,
+    "BAT-ZTNA-010": 20, "BAT-ZTNA-011": 20, "BAT-ZTNA-012": 5, "BAT-ZTNA-013": 30,
+    "BAT-ZTNA-014": 5,
     "BAT-X-001": 50, "BAT-X-002": 30, "BAT-X-003": 30, "BAT-X-004": 25, "BAT-X-005": 45,
     "BAT-X-006": 50, "BAT-X-007": 50, "BAT-X-008": 45, "BAT-X-009": 15, "BAT-X-010": 70,
     "BAT-X-011": 65,
@@ -401,20 +403,22 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             ]
             if not leftovers:
                 print(f"{workspace.name}: clean")
-                continue
+            else:
+                print(f"{workspace.name}: {len(leftovers)} leftover web policy/policies")
+                for row in leftovers:
+                    print(f"  id={row.get('id')}  {row.get('name')}  enable={row.get('enable')}")
+                total += len(leftovers)
 
-            print(f"{workspace.name}: {len(leftovers)} leftover web policy/policies")
-            for row in leftovers:
-                print(f"  id={row.get('id')}  {row.get('name')}  enable={row.get('enable')}")
-            total += len(leftovers)
+                if args.delete:
+                    ids = [int(row["id"]) for row in leftovers if row.get("id") is not None]
+                    try:
+                        rest.delete("/sia/v1/web/policy", json={"ids": ids})
+                        print(f"  deleted {len(ids)}")
+                    except Exception as exc:
+                        print(f"  delete failed: {exc}")
 
-            if args.delete:
-                ids = [int(row["id"]) for row in leftovers if row.get("id") is not None]
-                try:
-                    rest.delete("/sia/v1/web/policy", json={"ids": ids})
-                    print(f"  deleted {len(ids)}")
-                except Exception as exc:
-                    print(f"  delete failed: {exc}")
+            # DLP 정책은 웹 정책이 참조하므로 웹 정책을 지운 뒤에 본다.
+            total += _sweep_dlp(rest, workspace, delete=args.delete)
 
     # 콘솔 전용 제품은 자기 목록을 따로 갖고, 그 삭제 mutation이 아무것도 지우지
     # 않고 성공을 보고한 적이 있어서 따로 정리한다.
@@ -632,6 +636,35 @@ def _sweep_fwaas(context, workspace, *, delete: bool) -> int:
     except Exception as exc:
         print(f"{workspace.name} (fwaas): SKIPPED - {str(exc)[:160]}")
         return 0
+
+
+def _sweep_dlp(rest, workspace, *, delete: bool) -> int:
+    """DLP 정책. 웹 정책 없이는 적용되지 않지만, 남으면 목록에 쌓이고 다음 실행의 이름과 섞인다."""
+    from bat.fixtures.naming import is_bat_resource
+    from bat.fixtures.policies import DLP_POLICY_PATH, DlpPolicyFactory
+
+    try:
+        rows, complete = DlpPolicyFactory(rest).list()
+    except Exception as exc:
+        print(f"{workspace.name} (dlp policy): SKIPPED - {str(exc)[:160]}")
+        return 0
+    leftovers = [row for row in rows if is_bat_resource(str(row.get("name") or ""))]
+    note = "" if complete else " (first page only)"
+    if not leftovers:
+        print(f"{workspace.name} (dlp policy): clean{note}")
+        return 0
+
+    print(f"{workspace.name} (dlp policy): {len(leftovers)} leftover policy/policies{note}")
+    for row in leftovers:
+        print(f"  id={row.get('id')}  {row.get('name')}")
+    if delete:
+        ids = [int(row["id"]) for row in leftovers if row.get("id") is not None]
+        try:
+            rest.delete(DLP_POLICY_PATH, json={"policy_ids": ids})
+            print(f"  deleted {len(ids)}")
+        except Exception as exc:
+            print(f"  delete failed: {exc}")
+    return len(leftovers)
 
 
 def _sweep_casb(context, workspace, *, delete: bool) -> int:
