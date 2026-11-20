@@ -36,6 +36,7 @@ def readers(rest, gql) -> list[tuple[str, Callable[[], tuple[list[dict], bool]]]
         ("ztna access control", whole(lambda: g.AccessControlFactory(gql).list())),
         ("ztna tunnel", whole(lambda: g.TunnelFactory(gql).list())),
         ("ztna access policy", whole(lambda: g.AccessPolicyFactory(gql).list())),
+        ("sso setting", whole(lambda: g.SsoFactory(gql).list())),
     ]
 
 

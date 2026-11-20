@@ -55,6 +55,18 @@ class BrowserSession:
         return self._context
 
     @contextmanager
+    def fresh_page(self) -> Iterator["object"]:
+        """쿠키를 공유하지 않는 새 컨텍스트의 페이지. 로그인처럼 세션이 섞이면 안 되는 동작용."""
+        if not self._browser:
+            raise RuntimeError("Browser session is not started")
+        context = self._browser.new_context(ignore_https_errors=True)
+        context.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+        try:
+            yield context.new_page()
+        finally:
+            context.close()
+
+    @contextmanager
     def page(self) -> Iterator["object"]:
         page = self.context.new_page()
         try:

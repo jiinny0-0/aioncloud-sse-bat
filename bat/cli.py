@@ -60,6 +60,11 @@ ESTIMATED_SECONDS = {
     "BAT-ZTNA-006": 5, "BAT-ZTNA-008": 5, "BAT-ZTNA-009": 20,
     "BAT-ZTNA-010": 20, "BAT-ZTNA-011": 20, "BAT-ZTNA-012": 5, "BAT-ZTNA-013": 30,
     "BAT-ZTNA-014": 5,
+    # 상태를 세 번 바꾸고 바꿀 때마다 전파 예산(기본 20초) 뒤 3번을 더 본다.
+    "BAT-ZTNA-017": 100, "BAT-ZTNA-018": 100, "BAT-ZTNA-019": 100, "BAT-ZTNA-020": 100,
+    "BAT-ZTNA-021": 90,
+    # IdP(SSO): 010은 버튼·OIDC 시작만, 011은 브라우저로 IdP 로그인(TOTP 구간 대기 포함).
+    "BAT-BASIC-010": 15, "BAT-BASIC-011": 60,
     "BAT-X-001": 50, "BAT-X-002": 30, "BAT-X-003": 30, "BAT-X-004": 25, "BAT-X-005": 45,
     "BAT-X-006": 50, "BAT-X-007": 50, "BAT-X-008": 45, "BAT-X-009": 15, "BAT-X-010": 70,
     "BAT-X-011": 65,
@@ -515,13 +520,16 @@ def _sweep_rbi(context, workspace, *, delete: bool) -> int:
 
 
 def _sweep_ztna(context, workspace, *, delete: bool) -> int:
-    """ZTNA 접근제어, 터널, 접근정책. 접근제어가 터널과 정책을 참조하므로 접근제어를 먼저 지운다."""
+    """ZTNA 접근제어, 터널, 접근정책, IdP(SSO). 접근제어가 터널과 정책을 참조하므로 접근제어를 먼저 지운다.
+    SSO는 이름이 없어 description(목록 행의 name)으로 가린다."""
     from bat.fixtures.graphql_policies import (
         DELETE_ACCESS_CONTROL,
         DELETE_ACCESS_POLICY,
+        DELETE_SSO,
         DELETE_TUNNEL,
         AccessControlFactory,
         AccessPolicyFactory,
+        SsoFactory,
         TunnelFactory,
     )
     from bat.fixtures.naming import is_bat_resource
@@ -532,6 +540,7 @@ def _sweep_ztna(context, workspace, *, delete: bool) -> int:
                 (DELETE_ACCESS_CONTROL, AccessControlFactory(gql), "access control(s)"),
                 (DELETE_TUNNEL, TunnelFactory(gql), "tunnel(s)"),
                 (DELETE_ACCESS_POLICY, AccessPolicyFactory(gql), "access policy/policies"),
+                (DELETE_SSO, SsoFactory(gql), "sso setting(s)"),
             )
             found = [
                 (query, factory, label, [r for r in factory.list() if is_bat_resource(f"{r.get('name') or ''}")])

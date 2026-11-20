@@ -4459,3 +4459,283 @@ def test_baseline_blames_this_pc_only_when_nothing_answered_and_it_is_offline(st
         service._check_targets(_service_case("BAT-BASIC-008"), context, _CurlRun(exit_code=7, stdout=stdout), "start", 0)
     if expect == "fail":
         assert not isinstance(caught.value, EnvironmentNotReady)
+
+
+# --- ZTNA 접근정책 수정: 다시 읽은 rule을 보낸 rule과 같은 모양으로 비교 ---
+
+
+class _PolicyGql:
+    """update는 받기만 하고, 읽기는 stored를 돌려준다."""
+
+    def __init__(self, stored):
+        self.stored = stored
+        self.sent = []
+
+    def execute(self, query, variables=None):
+        self.sent.append((query, variables))
+        if "BatReadAccessPolicyRules" in query:
+            return {"SIA": {"ztna": {"accessPolicy": [self.stored]}}}
+        return {"SIA": {"ztna": {"accessPolicy": {"update": {"status": 200}}}}}
+
+
+def _stored_policy(action, rules):
+    return {"id": 5, "name": "BAT-ZTNA-019-x-ap", "action_type": action, "rules": rules}
+
+
+def test_access_policy_update_accepts_the_same_rules_read_back():
+    from bat.fixtures.graphql_policies import AccessPolicyFactory
+    from bat.fixtures.policies import PolicyHandle
+
+    stored = _stored_policy("BLOCK", [
+        {"user": [], "ip": [], "country": ["AQ"], "os": []},
+        {"user": [{"id": 0}], "ip": None, "country": [], "os": [{"id": 1}]},
+    ])
+    factory = AccessPolicyFactory(_PolicyGql(stored))
+    handle = PolicyHandle("5", "BAT-ZTNA-019-x-ap", "ztna", "graphql", {})
+    rules = [AccessPolicyFactory.rule(os_ids=[1], user_ids=[0]), AccessPolicyFactory.rule(countries=["AQ"])]
+    factory.update(handle, rules, action_type="BLOCK")
+    assert handle.payload["rules"] == rules
+
+
+@pytest.mark.parametrize("stored", [
+    _stored_policy("LOGGING", [{"user": [], "ip": [], "country": [], "os": [{"id": 1}]}]),
+    _stored_policy("BLOCK", [{"user": [], "ip": [], "country": [], "os": [{"id": 6}]}]),
+    _stored_policy("BLOCK", [{"user": [], "ip": [], "country": ["AQ"], "os": [{"id": 1}]}]),
+], ids=["action", "os", "extra-condition"])
+def test_access_policy_update_rejects_what_was_not_sent(stored):
+    from bat.clients.errors import ApiError
+    from bat.fixtures.graphql_policies import AccessPolicyFactory
+    from bat.fixtures.policies import PolicyHandle
+
+    factory = AccessPolicyFactory(_PolicyGql(stored))
+    handle = PolicyHandle("5", "BAT-ZTNA-019-x-ap", "ztna", "graphql", {})
+    with pytest.raises(ApiError):
+        factory.update(handle, [AccessPolicyFactory.rule(os_ids=[1])], action_type="BLOCK")
+
+# --- IdP(SSO): 로그인 화면 버튼과 /auth/sso-login 응답 판정 ---
+
+
+_LOGIN_HTML = """
+<form class="idp-auth-form" action="/auth/sso-login" method="POST">
+  <input type="hidden" name="idpIndex" value="3">
+  <input type="hidden" name="idpProvider" value="GOOGLE">
+  <input type="hidden" name="idpProtocol" value="OIDC">
+  <button type="submit" class="google-oidc-btn"> Continue With Google </button>
+</form>
+<form class="other-form"><input type="hidden" name="x" value="y"></form>
+"""
+
+
+def test_login_page_idp_buttons_are_read_from_their_forms():
+    from bat.clients.auth_server import parse_idp_forms
+
+    assert parse_idp_forms(_LOGIN_HTML) == [{"idpIndex": "3", "idpProvider": "GOOGLE", "idpProtocol": "OIDC"}]
+    assert parse_idp_forms("<html>no sso</html>") == []
+
+
+_GOOD = ("https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&client_id=c1&nonce=n"
+         "&prompt=consent&response_type=code&scope=openid+email+profile&state=s")
+
+
+@pytest.mark.parametrize("status, location, ok", [
+    (302, _GOOD, True),
+    (500, "", False),
+    (302, _GOOD.replace("client_id=c1", "client_id=other"), False),
+    (302, _GOOD.replace("accounts.google.com", "evil.example"), False),
+    (302, _GOOD.replace("scope=openid+email+profile", "scope=email"), False),
+    (302, _GOOD.replace("&state=s", ""), False),
+], ids=["good", "500", "client", "host", "scope", "state"])
+def test_sso_login_redirect_must_be_the_issuers_oidc_request(status, location, ok):
+    from tests.basic.test_basic_idp import check_authorize_redirect
+
+    assert (not check_authorize_redirect(status, location, "c1")) is ok
+
+
+def test_sso_settings_are_swept_and_counted_as_leftovers():
+    import inspect
+
+    import bat.cli as cli
+    from bat.fixtures.graphql_policies import SsoFactory
+    from bat.leftovers import bat_name
+
+    assert "SsoFactory" in inspect.getsource(cli._sweep_ztna)
+    gql = _PolicyGql(None)
+    gql.execute = lambda query, variables=None: {"SIA": {"setting": {"sso": {"list": [
+        {"id": 4, "provider": "GOOGLE", "description": f"BAT-BASIC-010-{RUN_ID}"},
+        {"id": 5, "provider": "OKTA", "description": "company okta"},
+    ]}}}}
+    rows = SsoFactory(gql).list()
+    assert [bat_name(row) for row in rows] == [f"BAT-BASIC-010-{RUN_ID}", ""]
+
+
+def test_sso_redirect_uri_is_sent_only_when_given():
+    from bat.fixtures import graphql_policies as g
+
+    assert "redirect_uri: $redirect_uri" in g.CREATE_SSO
+    sent = []
+
+    class FakeGql:
+        def execute(self, query, variables=None):
+            sent.append(variables)
+            if "BatListSso" in query:
+                return {"SIA": {"setting": {"sso": {"list": [{"id": 9, "description": "BAT-BASIC-011-x"}]}}}}
+            return {}
+
+    factory = g.SsoFactory(FakeGql())
+    factory.create("BAT-BASIC-011-x", provider="OKTA", domain="https://o", client_id="c")
+    assert "redirect_uri" not in sent[0]
+    sent.clear()
+    factory.create("BAT-BASIC-011-x", provider="OKTA", domain="https://o", client_id="c", redirect_uri="https://cb")
+    assert sent[0]["redirect_uri"] == "https://cb"
+
+
+def test_totp_matches_rfc6238_and_never_repeats_a_window(monkeypatch):
+    import base64
+
+    from bat.traffic import idp_login
+
+    # RFC 6238 부록 B의 SHA-1 시크릿("12345678901234567890"), 8자리 기대값의 끝 6자리.
+    secret = base64.b32encode(b"12345678901234567890").decode()
+    assert idp_login.totp_code(secret, 59, digits=8) == "94287082"
+    assert idp_login.totp_code(secret, 1111111109) == "081804"
+    assert idp_login.totp_code(secret.lower()[:8] + " " + secret[8:], 59, digits=8) == "94287082"
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(idp_login.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(idp_login.time, "sleep", lambda sec: clock.__setitem__("now", clock["now"] + sec))
+    monkeypatch.setattr(idp_login.TotpSource, "_last_window", None)
+    source = idp_login.TotpSource(secret)
+    source.next_code()
+    source.next_code()
+    assert int(clock["now"] // 30) == int(1000 // 30) + 1
+
+
+def test_idp_credentials_name_what_is_missing(monkeypatch):
+    from bat.traffic.idp_login import IDP_ENV, IdpCredentials
+
+    for name in IDP_ENV.values():
+        monkeypatch.setenv(name, "v")
+    monkeypatch.setenv("BAT_IDP_ISSUER", "https://o.okta.com/")
+    monkeypatch.setenv("BAT_IDP_PROVIDER", "okta")
+    creds, missing = IdpCredentials.from_env()
+    assert missing == [] and creds.issuer == "https://o.okta.com" and creds.provider == "OKTA"
+    monkeypatch.delenv("BAT_IDP_PASSWORD")
+    assert IdpCredentials.from_env() == (None, ["BAT_IDP_PASSWORD"])
+
+
+@pytest.mark.parametrize("discovery,token,expected", [
+    ((200, {"token_endpoint": "https://o/token"}), (400, {"error": "unauthorized_client"}), ""),
+    ((200, {"token_endpoint": "https://o/token"}), (401, {"error": "invalid_client"}), "client"),
+    ((200, {"token_endpoint": "https://o/token"}), (401, None), "client"),
+    ((404, {}), None, "issuer"),
+], ids=["accepted", "wrong-secret", "wrong-id", "no-oidc"])
+def test_idp_client_check_tells_issuer_from_client_problems(monkeypatch, discovery, token, expected):
+    import httpx
+
+    from bat.traffic import idp_login
+
+    def reply(status, body):
+        if body is None:
+            return httpx.Response(status, text="Unauthorized", request=httpx.Request("GET", "https://o"))
+        return httpx.Response(status, json=body, request=httpx.Request("GET", "https://o"))
+
+    monkeypatch.setattr(idp_login.httpx, "get", lambda *a, **k: reply(*discovery))
+    monkeypatch.setattr(idp_login.httpx, "post", lambda *a, **k: reply(*token))
+    creds = idp_login.IdpCredentials("OKTA", "https://o", "cid", "sec", "u", "p")
+    assert idp_login.check_idp_client(creds)[0] == expected
+
+
+def test_idp_sign_in_failures_have_distinct_messages():
+    from bat.traffic import idp_login
+    from tests.basic.test_basic_idp import sign_in_failure
+
+    messages = {
+        kind: sign_in_failure("OKTA", idp_login.IdpSignIn(failure=kind, detail="d"), [], "p")
+        for kind in (idp_login.SSE_START, idp_login.SSE_CALLBACK, idp_login.TIMED_OUT, "")
+    }
+    assert len(set(messages.values())) == 4
+    assert messages[idp_login.SSE_START].startswith("[SSE]")
+    assert "not a user of this workspace" in messages[idp_login.SSE_CALLBACK]
+    assert messages[idp_login.TIMED_OUT].startswith("[timeout]")
+
+
+def test_sso_login_row_must_be_this_account_after_the_sign_in():
+    from tests.basic.test_basic_idp import is_sso_login_of
+
+    row = {"auth_result": "AUTH_SUCCESS_SSO", "login_id": "User@x.com", "time": "2026-11-20T04:55:16Z"}
+    assert is_sso_login_of(row, "user@x.com", "2026-11-20T04:55:00Z")
+    assert not is_sso_login_of(row, "user@x.com", "2026-11-20T04:56:00Z")
+    assert not is_sso_login_of({**row, "auth_result": "AUTH_SUCCESS_CONSOLE"}, "user@x.com", "2026-11-20T04:55:00Z")
+    assert not is_sso_login_of(row, "other@x.com", "2026-11-20T04:55:00Z")
+
+
+def test_idp_and_app_launcher_renumbering():
+    from bat.report.status_book import current_id
+
+    assert current_id("BAT-ZTNA-021", "2026-11-19T15:49:00") == "BAT-BASIC-010"
+    assert current_id("BAT-ZTNA-022", "2026-11-20T11:11:53") == "BAT-ZTNA-021"
+    assert current_id("BAT-ZTNA-021", "2026-11-20T14:30:00") == "BAT-ZTNA-021"
+
+def test_ztna_target_error_names_what_the_ztna_log_says():
+    from tests.ztna.test_ztna_traffic import summarize_ztna_rows
+
+    rows = [
+        {"action": "DPC_FAIL", "access_control_name": "Access Test Web Server", "dst_ip": "192.168.3.106:80"},
+        {"action": "DPC_FAIL", "access_control_name": "Access Test Web Server", "dst_ip": "192.168.3.106:80"},
+    ]
+    assert summarize_ztna_rows(rows) == (
+        "; ZTNA log for those requests: DPC_FAIL by Access Test Web Server to 192.168.3.106:80 x2"
+    )
+    assert "no rows" in summarize_ztna_rows([])
+
+def test_secret_env_values_are_masked_anywhere_in_report_text(monkeypatch):
+    from bat.report.redact import MASK, redact
+
+    monkeypatch.setenv("BAT_IDP_PASSWORD", "Hunter2-idp-pass")
+    monkeypatch.setenv("BAT_IDP_CLIENT_SECRET", "s3cr3t-client-value")
+    monkeypatch.setenv("BAT_IDP_USER", "tester@example.com")  # 이름이 비밀이 아니면 그대로
+    text = "login with tester@example.com / Hunter2-idp-pass failed; secret s3cr3t-client-value"
+    assert redact({"detail": text}) == {
+        "detail": f"login with tester@example.com / {MASK} failed; secret {MASK}"
+    }
+
+
+def test_idp_settings_come_from_the_shared_env_file_and_the_stage_block():
+    from bat.settings import _build_profile
+
+    item = {"console_url": "https://c", "graphql_url": "https://g", "rest_base_url": "https://r",
+            "idp_redirect_uri": " https://auth.example/callback "}
+    assert _build_profile("qa", item).idp_redirect_uri == "https://auth.example/callback"
+    assert _build_profile("qa", {k: v for k, v in item.items() if k != "idp_redirect_uri"}).idp_redirect_uri == ""
+
+def test_app_launcher_url_and_issue_refresh():
+    from bat.clients.auth_server import _REFRESH_RE, launcher_url
+
+    assert launcher_url("test.com", "80", 81, "lg.aioncloud.work") == "https://test--com-80-81.lg.aioncloud.work"
+    assert launcher_url("192.168.3.106", 443, "7201", "x.click") == "https://192--168--3--106-443-7201.x.click"
+    page = '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=https://test--com-80-81.lg.aioncloud.work">'
+    assert _REFRESH_RE.search(page).group(1) == "https://test--com-80-81.lg.aioncloud.work"
+
+
+def test_app_launcher_argument_only_goes_with_launcher_access_controls():
+    from bat.fixtures import graphql_policies as g
+
+    assert "app_launcher" not in g.CREATE_ACCESS_CONTROL
+    assert "$app_launcher: Boolean" in g.CREATE_LAUNCHER_ACCESS_CONTROL
+    assert "app_launcher: $app_launcher" in g.CREATE_LAUNCHER_ACCESS_CONTROL
+
+    sent = []
+
+    class FakeGql:
+        def execute(self, query, variables=None):
+            sent.append((query, variables))
+            if "BatListAccessControl" in query:
+                return {"SIA": {"ztna": {"accessControl": [{"id": 7, "name": "BAT-ZTNA-021-x"}]}}}
+            return {}
+
+    factory = g.AccessControlFactory(FakeGql())
+    factory.create("BAT-ZTNA-021-x", [{"domain": "a", "port": "80"}], app_launcher=True)
+    assert sent[0][0] is g.CREATE_LAUNCHER_ACCESS_CONTROL and sent[0][1]["app_launcher"] is True
+    sent.clear()
+    factory.create("BAT-ZTNA-021-x", [{"domain": "a", "port": "80"}])
+    assert sent[0][0] is g.CREATE_ACCESS_CONTROL and "app_launcher" not in sent[0][1]

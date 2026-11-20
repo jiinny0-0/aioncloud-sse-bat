@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -35,9 +36,22 @@ def is_sensitive_key(key: str) -> bool:
     return any(hint.replace("_", "") in lowered for hint in SENSITIVE_KEY_HINTS)
 
 
+def _secret_env_values() -> list[str]:
+    """이름이 비밀처럼 보이는 환경변수(BAT_IDP_PASSWORD, BAT_CONSOLE_PASSWORD 등)의 값. 6자 미만은
+    흔한 문자열과 겹칠 수 있어 뺀다. 긴 값부터 바꾸도록 정렬한다."""
+    values = {
+        value.strip()
+        for name, value in os.environ.items()
+        if name.startswith("BAT_") and is_sensitive_key(name) and len(value.strip()) >= 6
+    }
+    return sorted(values, key=len, reverse=True)
+
+
 def redact_text(text: str) -> str:
     if not text:
         return text
+    for secret in _secret_env_values():
+        text = text.replace(secret, MASK)
     for pattern in (_BEARER_RE, _JWT_RE, _MONSTER_KEY_RE, _WEBHOOK_RE):
         text = pattern.sub(
             lambda m: (m.group(1) + MASK) if m.re is _BEARER_RE and m.groups() else MASK,

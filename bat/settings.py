@@ -34,10 +34,11 @@ def _stage_env_file(profile_name: str) -> Path:
 
 
 def _load_dotenv(stage_file: Path) -> None:
-    """스테이지의 dotenv 파일을 읽고, 이어서 공용 `.env`를 읽는다.
+    """스테이지의 dotenv 파일, IdP 공용 `.env.idp`, 공용 `.env` 순서로 읽는다.
 
-    먼저 읽은 값이 이기므로(`override=False`) 스테이지 파일이 `.env`보다 우선한다.
-    python-dotenv가 없어도 오류가 아니다.
+    먼저 읽은 값이 이기므로(`override=False`) 스테이지 파일이 가장 우선한다. `.env.idp`는
+    모든 스테이지가 같이 쓰는 테스트 IdP 자격증명(BAT_IDP_*)이다. python-dotenv가 없어도
+    오류가 아니다.
     """
     try:
         from dotenv import load_dotenv
@@ -45,9 +46,9 @@ def _load_dotenv(stage_file: Path) -> None:
         return
     if stage_file.exists():
         load_dotenv(stage_file, override=False)
-    shared_file = ROOT / ".env"
-    if shared_file.exists():
-        load_dotenv(shared_file, override=False)
+    for shared_file in (ROOT / ".env.idp", ROOT / ".env"):
+        if shared_file.exists():
+            load_dotenv(shared_file, override=False)
 
 
 def env(name: str, default: str = "") -> str:
@@ -129,6 +130,9 @@ class Profile:
     ztna: ZtnaTarget | None = None
     # 게이트웨이에서 대상을 못 찾을 때 쓸 터널(선택). 없으면 연결된 터널을 찾아서 쓴다.
     ztna_tunnel: ZtnaTunnelTarget | None = None
+    # IdP(SSO) 로그인 콜백 주소(선택). 스테이지마다 다르고, IdP 앱에 등록한 값과 같아야 한다.
+    # 자격증명(발급자, client_id/secret, 테스트 계정)은 모든 스테이지가 같이 쓰는 .env.idp에 있다.
+    idp_redirect_uri: str = ""
 
     @property
     def console_origin(self) -> str:
@@ -275,6 +279,7 @@ def _build_profile(name: str, item: dict) -> Profile:
         connector_process=str(item.get("connector_process") or "AIConnector for Client"),
         ztna=_build_ztna_target(item),
         ztna_tunnel=_build_ztna_tunnel(item),
+        idp_redirect_uri=str(item.get("idp_redirect_uri") or "").strip(),
     )
 
 

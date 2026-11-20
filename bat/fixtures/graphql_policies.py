@@ -78,6 +78,28 @@ LIST_ACCESS_POLICY = """
 query BatListAccessPolicy { SIA { ztna { accessPolicy { id name ctime mtime } } } }
 """
 
+# 콘솔의 정책 수정과 같은 호출. name·rules·action_type을 전부 다시 보낸다.
+UPDATE_ACCESS_POLICY = """
+mutation BatUpdateAccessPolicy(
+  $id: Int!, $name: String!, $rules: [AccessPolicyRuleInputType]!, $action_type: ACTION_TYPE!
+) {
+  SIA { ztna { accessPolicy { update(
+    id: $id, name: $name, rules: $rules, action_type: $action_type
+  ) { status } } } }
+}
+"""
+
+# 저장된 rule을 쓸 때와 같은 키로 비교하려고 id만 읽는다.
+READ_ACCESS_POLICY_RULES = """
+query BatReadAccessPolicyRules { SIA { ztna { accessPolicy {
+  id name action_type rules { user { id } ip country os { id } }
+} } } }
+"""
+
+# 접근정책 OS 조건(os_id)의 카탈로그. qa: 1 Windows, 2 Window Phone, 3 Android, 4 macOS,
+# 5 iOS, 6 Linux, 7 ChromeOS.
+LIST_OS_INFO = "query BatOsInfo { SIA { common { os_info { id name } } } }"
+
 # 접근제어(보호 대상 서버). create/delete는 쓸 만한 필드를 돌려주지 않아서
 # (CreateObject/StatusCode) id는 이름으로 다시 찾고 삭제는 목록으로 확인한다.
 CREATE_ACCESS_CONTROL = """
@@ -92,6 +114,22 @@ mutation BatCreateAccessControl(
 }
 """
 
+# 앱 런처를 켠 접근제어. 이 인자가 없는 스테이지에서도 위 생성은 그대로 되도록 따로 둔다.
+CREATE_LAUNCHER_ACCESS_CONTROL = CREATE_ACCESS_CONTROL.replace(
+    "$policy: Int\n", "$policy: Int, $app_launcher: Boolean\n"
+).replace("policy: $policy\n", "policy: $policy, app_launcher: $app_launcher\n")
+
+# 앱 런처 포털에 보이는 항목(app_launcher가 켜진 접근제어). 타일의 domain은 접근제어 항목의
+# domain이 아니라 그 게이트웨이 서버의 콘솔 도메인이다(없으면 ip).
+LIST_APP_LAUNCHER = """
+query BatListAppLauncher { SIA { appLauncher { list {
+  id enable name type app_launcher { ip domain port app_launcher_name target_type target_id }
+} } } }
+"""
+
+# 콘솔의 OrgID(앱 런처 서비스 주소에 들어감).
+ACCOUNT_INFO = "query BatAccountInfo { Account { info { id workspace } } }"
+
 DELETE_ACCESS_CONTROL = """
 mutation BatDeleteAccessControl($id: [Int]) {
   SIA { ztna { accessControl { delete(id: $id) { __typename } } } }
@@ -103,6 +141,19 @@ query BatListAccessControl { SIA { ztna { accessControl {
   id name priority enable type policy { id name }
   application { ip domain port target_id target_type }
 } } } }
+"""
+
+# 콘솔 목록의 활성화 스위치와 같은 호출(change_use: true와 enable, 그리고 필수 인자 name·type·
+# event_logging·risk_level). 다른 필드는 바꾸지 않는다.
+TOGGLE_ACCESS_CONTROL = """
+mutation BatToggleAccessControl(
+  $id: Int!, $name: String!, $type: AccessControlProtocolType!, $enable: Boolean
+) {
+  SIA { ztna { accessControl { update(
+    id: $id, change_use: true, enable: $enable, name: $name, type: $type,
+    event_logging: true, risk_level: Minor
+  ) { __typename } } } }
+}
 """
 
 # datas에 넣은 항목의 우선순위만 바꾼다(다른 항목은 그대로).
@@ -141,6 +192,29 @@ query BatListTunnels { SIA { ztna { tunnel { list {
 # access_id가 그 터널의 자격증명이라 리포트나 로그에 값을 남기지 않는다.
 TUNNEL_AUTH_FILE = """
 query BatTunnelAuthFile($id: Int!) { SIA { ztna { tunnel { authFile(id: $id) { file_content } } } } }
+"""
+
+# IdP(SSO) 설정. create/delete는 status만 돌려주고 이름 필드가 없어 description에 BAT 이름을
+# 넣고 그걸로 다시 찾는다. client_secret·sa_private_key는 읽지 않는다.
+CREATE_SSO = """
+mutation BatCreateSso(
+  $provider: String!, $protocol: String!, $domain: String!,
+  $client_id: String, $client_secret: String, $description: String, $redirect_uri: String
+) {
+  SIA { setting { sso { create(
+    provider: $provider, protocol: $protocol, domain: $domain,
+    client_id: $client_id, client_secret: $client_secret, description: $description,
+    redirect_uri: $redirect_uri
+  ) { status } } } }
+}
+"""
+
+DELETE_SSO = """
+mutation BatDeleteSso($id: [Int]) { SIA { setting { sso { delete(id: $id) { status } } } } }
+"""
+
+LIST_SSO = """
+query BatListSso { SIA { setting { sso { list { id provider protocol client_id domain description } } } } }
 """
 
 # --- FWaaS ---------------------------------------------------------------
@@ -590,11 +664,36 @@ class RbiPolicyReader:
         )
 
 
+_RULE_KEYS = ("user_id", "ip", "country", "os_id")
+
+
+def _rule_shape(group: dict) -> tuple:
+    """보낸 조건 그룹을 비교용 모양으로: 값이 있는 키마다 (키, 정렬한 문자열 값)."""
+    return tuple(
+        (key, tuple(sorted(str(v) for v in group[key])))
+        for key in _RULE_KEYS
+        if group.get(key)
+    )
+
+
+def _stored_rule_shape(group: dict) -> tuple:
+    """읽은 조건 그룹을 _rule_shape와 같은 모양으로. user·os는 {id} 객체 목록으로 온다."""
+    sent_like = {
+        "user_id": [item.get("id") for item in group.get("user") or [] if isinstance(item, dict)],
+        "ip": group.get("ip") or [],
+        "country": group.get("country") or [],
+        "os_id": [item.get("id") for item in group.get("os") or [] if isinstance(item, dict)],
+    }
+    return _rule_shape(sent_like)
+
+
 class AccessPolicyFactory:
     """ZTNA access policy.
 
-    rules는 user_id, ip, country를 키로 하는 조건 그룹의 리스트다. 이 조건은
-    커넥터 세션 자체를 스코프하므로, 러너에 매칭되는 BLOCK은 스위트를 끊는다:
+    rules는 user_id, ip, country, os_id를 키로 하는 조건 그룹의 리스트다. 한 그룹 안의
+    조건은 AND, 그룹끼리는 OR이다(콘솔이 조건 행을 이렇게 묶어 보낸다). 접근제어에 연결하지
+    않은 정책은 커넥터 세션 자체를 스코프하므로, 러너에 매칭되는 BLOCK은 스위트를 끊는다.
+    BAT 접근제어 하나에 연결하면 그 접근제어에 매칭된 내부 트래픽에만 걸린다:
 
         [{"user_id": [3], "ip": ["10.0.0.5"]}, {"country": ["KR"]}]
     """
@@ -608,6 +707,7 @@ class AccessPolicyFactory:
         user_ids: list[int] | None = None,
         ips: list[str] | None = None,
         countries: list[str] | None = None,
+        os_ids: list[int] | None = None,
     ) -> dict:
         group: dict[str, Any] = {}
         if user_ids is not None:
@@ -616,9 +716,44 @@ class AccessPolicyFactory:
             group["ip"] = ips
         if countries is not None:
             group["country"] = countries
+        if os_ids is not None:
+            group["os_id"] = os_ids
         if not group:
             raise ValueError("An access policy rule needs at least one condition")
         return group
+
+    def os_catalog(self) -> list[dict]:
+        """접근정책 OS 조건에 쓰는 {id, name} 목록."""
+        data = self.gql.execute(LIST_OS_INFO)
+        rows = ((data.get("SIA") or {}).get("common") or {}).get("os_info") or []
+        return [row for row in rows if isinstance(row, dict) and row.get("id") is not None]
+
+    def read(self, policy_id: str | int) -> dict | None:
+        """저장된 정책 하나({id, name, action_type, rules}). 없으면 None."""
+        data = self.gql.execute(READ_ACCESS_POLICY_RULES)
+        rows = ((data.get("SIA") or {}).get("ztna") or {}).get("accessPolicy") or []
+        for row in rows:
+            if isinstance(row, dict) and str(row.get("id")) == str(policy_id):
+                return row
+        return None
+
+    def update(self, handle: PolicyHandle, rules: list[dict], *, action_type: str) -> None:
+        """rules와 action_type을 바꾸고, 다시 읽어 그대로 저장됐는지 확인한다."""
+        self.gql.execute(UPDATE_ACCESS_POLICY, {
+            "id": int(handle.policy_id), "name": handle.name, "rules": rules, "action_type": action_type,
+        })
+        stored = self.read(handle.policy_id)
+        if stored is None:
+            raise ApiError(f"access policy {handle.name} is not listed after update")
+        want = sorted(_rule_shape(group) for group in rules)
+        got = sorted(_stored_rule_shape(group) for group in stored.get("rules") or [])
+        if str(stored.get("action_type") or "").upper() != action_type.upper() or want != got:
+            raise ApiError(
+                f"access policy {handle.name} was updated but reads back as "
+                f"{stored.get('action_type')} {got} (sent {action_type} {want})"
+            )
+        handle.payload.update({"rules": rules, "action_type": action_type})
+        log.info("Updated ZTNA access policy %s to %s %s", handle.name, action_type, rules)
 
     def list(self) -> list[dict]:
         return query_rows(
@@ -731,16 +866,20 @@ class AccessControlFactory:
         protocol: str = "HTTP",
         policy_id: str | int | None = None,
         first: bool = True,
+        app_launcher: bool = False,
     ) -> PolicyHandle:
         """만들고 나서 first면 우선순위를 0으로 올린다. 콘솔에서 만든 항목은 1부터라
-        BAT 항목이 그보다 먼저 매칭된다."""
+        BAT 항목이 그보다 먼저 매칭된다. app_launcher면 앱 런처 포털에 타일로 나온다
+        (항목에 app_launcher_name을 넣으면 그 이름으로)."""
         variables = {
             "name": name,
             "type": protocol,
             "application": application,
             "policy": int(policy_id) if policy_id not in (None, "") else None,
         }
-        self.gql.execute(CREATE_ACCESS_CONTROL, variables)
+        if app_launcher:
+            variables["app_launcher"] = True
+        self.gql.execute(CREATE_LAUNCHER_ACCESS_CONTROL if app_launcher else CREATE_ACCESS_CONTROL, variables)
 
         row = next((r for r in self.list() if r.get("name") == name), None)
         if not row or row.get("id") is None:
@@ -759,6 +898,41 @@ class AccessControlFactory:
                 raise
         log.info("Created ZTNA access control %s (id=%s)", name, row["id"])
         return handle
+
+    def set_enabled(self, handle: PolicyHandle, enabled: bool) -> None:
+        """활성화 스위치를 바꾸고, 목록을 다시 읽어 그 상태인지 확인한다."""
+        self.gql.execute(TOGGLE_ACCESS_CONTROL, {
+            "id": int(handle.policy_id), "name": handle.name,
+            "type": handle.payload.get("type") or "HTTP", "enable": enabled,
+        })
+        row = next((r for r in self.list() if str(r.get("id")) == handle.policy_id), None)
+        if row is None:
+            raise ApiError(f"access control {handle.name} is not listed after toggling it")
+        if bool(row.get("enable")) is not enabled:
+            raise ApiError(
+                f"access control {handle.name} reads back enable={row.get('enable')} "
+                f"after setting it to {enabled}"
+            )
+        log.info("Set ZTNA access control %s enable=%s", handle.name, enabled)
+
+    def launcher_tiles(self, name: str) -> list[dict]:
+        """앱 런처 포털 목록에서 그 접근제어의 타일({ip, domain, port, app_launcher_name, ...})."""
+        data = self.gql.execute(LIST_APP_LAUNCHER)
+        rows = ((data.get("SIA") or {}).get("appLauncher") or {}).get("list") or []
+        return [
+            tile
+            for row in rows
+            if isinstance(row, dict) and row.get("name") == name
+            for tile in row.get("app_launcher") or []
+            if isinstance(tile, dict)
+        ]
+
+    def org_id(self) -> str:
+        """앱 런처 서비스 주소에 들어가는 OrgID(콘솔 Account.info.id)."""
+        info = (self.gql.execute(ACCOUNT_INFO).get("Account") or {}).get("info") or {}
+        if info.get("id") in (None, ""):
+            raise ApiError("Account.info returned no id")
+        return str(info["id"])
 
     def delete(self, handle: PolicyHandle) -> None:
         self.gql.execute(DELETE_ACCESS_CONTROL, {"id": [int(handle.policy_id)]})
@@ -841,6 +1015,59 @@ class TunnelFactory:
         if not isinstance(decoded, dict):
             raise ApiError(f"tunnel {tunnel_id} auth file is not a JSON object")
         return decoded
+
+
+class SsoFactory:
+    """IdP(SSO) 설정. 하나 있으면 로그인 화면에 그 IdP 버튼이 생긴다.
+
+    domain은 IdP 발급자(issuer) 주소다(콘솔 예시 https://user.okta.com). 서버가 그 주소에서
+    OIDC 설정을 받아 인증 요청을 만든다. 응답하지 않는 주소면 /auth/sso-login이
+    "Failed to initialize the authenticator"로 500을 낸다. 목록 행에는 description을 name으로도
+    넣는다(sweep·잔여 검사가 name으로 BAT 리소스를 가린다).
+    """
+
+    def __init__(self, gql: GraphQLClient) -> None:
+        self.gql = gql
+
+    def list(self) -> list[dict]:
+        data = self.gql.execute(LIST_SSO)
+        rows = (((data.get("SIA") or {}).get("setting") or {}).get("sso") or {}).get("list") or []
+        return [
+            {**row, "name": row.get("description") or ""}
+            for row in rows if isinstance(row, dict) and row.get("id") is not None
+        ]
+
+    def create(
+        self, name: str, *, provider: str, domain: str, client_id: str, protocol: str = "OIDC",
+        client_secret: str = "bat-not-a-secret", redirect_uri: str = "",
+    ) -> PolicyHandle:
+        variables = {
+            "provider": provider, "protocol": protocol, "domain": domain,
+            "client_id": client_id, "client_secret": client_secret, "description": name,
+        }
+        # 콘솔도 값이 있을 때만 보낸다(env.js의 REDIRECT_URI가 기본값).
+        if redirect_uri:
+            variables["redirect_uri"] = redirect_uri
+        self.gql.execute(CREATE_SSO, variables)
+        row = next((r for r in self.list() if r.get("description") == name), None)
+        if row is None:
+            raise ApiError(
+                f"Created SSO {name} but could not find it in the list query. "
+                f"Delete it by hand in the console if it exists."
+            )
+        log.info("Created SSO %s (id=%s, %s %s)", name, row["id"], provider, domain)
+        stored = {key: variables[key] for key in ("provider", "protocol", "domain", "client_id", "description")}
+        return PolicyHandle(str(row["id"]), name, "idp", "graphql", stored)
+
+    def delete(self, handle: PolicyHandle) -> None:
+        self.gql.execute(DELETE_SSO, {"id": [int(handle.policy_id)]})
+        confirm_gone("sso", handle, self.list())
+
+    @contextmanager
+    def temporary(self, *args: Any, **kwargs: Any) -> Iterator[PolicyHandle]:
+        handle = self.create(*args, **kwargs)
+        with _cleanup_guard(self.delete, handle, "sso"):
+            yield handle
 
 
 class DnsFirewallFactory:

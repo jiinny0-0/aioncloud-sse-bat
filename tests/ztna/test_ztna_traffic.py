@@ -20,11 +20,15 @@ from __future__ import annotations
 import base64
 import logging
 import re
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
+from bat.clients.auth_server import AppLauncherSession, launcher_env, launcher_url
+from bat.clients.tokens import load_console_token, save_console_token
 from bat.events.poller import PollTimeout, poll_until
 from bat.events.ztna_log import ZtnaLogReader, matches_access
 from bat.fixtures.graphql_policies import AccessControlFactory, AccessPolicyFactory, TunnelFactory
@@ -41,7 +45,10 @@ from tests.support import (
     endpoint_device_id,
     environment_error,
     expect_delivered,
+    expect_hold,
+    hold_after_change,
     pass_case,
+    policy_changed,
     unverified,
 )
 
@@ -71,13 +78,16 @@ _GATEWAY_TARGETS: dict[tuple[str, str], ZtnaTarget | str] = {}
 
 
 @pytest.fixture
-def ztna_target(case, run_context, lane, executor, access_controls, tunnels, ztna_tunnel) -> ZtnaTarget:
+def ztna_target(case, run_context, lane, executor, access_controls, tunnels, ztna_tunnel, ztna_log) -> ZtnaTarget:
     key = (run_context.profile.name, str(getattr(lane.workspace, "name", lane.workspace)))
     found = _GATEWAY_TARGETS.get(key)
     if found is None:
+        started = datetime.now(timezone.utc)
         found = _ztna_target(
             executor, access_controls, tunnels, run_context.profile.ztna or ZtnaTarget(), ztna_tunnel
         )
+        if isinstance(found, str):
+            found += _recent_ztna_rows(ztna_log, started)
         _GATEWAY_TARGETS[key] = found
     if isinstance(found, str):
         environment_error(found)
@@ -111,6 +121,35 @@ def ztna_tunnel(run_context) -> ZtnaTunnelTarget:
     return run_context.profile.ztna_tunnel or ZtnaTunnelTarget()
 
 
+def summarize_ztna_rows(rows: list[dict]) -> str:
+    """ZTNA 로그 행을 (동작, 접근제어, 목적지)별 개수로. 열리지 않은 이유(예: 사용자 규칙의
+    DPC_FAIL, AP_BLOCK)를 오류 메시지에 남기는 데 쓴다."""
+    counts: dict[tuple[str, str, str], int] = {}
+    for row in rows:
+        key = (str(row.get("action") or ""), str(row.get("access_control_name") or ""), str(row.get("dst_ip") or ""))
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return "; the ZTNA log has no rows for those requests"
+    parts = [f"{action} by {control or '-'} to {dst} x{n}" for (action, control, dst), n in sorted(counts.items())]
+    return "; ZTNA log for those requests: " + ", ".join(parts)
+
+
+def _recent_ztna_rows(ztna_log: ZtnaLogReader, since: datetime) -> str:
+    """since 뒤의 ZTNA 로그 요약. 행은 10초쯤 늦게 찍혀 20초까지 기다린다. 로그를 못 읽으면 그
+    사실을 적는다(대상 탐색 실패를 가리지 않는다)."""
+    try:
+        try:
+            rows = poll_until(
+                lambda: [event.raw for event in ztna_log.events(since=since)] or None,
+                timeout_sec=20, description="ZTNA log rows for the target search", initial_interval=3.0,
+            )
+        except PollTimeout:
+            rows = []
+        return summarize_ztna_rows(rows)
+    except Exception as exc:  # noqa: BLE001 - 이미 실패한 탐색에 덧붙이는 정보다
+        return f"; the ZTNA log could not be read ({type(exc).__name__})"
+
+
 def _entry(target: ZtnaTarget, *, by_domain: bool) -> dict:
     """대상의 접근제어 항목. by_domain이면 target.domain으로, 아니면 IP만으로 만든다."""
     make = AccessControlFactory.via_tunnel if target.via == "tunnel" else AccessControlFactory.via_gateway
@@ -135,10 +174,12 @@ def _url(host: str, port: int, scheme: str = "http") -> str:
     return f"{scheme}://{host}/" if port == default else f"{scheme}://{host}:{port}/"
 
 
-def _fetch(executor, url: str, timeout_sec: int = 15) -> tuple[TrafficResult, str]:
-    """단말에서 URL을 요청해 (결과, 본문)을 돌려준다. 본문으로 페이지와 차단 페이지를 가린다."""
+def _fetch(executor, url: str, timeout_sec: int = 15, user_agent: str = "") -> tuple[TrafficResult, str]:
+    """단말에서 URL을 요청해 (결과, 본문)을 돌려준다. 본문으로 페이지와 차단 페이지를 가린다.
+    user_agent를 주면 그 User-Agent로 보낸다(접근정책 OS 조건이 이 값을 본다)."""
+    agent = f'-A "{user_agent}" ' if user_agent else ""
     result = executor.run(
-        f'curl -k -s --max-time {timeout_sec} -w "\\n%{{http_code}}" "{url}"',
+        f'curl -k -s --max-time {timeout_sec} {agent}-w "\\n%{{http_code}}" "{url}"',
         timeout_sec=timeout_sec + 10,
     )
     body, _, code = result.stdout.rstrip().rpartition("\n")
@@ -807,3 +848,479 @@ def test_registered_tunnel_reaches_the_connector_and_leaves_on_delete(case, run_
     )
     assert not address, f"{domain} still resolves to {address} {budget}s after the tunnel was deleted"
     pass_case(case)
+
+
+# --- 규칙을 바꾼 뒤의 상태 ------------------------------------------------------
+#
+# 아래 케이스는 BAT 접근제어 하나(도메인 항목)에 BAT 접근정책 하나를 연결해 두고, 접근제어의
+# 활성화나 접근정책의 동작·조건을 바꾼 뒤 그 서버가 막히는지 열리는지 본다. 바꿀 때마다
+# 전파 예산 안에 한 번 기대한 상태가 되고, 예산이 지난 뒤 HOLD_REPEATS번 연속 그 상태여야
+# 한다(hold_after_change). 막혔다는 것은 그 접근제어 이름의 차단 페이지, 열렸다는 것은 그
+# 서버 페이지(페이지 문구 포함)다. 둘 다 아니면 판정할 수 없는 응답이다.
+
+
+# 접근정책의 OS 조건은 HTTP User-Agent로 판정된다(2026-11-19 lguplus: os_id=Windows BLOCK이 이 UA
+# 요청만 막고, curl 기본 UA와 macOS UA 요청은 그 규칙에 매칭되지 않았다). 그래서 OS 조건 케이스는
+# 이 단말(Windows) 브라우저와 같은 UA로 보낸다.
+WINDOWS_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+def _state(executor, url: str, control_name: str, page_text: str, user_agent: str = ""):
+    """요청 한 번을 상태로: blocked는 그 접근제어의 차단 페이지, delivered는 그 서버 페이지."""
+
+    def check() -> TrafficResult:
+        traffic, body = _fetch(executor, url, user_agent=user_agent)
+        return replace(
+            traffic,
+            blocked=_blocked_by(control_name)(traffic, body),
+            delivered=traffic.delivered and (not page_text or page_text in body),
+        )
+
+    return check
+
+
+def _expect_state(
+    case, check, *, blocked: bool, changed, budget: float, expected: str, failure: str,
+    steady: bool = False,
+) -> None:
+    hold = hold_after_change(
+        check,
+        want=(lambda t: t.blocked) if blocked else (lambda t: t.delivered),
+        against=(lambda t: t.delivered) if blocked else (lambda t: t.blocked),
+        changed_at=changed.at,
+        budget_sec=budget,
+        steady=steady,
+    )
+    expect_hold(case, hold, expected=expected, failure=failure)
+
+
+def _os_ids(access_policies: AccessPolicyFactory) -> tuple[int, int, str]:
+    """(이 단말 OS id, 다른 OS id, 설명). 단말은 Windows다(실행기가 PowerShell로 돈다)."""
+    catalog = {str(row.get("name") or ""): int(row["id"]) for row in access_policies.os_catalog()}
+    if "Windows" not in catalog or "Linux" not in catalog:
+        environment_error(f"OS catalog has no Windows/Linux entry: {sorted(catalog)}")
+    return catalog["Windows"], catalog["Linux"], f"Windows={catalog['Windows']}, Linux={catalog['Linux']}"
+
+
+def _open_without_rule(executor, target: ZtnaTarget, url: str) -> None:
+    before, body = _fetch(executor, url)
+    if not before.delivered or (target.page_text and target.page_text not in body):
+        environment_error(f"{url} does not open even without a BAT rule ({describe(before)})")
+
+
+@pytest.mark.case("BAT-ZTNA-017")
+@pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
+@pytest.mark.priority("P1")
+def test_disabled_access_control_stops_applying(
+    case, run_context, lane, executor, ztna_target, access_controls, access_policies, ztna_log
+):
+    """BLOCK을 연결한 접근제어를 비활성화하면 그 서버가 다시 열리고, 다시 활성화하면 다시 차단된다."""
+    target = ztna_target
+    _need_domain(target)
+    device = _device(lane, executor)
+    url = _url(target.domain, target.port, target.scheme)
+    policy_name = resource_name(case.case_id, run_context.run_id, "ap")
+    control_name = resource_name(case.case_id, run_context.run_id)
+    budget = run_context.policy_propagation_timeout_sec
+    check = _state(executor, url, control_name, target.page_text)
+    _open_without_rule(executor, target, url)
+
+    try:
+        with access_policies.temporary(policy_name, EVERYONE, action_type="BLOCK") as policy:
+            case.policy_ids.append(policy.policy_id)
+            with access_controls.temporary(
+                control_name, [_entry(target, by_domain=True)], policy_id=policy.policy_id
+            ) as control:
+                case.policy_ids.append(control.policy_id)
+                changed = policy_changed(case, f"access control {control_name} created (enabled, BLOCK)")
+                _expect_state(
+                    case, check, blocked=True, changed=changed, budget=budget,
+                    expected=f"{url} blocked by {control_name}",
+                    failure=f"{url} was not blocked by the new BLOCK access control",
+                )
+                _expect_row(
+                    case, ztna_log, run_context, since=changed.utc, control=control_name,
+                    policy=policy_name, action="AP_BLOCK",
+                    destination=_log_destination(target), device_id=device,
+                )
+
+                access_controls.set_enabled(control, False)
+                changed = policy_changed(case, f"access control {control_name} disabled")
+                _expect_state(
+                    case, check, blocked=False, changed=changed, budget=budget,
+                    expected=f"{url} opens while {control_name} is disabled",
+                    failure=f"{url} stayed blocked after {control_name} was disabled",
+                )
+
+                access_controls.set_enabled(control, True)
+                changed = policy_changed(case, f"access control {control_name} enabled again")
+                _expect_state(
+                    case, check, blocked=True, changed=changed, budget=budget,
+                    expected=f"{url} blocked by {control_name} again",
+                    failure=f"{url} was not blocked again after {control_name} was re-enabled",
+                )
+                pass_case(case)
+    except CleanupWarning as warning:
+        cleanup_failed(case, warning)
+
+
+@pytest.mark.case("BAT-ZTNA-018")
+@pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
+@pytest.mark.priority("P1")
+def test_access_policy_edit_reaches_its_access_control(
+    case, run_context, lane, executor, ztna_target, access_controls, access_policies, ztna_log
+):
+    """접근제어에 연결된 접근정책의 동작을 BLOCK에서 LOGGING으로 바꾸면 그 서버가 열리며 LOGGING으로 기록되고, 다시 BLOCK으로 바꾸면 차단된다."""
+    target = ztna_target
+    _need_domain(target)
+    device = _device(lane, executor)
+    url = _url(target.domain, target.port, target.scheme)
+    policy_name = resource_name(case.case_id, run_context.run_id, "ap")
+    control_name = resource_name(case.case_id, run_context.run_id)
+    budget = run_context.policy_propagation_timeout_sec
+    check = _state(executor, url, control_name, target.page_text)
+    _open_without_rule(executor, target, url)
+
+    try:
+        with access_policies.temporary(policy_name, EVERYONE, action_type="BLOCK") as policy:
+            case.policy_ids.append(policy.policy_id)
+            with access_controls.temporary(
+                control_name, [_entry(target, by_domain=True)], policy_id=policy.policy_id
+            ) as control:
+                case.policy_ids.append(control.policy_id)
+                changed = policy_changed(case, f"{control_name} created with BLOCK policy {policy_name}")
+                _expect_state(
+                    case, check, blocked=True, changed=changed, budget=budget,
+                    expected=f"{url} blocked by {control_name}",
+                    failure=f"{url} was not blocked by the BLOCK access policy",
+                )
+
+                access_policies.update(policy, EVERYONE, action_type="LOGGING")
+                changed = policy_changed(case, f"access policy {policy_name} changed to LOGGING")
+                _expect_state(
+                    case, check, blocked=False, changed=changed, budget=budget,
+                    expected=f"{url} opens once {policy_name} is LOGGING",
+                    failure=f"{url} stayed blocked after its access policy was changed to LOGGING",
+                )
+                _expect_row(
+                    case, ztna_log, run_context, since=changed.utc, control=control_name,
+                    policy=policy_name, action="AP_LOGGING",
+                    destination=_log_destination(target), device_id=device,
+                )
+
+                access_policies.update(policy, EVERYONE, action_type="BLOCK")
+                changed = policy_changed(case, f"access policy {policy_name} changed back to BLOCK")
+                _expect_state(
+                    case, check, blocked=True, changed=changed, budget=budget,
+                    expected=f"{url} blocked by {control_name} again",
+                    failure=f"{url} was not blocked after its access policy was changed back to BLOCK",
+                )
+                pass_case(case)
+    except CleanupWarning as warning:
+        cleanup_failed(case, warning)
+
+
+@pytest.mark.case("BAT-ZTNA-019")
+@pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
+@pytest.mark.priority("P1")
+def test_access_policy_conditions_match_only_this_endpoint(
+    case, run_context, lane, executor, ztna_target, access_controls, access_policies, ztna_log
+):
+    """접근정책 BLOCK은 조건(OS)이 이 단말과 맞을 때만 접근제어에 걸리고, 다른 OS나 다른 국가(AQ) 조건이면 서버가 열린다."""
+    target = ztna_target
+    _need_domain(target)
+    device = _device(lane, executor)
+    url = _url(target.domain, target.port, target.scheme)
+    policy_name = resource_name(case.case_id, run_context.run_id, "ap")
+    control_name = resource_name(case.case_id, run_context.run_id)
+    budget = run_context.policy_propagation_timeout_sec
+    check = _state(executor, url, control_name, target.page_text, user_agent=WINDOWS_BROWSER_UA)
+    this_os, other_os, catalog = _os_ids(access_policies)
+    case.record(Step.SETUP, ok=True, kind=Kind.EVIDENCE, detail=f"OS catalog {catalog}")
+    _open_without_rule(executor, target, url)
+
+    matching = [AccessPolicyFactory.rule(os_ids=[this_os])]
+    try:
+        with access_policies.temporary(policy_name, matching, action_type="BLOCK") as policy:
+            case.policy_ids.append(policy.policy_id)
+            with access_controls.temporary(
+                control_name, [_entry(target, by_domain=True)], policy_id=policy.policy_id
+            ) as control:
+                case.policy_ids.append(control.policy_id)
+                changed = policy_changed(case, f"{control_name} with BLOCK {policy_name} (os_id={this_os})")
+                _expect_state(
+                    case, check, blocked=True, changed=changed, budget=budget,
+                    expected=f"{url} blocked: the policy names this endpoint's OS",
+                    failure=f"a BLOCK policy for this endpoint's OS (os_id={this_os}) did not block {url}",
+                )
+                _expect_row(
+                    case, ztna_log, run_context, since=changed.utc, control=control_name,
+                    policy=policy_name, action="AP_BLOCK",
+                    destination=_log_destination(target), device_id=device,
+                )
+                # OS 조건은 User-Agent로 판정되므로 OS가 없는 UA(curl 기본값)는 이 규칙에 안 걸린다.
+                # 판정하지 않고 근거로만 남긴다.
+                plain = _state(executor, url, control_name, target.page_text)()
+                case.record(
+                    Step.USER_RESULT, ok=True, kind=Kind.EVIDENCE,
+                    detail=f"same URL with curl's default User-Agent (no OS): {describe(plain)}, "
+                    f"blocked by {control_name}={plain.blocked}",
+                )
+
+                access_policies.update(policy, [AccessPolicyFactory.rule(os_ids=[other_os])], action_type="BLOCK")
+                changed = policy_changed(case, f"{policy_name} condition changed to os_id={other_os}")
+                _expect_state(
+                    case, check, blocked=False, changed=changed, budget=budget,
+                    expected=f"{url} opens: the policy names another OS",
+                    failure=f"a BLOCK policy for another OS (os_id={other_os}) still blocked {url}",
+                )
+
+                access_policies.update(policy, [AccessPolicyFactory.rule(countries=["AQ"])], action_type="BLOCK")
+                changed = policy_changed(case, f"{policy_name} condition changed to country AQ")
+                _expect_state(
+                    case, check, blocked=False, changed=changed, budget=budget, steady=True,
+                    expected=f"{url} keeps opening: the policy names another country (AQ)",
+                    failure=f"a BLOCK policy for country AQ blocked {url}",
+                )
+                pass_case(case)
+    except CleanupWarning as warning:
+        cleanup_failed(case, warning)
+
+
+@pytest.mark.case("BAT-ZTNA-020")
+@pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
+@pytest.mark.priority("P2")
+def test_access_policy_and_or_conditions(
+    case, run_context, lane, executor, ztna_target, access_controls, access_policies, ztna_log
+):
+    """접근정책 조건은 그룹 안이 AND, 그룹끼리 OR로 평가된다: 하나만 맞는 OR은 차단, 하나만 맞는 AND는 통과, 둘 다 맞는 AND는 차단."""
+    target = ztna_target
+    _need_domain(target)
+    device = _device(lane, executor)
+    url = _url(target.domain, target.port, target.scheme)
+    policy_name = resource_name(case.case_id, run_context.run_id, "ap")
+    control_name = resource_name(case.case_id, run_context.run_id)
+    budget = run_context.policy_propagation_timeout_sec
+    check = _state(executor, url, control_name, target.page_text, user_agent=WINDOWS_BROWSER_UA)
+    this_os, _, catalog = _os_ids(access_policies)
+    case.record(Step.SETUP, ok=True, kind=Kind.EVIDENCE, detail=f"OS catalog {catalog}")
+    _open_without_rule(executor, target, url)
+
+    one_true_or = [AccessPolicyFactory.rule(os_ids=[this_os]), AccessPolicyFactory.rule(countries=["AQ"])]
+    one_true_and = [AccessPolicyFactory.rule(os_ids=[this_os], countries=["AQ"])]
+    both_true_and = [AccessPolicyFactory.rule(os_ids=[this_os], user_ids=[0])]
+    try:
+        with access_policies.temporary(policy_name, one_true_or, action_type="BLOCK") as policy:
+            case.policy_ids.append(policy.policy_id)
+            with access_controls.temporary(
+                control_name, [_entry(target, by_domain=True)], policy_id=policy.policy_id
+            ) as control:
+                case.policy_ids.append(control.policy_id)
+                changed = policy_changed(case, f"{policy_name}: os_id={this_os} OR country AQ")
+                _expect_state(
+                    case, check, blocked=True, changed=changed, budget=budget,
+                    expected=f"{url} blocked: one of two OR groups matches",
+                    failure=f"OR with one matching group (os_id={this_os}) did not block {url}",
+                )
+                _expect_row(
+                    case, ztna_log, run_context, since=changed.utc, control=control_name,
+                    policy=policy_name, action="AP_BLOCK",
+                    destination=_log_destination(target), device_id=device,
+                )
+
+                access_policies.update(policy, one_true_and, action_type="BLOCK")
+                changed = policy_changed(case, f"{policy_name}: os_id={this_os} AND country AQ")
+                _expect_state(
+                    case, check, blocked=False, changed=changed, budget=budget,
+                    expected=f"{url} opens: one of two AND conditions is false",
+                    failure=f"AND with one false condition (country AQ) still blocked {url}",
+                )
+
+                access_policies.update(policy, both_true_and, action_type="BLOCK")
+                changed = policy_changed(case, f"{policy_name}: os_id={this_os} AND all users")
+                _expect_state(
+                    case, check, blocked=True, changed=changed, budget=budget,
+                    expected=f"{url} blocked: both AND conditions match",
+                    failure=f"AND with both conditions true (os_id={this_os}, all users) did not block {url}",
+                )
+                pass_case(case)
+    except CleanupWarning as warning:
+        cleanup_failed(case, warning)
+
+
+# -- 앱 런처 -------------------------------------------------------------------
+
+
+def _launcher_state(response) -> str:
+    """서비스 주소 응답을 'page'(2xx), 'redirect'(3xx, 로그인 화면 등), 'blocked'(403), 'other'로."""
+    if response is None:
+        return "other"
+    if response.status_code in BLOCK_STATUS_CODES:
+        return "blocked"
+    if 300 <= response.status_code < 400:
+        return "redirect"
+    return "page" if is_delivered_status(response.status_code) else "other"
+
+
+def _describe_launch(response) -> str:
+    if response is None:
+        return "no response"
+    if 300 <= response.status_code < 400:
+        location = httpx.URL(response.headers.get("location", ""))
+        return f"HTTP {response.status_code} to {location.scheme}://{location.host}{location.path}"
+    title = _TITLE_RE.search(response.text or "")
+    return f"HTTP {response.status_code}, title {title.group(1)!r}" if title else (
+        f"HTTP {response.status_code}, body {(response.text or '')[:80]!r}"
+    )
+
+
+def _launch_until(session, url: str, app_server: str, want, budget: int):
+    """타일을 누르는 것(새 티켓)을 want(응답)가 참이 될 때까지 budget초 동안 반복한다. 마지막 응답."""
+    deadline = time.monotonic() + budget
+    response = None
+    while True:
+        try:
+            response = session.open(url, app_server)
+        except httpx.HTTPError as exc:
+            log.info("App launcher request to %s failed: %s", url, exc)
+            response = None
+        if (response is not None and want(response)) or time.monotonic() >= deadline:
+            return response
+        time.sleep(3)
+
+
+@pytest.mark.case("BAT-ZTNA-021")
+@pytest.mark.verifies(Step.USER_RESULT, Step.EVENT)
+@pytest.mark.priority("P1")
+def test_app_launcher_tile_opens_and_follows_its_access_policy(
+    case, run_context, lane, console, ztna_target, access_controls, access_policies, ztna_log
+):
+    """앱 런처를 켠 접근제어는 포털 타일로 나오고 그 타일로 커넥터 없이 내부 서버가 열리며, 접근정책을 BLOCK으로 바꾸면 막히고, 지우면 받은 런처 쿠키로도 열리지 않는다."""
+    target = ztna_target
+    workspace = lane.workspace
+    if not workspace.has_console_credentials:
+        environment_error("The app launcher needs a console login (BAT_CONSOLE_USER / BAT_CONSOLE_PASSWORD)")
+    try:
+        app_domain, app_server = launcher_env(run_context.profile)
+    except LookupError as exc:
+        environment_error(str(exc))
+    org_id = access_controls.org_id()
+    policy_name = resource_name(case.case_id, run_context.run_id, "ap")
+    control_name = resource_name(case.case_id, run_context.run_id)
+    entry = dict(_entry(target, by_domain=bool(target.domain)), app_launcher_name=control_name[:50])
+    budget = run_context.policy_propagation_timeout_sec
+    page_text = target.page_text
+    is_page = lambda r: _launcher_state(r) == "page" and (not page_text or page_text in r.text)  # noqa: E731
+    is_blocked = lambda r: _launcher_state(r) == "blocked" and f"blocked by {control_name}" in r.text  # noqa: E731
+
+    try:
+        # 이 로그인은 같은 계정의 GraphQL 세션을 끊는다. 새 세션을 콘솔 클라이언트(정리에도 쓰는)와
+        # 캐시에 넣는다. 그래서 리소스를 만들기 전에 로그인한다.
+        with AppLauncherSession(
+            run_context.profile, workspace.name, workspace.login_id, workspace.password
+        ) as session:
+            console.use_token(session.console_token)
+            if load_console_token(workspace.name):
+                save_console_token(workspace.name, session.console_token)
+
+            with access_policies.temporary(policy_name, EVERYONE, action_type="LOGGING") as policy:
+                case.policy_ids.append(policy.policy_id)
+                with access_controls.temporary(
+                    control_name, [entry], policy_id=policy.policy_id, app_launcher=True
+                ) as control:
+                    case.policy_ids.append(control.policy_id)
+                    tiles = access_controls.launcher_tiles(control_name)
+                    case.record(
+                        Step.USER_RESULT, ok=bool(tiles), kind=Kind.ASSERTION,
+                        expected=f"app launcher portal lists {control_name}",
+                        actual=tiles or "not listed",
+                        detail=f"{len(tiles)} tile(s)",
+                    )
+                    assert tiles, f"{control_name} has app_launcher on but the portal list does not show it"
+                    tile = tiles[0]
+                    host = str(tile.get("domain") or tile.get("ip") or "")
+                    url = launcher_url(host, tile.get("port") or target.port, org_id, app_domain)
+                    case.record(
+                        Step.SETUP, ok=True, kind=Kind.EVIDENCE,
+                        detail=f"tile {tile.get('app_launcher_name')!r} -> {url} (OrgID {org_id}, "
+                        f"launcher {app_server}), LOGGING policy {policy_name}",
+                    )
+
+                    bare = session.without_ticket(url)
+                    refused = _launcher_state(bare) != "page" or bool(page_text and page_text not in bare.text)
+                    case.record(
+                        Step.USER_RESULT, ok=refused, kind=Kind.ASSERTION,
+                        expected="service address refuses a request without the launcher cookie",
+                        actual=_describe_launch(bare),
+                    )
+                    assert refused, f"{url} served the internal page without an app launcher ticket"
+
+                    since = datetime.now(timezone.utc)
+                    opened = _launch_until(session, url, app_server, is_page, budget)
+                    case.record(
+                        Step.USER_RESULT, ok=opened is not None and is_page(opened), kind=Kind.ASSERTION,
+                        expected=f"tile opens {target.server_ip}:{target.port}"
+                        + (f" ({page_text})" if page_text else ""),
+                        actual=_describe_launch(opened),
+                    )
+                    assert opened is not None and is_page(opened), (
+                        f"The app launcher tile did not open the internal page: {_describe_launch(opened)}"
+                    )
+                    _expect_row(
+                        case, ztna_log, run_context, since=since, control=control_name,
+                        policy=policy_name, action="AP_LOGGING",
+                        destination=_log_destination(target), device_id="",
+                    )
+
+                    access_policies.update(policy, EVERYONE, action_type="BLOCK")
+                    changed = policy_changed(case, f"{policy_name} changed to BLOCK")
+                    blocked = _launch_until(session, url, app_server, is_blocked, budget)
+                    case.record(
+                        Step.USER_RESULT, ok=blocked is not None and is_blocked(blocked), kind=Kind.ASSERTION,
+                        expected=f"tile gets the block page naming {control_name}",
+                        actual=_describe_launch(blocked),
+                    )
+                    assert blocked is not None and is_blocked(blocked), (
+                        f"The app launcher tile still reached the server after BLOCK: {_describe_launch(blocked)}"
+                    )
+                    _expect_row(
+                        case, ztna_log, run_context, since=changed.utc, control=control_name,
+                        policy=policy_name, action="AP_BLOCK",
+                        destination=_log_destination(target), device_id="",
+                    )
+
+                    # 다시 LOGGING으로 열어 둔 채 지운다. 삭제 뒤에 열리지 않는 것이 쿠키 때문이 아니라
+                    # 접근제어가 사라졌기 때문이어야 하므로.
+                    access_policies.update(policy, EVERYONE, action_type="LOGGING")
+                    reopened = _launch_until(session, url, app_server, is_page, budget)
+                    if reopened is None or not is_page(reopened):
+                        unverified(
+                            case, Step.USER_RESULT,
+                            f"the tile did not open again after switching back to LOGGING ({_describe_launch(reopened)})",
+                        )
+
+                # 접근제어가 지워졌다(삭제 확인은 팩토리가 한다). 받아 둔 런처 쿠키로 다시 연다.
+                deleted = policy_changed(case, f"access control {control_name} deleted")
+                deadline = deleted.at + budget
+                while True:
+                    try:
+                        after = session.again(url)
+                    except httpx.HTTPError as exc:
+                        log.info("App launcher request after delete failed: %s", exc)
+                        after = None
+                    if _launcher_state(after) != "page" or time.monotonic() >= deadline:
+                        break
+                    time.sleep(3)
+                closed = _launcher_state(after) != "page"
+                case.record(
+                    Step.USER_RESULT, ok=closed, kind=Kind.ASSERTION,
+                    expected="the old launcher cookie no longer opens the server",
+                    actual=f"{_describe_launch(after)} {time.monotonic() - deleted.at:.0f}s after delete",
+                )
+                assert closed, f"{url} still opened with the old launcher cookie after {control_name} was deleted"
+                pass_case(case)
+    except CleanupWarning as warning:
+        cleanup_failed(case, warning)
